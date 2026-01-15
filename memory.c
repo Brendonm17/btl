@@ -1,18 +1,30 @@
 #include <stdlib.h>
+
 #include "compiler.h"
 #include "memory.h"
 #include "object.h"
 #include "vm.h"
+
+#ifdef DEBUG_LOG_GC
+#include <stdio.h>
+#include "debug.h"
+#endif
 
 #define GC_HEAP_GROW_FACTOR 2
 
 void* reallocate(VM* vm, void* pointer, size_t oldSize, size_t newSize) {
     vm->bytesAllocated += newSize - oldSize;
     if (newSize > oldSize) {
-        if (vm->bytesAllocated > vm->nextGC) collectGarbage(vm);
+#ifdef DEBUG_STRESS_GC
+        collectGarbage(vm);
+#endif
+        if (vm->bytesAllocated > vm->nextGC) {
+            collectGarbage(vm);
+        }
     }
     if (newSize == 0) {
-        free(pointer); return NULL;
+        free(pointer);
+        return NULL;
     }
     void* result = realloc(pointer, newSize);
     if (result == NULL) exit(1);
@@ -35,7 +47,9 @@ void markValue(VM* vm, Value value) {
 }
 
 static void markArray(VM* vm, ValueArray* array) {
-    for (int i = 0; i < array->count; i++) markValue(vm, array->values[i]);
+    for (int i = 0; i < array->count; i++) {
+        markValue(vm, array->values[i]);
+    }
 }
 
 static void blackenObject(VM* vm, Obj* object) {
@@ -55,7 +69,9 @@ static void blackenObject(VM* vm, Obj* object) {
     case OBJ_CLOSURE: {
         ObjClosure* closure = (ObjClosure*) object;
         markObject(vm, (Obj*) closure->function);
-        for (int i = 0; i < closure->upvalueCount; i++) markObject(vm, (Obj*) closure->upvalues[i]);
+        for (int i = 0; i < closure->upvalueCount; i++) {
+            markObject(vm, (Obj*) closure->upvalues[i]);
+        }
         break;
     }
     case OBJ_FUNCTION: {
@@ -70,15 +86,25 @@ static void blackenObject(VM* vm, Obj* object) {
         markTable(vm, &instance->fields);
         break;
     }
-    case OBJ_UPVALUE: markValue(vm, ((ObjUpvalue*) object)->closed); break;
+    case OBJ_LIST: {
+        ObjList* list = (ObjList*) object;
+        markArray(vm, &list->items);
+        break;
+    }
+    case OBJ_UPVALUE:
+        markValue(vm, ((ObjUpvalue*) object)->closed);
+        break;
     case OBJ_NATIVE:
-    case OBJ_STRING: break;
+    case OBJ_STRING:
+        break;
     }
 }
 
 static void freeObject(VM* vm, Obj* object) {
     switch (object->type) {
-    case OBJ_BOUND_METHOD: FREE(vm, ObjBoundMethod, object); break;
+    case OBJ_BOUND_METHOD:
+        FREE(vm, ObjBoundMethod, object);
+        break;
     case OBJ_CLASS: {
         ObjClass* klass = (ObjClass*) object;
         freeTable(vm, &klass->methods);
@@ -103,41 +129,58 @@ static void freeObject(VM* vm, Obj* object) {
         FREE(vm, ObjInstance, object);
         break;
     }
-    case OBJ_NATIVE: FREE(vm, ObjNative, object); break;
+    case OBJ_LIST: {
+        ObjList* list = (ObjList*) object;
+        freeValueArray(vm, &list->items);
+        FREE(vm, ObjList, object);
+        break;
+    }
+    case OBJ_NATIVE:
+        FREE(vm, ObjNative, object);
+        break;
     case OBJ_STRING: {
         ObjString* string = (ObjString*) object;
         FREE_ARRAY(vm, char, string->chars, string->length + 1);
         FREE(vm, ObjString, object);
         break;
     }
-    case OBJ_UPVALUE: FREE(vm, ObjUpvalue, object); break;
+    case OBJ_UPVALUE:
+        FREE(vm, ObjUpvalue, object);
+        break;
     }
 }
 
 void collectGarbage(VM* vm) {
-    for (Value* slot = vm->stack; slot < vm->stackTop; slot++) markValue(vm, *slot);
-    for (int i = 0; i < vm->frameCount; i++) markObject(vm, (Obj*) vm->frames[i].closure);
-    for (ObjUpvalue* upvalue = vm->openUpvalues; upvalue != NULL; upvalue = upvalue->next) markObject(vm, (Obj*) upvalue);
-
-    // Mark Fast Globals
+    for (Value* slot = vm->stack; slot < vm->stackTop; slot++) {
+        markValue(vm, *slot);
+    }
+    for (int i = 0; i < vm->frameCount; i++) {
+        markObject(vm, (Obj*) vm->frames[i].closure);
+    }
+    for (ObjUpvalue* upvalue = vm->openUpvalues; upvalue != NULL; upvalue = upvalue->next) {
+        markObject(vm, (Obj*) upvalue);
+    }
     markTable(vm, &vm->globalNames);
     markArray(vm, &vm->globalValues);
-
     markCompilerRoots(vm);
     markObject(vm, (Obj*) vm->initString);
-
-    while (vm->grayCount > 0) blackenObject(vm, vm->grayStack[--vm->grayCount]);
+    while (vm->grayCount > 0) {
+        Obj* object = vm->grayStack[--vm->grayCount];
+        blackenObject(vm, object);
+    }
     tableRemoveWhite(&vm->strings);
-
     Obj* previous = NULL;
     Obj* object = vm->objects;
     while (object != NULL) {
         if (object->isMarked) {
-            object->isMarked = false; previous = object; object = object->next;
+            object->isMarked = false;
+            previous = object;
+            object = object->next;
         } else {
             Obj* unreached = object;
             object = object->next;
-            if (previous != NULL) previous->next = object; else vm->objects = object;
+            if (previous != NULL) previous->next = object;
+            else vm->objects = object;
             freeObject(vm, unreached);
         }
     }
@@ -147,7 +190,9 @@ void collectGarbage(VM* vm) {
 void freeObjects(VM* vm) {
     Obj* object = vm->objects;
     while (object != NULL) {
-        Obj* next = object->next; freeObject(vm, object); object = next;
+        Obj* next = object->next;
+        freeObject(vm, object);
+        object = next;
     }
     free(vm->grayStack);
 }
