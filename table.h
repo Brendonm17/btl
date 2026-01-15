@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include "value.h"
+#include "vm.h"
 
 
 typedef struct {
@@ -21,19 +22,19 @@ typedef struct {
 
 void initTable(Table* table);
 
-void freeTable(Table* table);
+void freeTable(VM* vm, Table* table);
 
 
 bool tableGet(Table* table, ObjString* key, Value* value);
 
 
-bool tableSet(Table* table, ObjString* key, Value value);
+bool tableSet(VM* vm, Table* table, ObjString* key, Value value);
 
 
 bool tableDelete(Table* table, ObjString* key);
 
 
-void tableAddAll(Table* from, Table* to);
+void tableAddAll(VM* vm, Table* from, Table* to);
 
 
 ObjString* tableFindString(Table* table, const char* chars,
@@ -44,7 +45,7 @@ ObjString* tableFindString(Table* table, const char* chars,
 void tableRemoveWhite(Table* table);
 
 
-void markTable(Table* table);
+void markTable(VM* vm, Table* table);
 
 
 

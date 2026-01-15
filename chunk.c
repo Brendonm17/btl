@@ -21,28 +21,28 @@ void initChunk(Chunk* chunk) {
 
 }
 
-void freeChunk(Chunk* chunk) {
-    FREE_ARRAY(uint8_t, chunk->code, chunk->capacity);
+void freeChunk(VM* vm, Chunk* chunk) {
+    FREE_ARRAY(vm, uint8_t, chunk->code, chunk->capacity);
 
-    FREE_ARRAY(int, chunk->lines, chunk->capacity);
+    FREE_ARRAY(vm, int, chunk->lines, chunk->capacity);
 
 
-    freeValueArray(&chunk->constants);
+    freeValueArray(vm, &chunk->constants);
 
     initChunk(chunk);
 }
 
 
 
-void writeChunk(Chunk* chunk, uint8_t byte, int line) {
+void writeChunk(VM* vm, Chunk* chunk, uint8_t byte, int line) {
 
     if (chunk->capacity < chunk->count + 1) {
         int oldCapacity = chunk->capacity;
         chunk->capacity = GROW_CAPACITY(oldCapacity);
-        chunk->code = GROW_ARRAY(uint8_t, chunk->code,
+        chunk->code = GROW_ARRAY(vm, uint8_t, chunk->code,
             oldCapacity, chunk->capacity);
 
-        chunk->lines = GROW_ARRAY(int, chunk->lines,
+        chunk->lines = GROW_ARRAY(vm, int, chunk->lines,
             oldCapacity, chunk->capacity);
 
     }
@@ -55,13 +55,13 @@ void writeChunk(Chunk* chunk, uint8_t byte, int line) {
 }
 
 
-int addConstant(Chunk* chunk, Value value) {
+int addConstant(VM* vm, Chunk* chunk, Value value) {
 
-    push(value);
+    push(vm, value);
 
-    writeValueArray(&chunk->constants, value);
+    writeValueArray(vm, &chunk->constants, value);
 
-    pop();
+    pop(vm);
 
     return chunk->constants.count - 1;
 }

@@ -10,10 +10,10 @@
 
 
 
-ObjFunction* compile(const char* source);
+ObjFunction* compile(VM* vm, const char* source);
 
 
-void markCompilerRoots();
+void markCompilerRoots(VM* vm);
 
 
 #endif

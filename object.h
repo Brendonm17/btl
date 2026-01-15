@@ -179,31 +179,31 @@ typedef struct {
 
 
 
-ObjBoundMethod* newBoundMethod(Value receiver,
+ObjBoundMethod* newBoundMethod(VM* vm, Value receiver,
     ObjClosure* method);
 
 
-ObjClass* newClass(ObjString* name);
+ObjClass* newClass(VM* vm, ObjString* name);
 
 
-ObjClosure* newClosure(ObjFunction* function);
+ObjClosure* newClosure(VM* vm, ObjFunction* function);
 
 
-ObjFunction* newFunction();
+ObjFunction* newFunction(VM* vm);
 
 
-ObjInstance* newInstance(ObjClass* klass);
+ObjInstance* newInstance(VM* vm, ObjClass* klass);
 
 
-ObjNative* newNative(NativeFn function);
+ObjNative* newNative(VM* vm, NativeFn function);
 
 
-ObjString* takeString(char* chars, int length);
+ObjString* takeString(VM* vm, char* chars, int length);
 
 
-ObjString* copyString(const char* chars, int length);
+ObjString* copyString(VM* vm, const char* chars, int length);
 
-ObjUpvalue* newUpvalue(Value* slot);
+ObjUpvalue* newUpvalue(VM* vm, Value* slot);
 
 
 void printObject(Value value);
