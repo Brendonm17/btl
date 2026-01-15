@@ -127,9 +127,7 @@ void printObject(Value value) {
         if (AS_BOUND_METHOD(value)->method->function->name == NULL) printf("<script>");
         else printf("<fn %s>", AS_BOUND_METHOD(value)->method->function->name->chars);
         break;
-    case OBJ_CLASS:
-        printf("%s", AS_CLASS(value)->name->chars);
-        break;
+    case OBJ_CLASS: printf("%s", AS_CLASS(value)->name->chars); break;
     case OBJ_CLOSURE:
         if (AS_CLOSURE(value)->function->name == NULL) printf("<script>");
         else printf("<fn %s>", AS_CLOSURE(value)->function->name->chars);
@@ -138,9 +136,7 @@ void printObject(Value value) {
         if (AS_FUNCTION(value)->name == NULL) printf("<script>");
         else printf("<fn %s>", AS_FUNCTION(value)->name->chars);
         break;
-    case OBJ_INSTANCE:
-        printf("%s instance", AS_INSTANCE(value)->klass->name->chars);
-        break;
+    case OBJ_INSTANCE: printf("%s instance", AS_INSTANCE(value)->klass->name->chars); break;
     case OBJ_LIST: {
         ObjList* list = AS_LIST(value);
         printf("[");
@@ -151,14 +147,8 @@ void printObject(Value value) {
         printf("]");
         break;
     }
-    case OBJ_NATIVE:
-        printf("<native fn>");
-        break;
-    case OBJ_STRING:
-        printf("%s", AS_CSTRING(value));
-        break;
-    case OBJ_UPVALUE:
-        printf("upvalue");
-        break;
+    case OBJ_NATIVE: printf("<native fn>"); break;
+    case OBJ_STRING: printf("%s", AS_CSTRING(value)); break;
+    case OBJ_UPVALUE: printf("upvalue"); break;
     }
 }
