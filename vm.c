@@ -55,9 +55,12 @@ void initVM(VM* vm) {
     vm->objects = NULL;
     vm->bytesAllocated = 0;
     vm->nextGC = 1024 * 1024;
+
     vm->grayCount = 0;
     vm->grayCapacity = 0;
     vm->grayStack = NULL;
+
+    vm->compiler = NULL;
 
     initTable(&vm->globals);
     initTable(&vm->strings);
@@ -136,9 +139,11 @@ static bool callValue(VM* vm, Value callee, int argCount) {
             push(vm, result);
             return true;
         }
-        default: break;
+        default:
+            break;
         }
     }
+
     runtimeError(vm, "Can only call functions and classes.");
     return false;
 }
@@ -154,12 +159,14 @@ static bool invokeFromClass(VM* vm, ObjClass* klass, ObjString* name, int argCou
 
 static bool invoke(VM* vm, ObjString* name, int argCount) {
     Value receiver = peek(vm, argCount);
+
     if (!IS_INSTANCE(receiver)) {
         runtimeError(vm, "Only instances have methods.");
         return false;
     }
 
     ObjInstance* instance = AS_INSTANCE(receiver);
+
     Value value;
     if (tableGet(&instance->fields, name, &value)) {
         vm->stackTop[-argCount - 1] = value;
@@ -190,7 +197,9 @@ static ObjUpvalue* captureUpvalue(VM* vm, Value* local) {
         upvalue = upvalue->next;
     }
 
-    if (upvalue != NULL && upvalue->location == local) return upvalue;
+    if (upvalue != NULL && upvalue->location == local) {
+        return upvalue;
+    }
 
     ObjUpvalue* createdUpvalue = newUpvalue(vm, local);
     createdUpvalue->next = upvalue;
@@ -244,57 +253,90 @@ static InterpretResult run(VM* vm) {
     CallFrame* frame = &vm->frames[vm->frameCount - 1];
 
 #define READ_BYTE() (*frame->ip++)
-#define READ_SHORT() (frame->ip += 2, (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
-#define READ_CONSTANT() (frame->closure->function->chunk.constants.values[READ_BYTE()])
+
+#define READ_SHORT() \
+    (frame->ip += 2, (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
+
+#define READ_CONSTANT() \
+    (frame->closure->function->chunk.constants.values[READ_BYTE()])
+
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 
 #define BINARY_OP(valueType, op) \
     do { \
-        if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) { \
-            runtimeError(vm, "Operands must be numbers."); \
-            return INTERPRET_RUNTIME_ERROR; \
-        } \
-        double b = AS_NUMBER(pop(vm)); \
-        double a = AS_NUMBER(pop(vm)); \
-        push(vm, valueType(a op b)); \
+      if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) { \
+        runtimeError(vm, "Operands must be numbers."); \
+        return INTERPRET_RUNTIME_ERROR; \
+      } \
+      double b = AS_NUMBER(pop(vm)); \
+      double a = AS_NUMBER(pop(vm)); \
+      push(vm, valueType(a op b)); \
     } while (false)
 
     static void* dispatchTable [] = {
-        && L_OP_CONSTANT,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_POP,
-        && L_OP_GET_LOCAL,&& L_OP_SET_LOCAL,&& L_OP_GET_GLOBAL,&& L_OP_DEFINE_GLOBAL,
-        && L_OP_SET_GLOBAL,&& L_OP_GET_UPVALUE,&& L_OP_SET_UPVALUE,&& L_OP_GET_PROPERTY,
-        && L_OP_SET_PROPERTY,&& L_OP_GET_SUPER,&& L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,
-        && L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,&& L_OP_DIVIDE,&& L_OP_NOT,
-        && L_OP_NEGATE,&& L_OP_PRINT,&& L_OP_JUMP,&& L_OP_JUMP_IF_FALSE,&& L_OP_LOOP,
-        && L_OP_CALL,&& L_OP_INVOKE,&& L_OP_SUPER_INVOKE,&& L_OP_CLOSURE,
-        && L_OP_CLOSE_UPVALUE,&& L_OP_RETURN,&& L_OP_CLASS,&& L_OP_INHERIT,&& L_OP_METHOD
+      && L_OP_CONSTANT,
+      && L_OP_NIL,
+      && L_OP_TRUE,
+      && L_OP_FALSE,
+      && L_OP_POP,
+      && L_OP_GET_LOCAL,
+      && L_OP_SET_LOCAL,
+      && L_OP_GET_GLOBAL,
+      && L_OP_DEFINE_GLOBAL,
+      && L_OP_SET_GLOBAL,
+      && L_OP_GET_UPVALUE,
+      && L_OP_SET_UPVALUE,
+      && L_OP_GET_PROPERTY,
+      && L_OP_SET_PROPERTY,
+      && L_OP_GET_SUPER,
+      && L_OP_EQUAL,
+      && L_OP_GREATER,
+      && L_OP_LESS,
+      && L_OP_ADD,
+      && L_OP_SUBTRACT,
+      && L_OP_MULTIPLY,
+      && L_OP_DIVIDE,
+      && L_OP_NOT,
+      && L_OP_NEGATE,
+      && L_OP_PRINT,
+      && L_OP_JUMP,
+      && L_OP_JUMP_IF_FALSE,
+      && L_OP_LOOP,
+      && L_OP_CALL,
+      && L_OP_INVOKE,
+      && L_OP_SUPER_INVOKE,
+      && L_OP_CLOSURE,
+      && L_OP_CLOSE_UPVALUE,
+      && L_OP_RETURN,
+      && L_OP_CLASS,
+      && L_OP_INHERIT,
+      && L_OP_METHOD
     };
 
-#define DISPATCH() goto *dispatchTable[READ_BYTE()]
+#define DISPATCH() \
+    goto *dispatchTable[READ_BYTE()]
 
     DISPATCH();
 
-L_OP_CONSTANT:
-    push(vm, READ_CONSTANT());
+L_OP_CONSTANT: {
+    Value constant = READ_CONSTANT();
+    push(vm, constant);
     DISPATCH();
-
-L_OP_NIL:   push(vm, NIL_VAL); DISPATCH();
-L_OP_TRUE:  push(vm, TRUE_VAL); DISPATCH();
-L_OP_FALSE: push(vm, FALSE_VAL); DISPATCH();
-L_OP_POP:   pop(vm); DISPATCH();
-
+    }
+L_OP_NIL: push(vm, NIL_VAL); DISPATCH();
+L_OP_TRUE: push(vm, BOOL_VAL(true)); DISPATCH();
+L_OP_FALSE: push(vm, BOOL_VAL(false)); DISPATCH();
+L_OP_POP: pop(vm); DISPATCH();
 L_OP_GET_LOCAL: {
-    uint8_t slot = READ_BYTE();
-    push(vm, frame->slots[slot]);
-    DISPATCH();
+uint8_t slot = READ_BYTE();
+push(vm, frame->slots[slot]);
+DISPATCH();
 }
-
 L_OP_SET_LOCAL: {
 uint8_t slot = READ_BYTE();
 frame->slots[slot] = peek(vm, 0);
 DISPATCH();
 }
-
 L_OP_GET_GLOBAL: {
 ObjString* name = READ_STRING();
 Value value;
@@ -305,14 +347,12 @@ if (!tableGet(&vm->globals, name, &value)) {
 push(vm, value);
 DISPATCH();
 }
-
 L_OP_DEFINE_GLOBAL: {
 ObjString* name = READ_STRING();
 tableSet(vm, &vm->globals, name, peek(vm, 0));
 pop(vm);
 DISPATCH();
 }
-
 L_OP_SET_GLOBAL: {
 ObjString* name = READ_STRING();
 if (tableSet(vm, &vm->globals, name, peek(vm, 0))) {
@@ -322,19 +362,16 @@ if (tableSet(vm, &vm->globals, name, peek(vm, 0))) {
 }
 DISPATCH();
 }
-
 L_OP_GET_UPVALUE: {
 uint8_t slot = READ_BYTE();
 push(vm, *frame->closure->upvalues[slot]->location);
 DISPATCH();
 }
-
 L_OP_SET_UPVALUE: {
 uint8_t slot = READ_BYTE();
 *frame->closure->upvalues[slot]->location = peek(vm, 0);
 DISPATCH();
 }
-
 L_OP_GET_PROPERTY: {
 if (!IS_INSTANCE(peek(vm, 0))) {
     runtimeError(vm, "Only instances have properties.");
@@ -342,16 +379,19 @@ if (!IS_INSTANCE(peek(vm, 0))) {
 }
 ObjInstance* instance = AS_INSTANCE(peek(vm, 0));
 ObjString* name = READ_STRING();
+
 Value value;
 if (tableGet(&instance->fields, name, &value)) {
     pop(vm);
     push(vm, value);
     DISPATCH();
 }
-if (!bindMethod(vm, instance->klass, name)) return INTERPRET_RUNTIME_ERROR;
+
+if (!bindMethod(vm, instance->klass, name)) {
+    return INTERPRET_RUNTIME_ERROR;
+}
 DISPATCH();
 }
-
 L_OP_SET_PROPERTY: {
 if (!IS_INSTANCE(peek(vm, 1))) {
     runtimeError(vm, "Only instances have fields.");
@@ -364,24 +404,23 @@ pop(vm);
 push(vm, value);
 DISPATCH();
 }
-
 L_OP_GET_SUPER: {
 ObjString* name = READ_STRING();
 ObjClass* superclass = AS_CLASS(pop(vm));
-if (!bindMethod(vm, superclass, name)) return INTERPRET_RUNTIME_ERROR;
+
+if (!bindMethod(vm, superclass, name)) {
+    return INTERPRET_RUNTIME_ERROR;
+}
 DISPATCH();
 }
-
 L_OP_EQUAL: {
 Value b = pop(vm);
 Value a = pop(vm);
 push(vm, BOOL_VAL(valuesEqual(a, b)));
 DISPATCH();
 }
-
-L_OP_GREATER:  BINARY_OP(BOOL_VAL, > ); DISPATCH();
-L_OP_LESS:     BINARY_OP(BOOL_VAL, < ); DISPATCH();
-
+L_OP_GREATER:     BINARY_OP(BOOL_VAL, > ); DISPATCH();
+L_OP_LESS:        BINARY_OP(BOOL_VAL, < ); DISPATCH();
 L_OP_ADD: {
 if (IS_STRING(peek(vm, 0)) && IS_STRING(peek(vm, 1))) {
     concatenate(vm);
@@ -395,12 +434,10 @@ if (IS_STRING(peek(vm, 0)) && IS_STRING(peek(vm, 1))) {
 }
 DISPATCH();
 }
-
-L_OP_SUBTRACT: BINARY_OP(NUMBER_VAL, -); DISPATCH();
-L_OP_MULTIPLY: BINARY_OP(NUMBER_VAL, *); DISPATCH();
-L_OP_DIVIDE:   BINARY_OP(NUMBER_VAL, / ); DISPATCH();
-L_OP_NOT:      push(vm, BOOL_VAL(isFalsey(pop(vm)))); DISPATCH();
-
+L_OP_SUBTRACT:    BINARY_OP(NUMBER_VAL, -); DISPATCH();
+L_OP_MULTIPLY:    BINARY_OP(NUMBER_VAL, *); DISPATCH();
+L_OP_DIVIDE:      BINARY_OP(NUMBER_VAL, / ); DISPATCH();
+L_OP_NOT:         push(vm, BOOL_VAL(isFalsey(pop(vm)))); DISPATCH();
 L_OP_NEGATE: {
 if (!IS_NUMBER(peek(vm, 0))) {
     runtimeError(vm, "Operand must be a number.");
@@ -409,55 +446,53 @@ if (!IS_NUMBER(peek(vm, 0))) {
 push(vm, NUMBER_VAL(-AS_NUMBER(pop(vm))));
 DISPATCH();
 }
-
 L_OP_PRINT: {
 printValue(pop(vm));
 printf("\n");
 DISPATCH();
 }
-
 L_OP_JUMP: {
 uint16_t offset = READ_SHORT();
 frame->ip += offset;
 DISPATCH();
 }
-
 L_OP_JUMP_IF_FALSE: {
 uint16_t offset = READ_SHORT();
 if (isFalsey(peek(vm, 0))) frame->ip += offset;
 DISPATCH();
 }
-
 L_OP_LOOP: {
 uint16_t offset = READ_SHORT();
 frame->ip -= offset;
 DISPATCH();
 }
-
 L_OP_CALL: {
 int argCount = READ_BYTE();
-if (!callValue(vm, peek(vm, argCount), argCount)) return INTERPRET_RUNTIME_ERROR;
+if (!callValue(vm, peek(vm, argCount), argCount)) {
+    return INTERPRET_RUNTIME_ERROR;
+}
 frame = &vm->frames[vm->frameCount - 1];
 DISPATCH();
 }
-
 L_OP_INVOKE: {
 ObjString* method = READ_STRING();
 int argCount = READ_BYTE();
-if (!invoke(vm, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+if (!invoke(vm, method, argCount)) {
+    return INTERPRET_RUNTIME_ERROR;
+}
 frame = &vm->frames[vm->frameCount - 1];
 DISPATCH();
 }
-
 L_OP_SUPER_INVOKE: {
 ObjString* method = READ_STRING();
 int argCount = READ_BYTE();
 ObjClass* superclass = AS_CLASS(pop(vm));
-if (!invokeFromClass(vm, superclass, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+if (!invokeFromClass(vm, superclass, method, argCount)) {
+    return INTERPRET_RUNTIME_ERROR;
+}
 frame = &vm->frames[vm->frameCount - 1];
 DISPATCH();
 }
-
 L_OP_CLOSURE: {
 ObjFunction* function = AS_FUNCTION(READ_CONSTANT());
 ObjClosure* closure = newClosure(vm, function);
@@ -473,13 +508,11 @@ for (int i = 0; i < closure->upvalueCount; i++) {
 }
 DISPATCH();
 }
-
 L_OP_CLOSE_UPVALUE: {
 closeUpvalues(vm, vm->stackTop - 1);
 pop(vm);
 DISPATCH();
 }
-
 L_OP_RETURN: {
 Value result = pop(vm);
 closeUpvalues(vm, frame->slots);
@@ -488,17 +521,17 @@ if (vm->frameCount == 0) {
     pop(vm);
     return INTERPRET_OK;
 }
+
 vm->stackTop = frame->slots;
 push(vm, result);
 frame = &vm->frames[vm->frameCount - 1];
 DISPATCH();
 }
-
 L_OP_CLASS: {
-createClass(vm, READ_STRING()); // Helper in object.c
+ObjClass* klass = newClass(vm, READ_STRING());
+push(vm, OBJ_VAL(klass));
 DISPATCH();
 }
-
 L_OP_INHERIT: {
 Value superclass = peek(vm, 1);
 if (!IS_CLASS(superclass)) {
@@ -510,7 +543,6 @@ tableAddAll(vm, &AS_CLASS(superclass)->methods, &subclass->methods);
 pop(vm);
 DISPATCH();
 }
-
 L_OP_METHOD: {
 defineMethod(vm, READ_STRING());
 DISPATCH();

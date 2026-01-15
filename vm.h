@@ -1,13 +1,11 @@
 #ifndef btl_vm_h
 #define btl_vm_h
 
-#include "common.h"
 #include "chunk.h"
 #include "table.h"
 #include "value.h"
 
-/* --- FORWARD DECLARATIONS --- */
-/* This tells the compiler these structs exist without needing their full definitions yet. */
+// Forward declare ALL object types used by the VM
 struct Obj;
 struct ObjClosure;
 struct ObjString;
@@ -17,7 +15,7 @@ struct ObjUpvalue;
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
 
 typedef struct {
-    struct ObjClosure* closure; // This no longer causes the "incomplete type" error
+    struct ObjClosure* closure;
     uint8_t* ip;
     Value* slots;
 } CallFrame;
@@ -30,17 +28,17 @@ typedef struct VM {
     Value* stackTop;
     Table globals;
     Table strings;
-
     struct ObjString* initString;
     struct ObjUpvalue* openUpvalues;
 
     size_t bytesAllocated;
     size_t nextGC;
-    struct Obj* objects; // Forward declared
-
+    struct Obj* objects;
     int grayCount;
     int grayCapacity;
     struct Obj** grayStack;
+
+    void* compiler; // Threaded root for the compiler
 } VM;
 
 typedef enum {

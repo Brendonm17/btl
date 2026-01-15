@@ -1,4 +1,5 @@
 #include <stdlib.h>
+
 #include "chunk.h"
 #include "memory.h"
 #include "vm.h"
@@ -20,11 +21,12 @@ void freeChunk(VM* vm, Chunk* chunk) {
 
 void writeChunk(VM* vm, Chunk* chunk, uint8_t byte, int line) {
     if (chunk->capacity < chunk->count + 1) {
-        int oldCap = chunk->capacity;
-        chunk->capacity = GROW_CAPACITY(oldCap);
-        chunk->code = GROW_ARRAY(vm, uint8_t, chunk->code, oldCap, chunk->capacity);
-        chunk->lines = GROW_ARRAY(vm, int, chunk->lines, oldCap, chunk->capacity);
+        int oldCapacity = chunk->capacity;
+        chunk->capacity = GROW_CAPACITY(oldCapacity);
+        chunk->code = GROW_ARRAY(vm, uint8_t, chunk->code, oldCapacity, chunk->capacity);
+        chunk->lines = GROW_ARRAY(vm, int, chunk->lines, oldCapacity, chunk->capacity);
     }
+
     chunk->code[chunk->count] = byte;
     chunk->lines[chunk->count] = line;
     chunk->count++;
