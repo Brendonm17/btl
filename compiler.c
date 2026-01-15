@@ -21,25 +21,17 @@ typedef struct {
 
 typedef enum {
     PREC_NONE,
-    PREC_ASSIGNMENT,  // =
-    PREC_OR,          // or
-    PREC_AND,         // and
-    PREC_EQUALITY,    // == !=
-    PREC_COMPARISON,  // < > <= >=
-    PREC_TERM,        // + -
-    PREC_FACTOR,      // * /
-    PREC_UNARY,       // ! -
-    PREC_CALL,        // . () []
+    PREC_ASSIGNMENT,
+    PREC_OR,
+    PREC_AND,
+    PREC_EQUALITY,
+    PREC_COMPARISON,
+    PREC_TERM,
+    PREC_FACTOR,
+    PREC_UNARY,
+    PREC_CALL,
     PREC_PRIMARY
 } Precedence;
-
-typedef void (*ParseFn)(Parser* p, Scanner* s, struct Compiler* c, struct ClassCompiler* cc, bool canAssign);
-
-typedef struct {
-    ParseFn prefix;
-    ParseFn infix;
-    Precedence precedence;
-} ParseRule;
 
 typedef struct {
     Token name;
@@ -59,6 +51,17 @@ typedef enum {
     TYPE_SCRIPT
 } FunctionType;
 
+// --- LOOP TRACKING ---
+// Used to handle 'break' and 'continue'
+typedef struct Loop {
+    struct Loop* enclosing;
+    int start;          // Offset where the loop starts (for 'continue')
+    int bodyJump;       // Offset for jumping over the increment in 'for'
+    int scopeDepth;     // Depth to pop locals to before breaking
+    int breakJumps[255]; // Offsets of jumps emitted by 'break' statements
+    int breakCount;
+} Loop;
+
 typedef struct Compiler {
     struct Compiler* enclosing;
     ObjFunction* function;
@@ -68,6 +71,9 @@ typedef struct Compiler {
     int localCount;
     Upvalue upvalues[UINT8_COUNT];
     int scopeDepth;
+
+    Loop* currentLoop; // Track current nesting loop
+
     VM* vm;
 } Compiler;
 
@@ -75,6 +81,14 @@ typedef struct ClassCompiler {
     struct ClassCompiler* enclosing;
     bool hasSuperclass;
 } ClassCompiler;
+
+typedef void (*ParseFn)(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign);
+
+typedef struct {
+    ParseFn prefix;
+    ParseFn infix;
+    Precedence precedence;
+} ParseRule;
 
 static Chunk* currentChunk(Compiler* c) {
     return &c->function->chunk;
@@ -202,6 +216,7 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
     c->type = type;
     c->localCount = 0;
     c->scopeDepth = 0;
+    c->currentLoop = NULL; // New Loop pointer
     c->vm = p->vm;
     c->vm->compiler = (void*) c;
     c->function = newFunction(p->vm);
@@ -618,7 +633,9 @@ ParseRule rules [] = {
   [TOKEN_STRING] = {string,      NULL,      PREC_NONE},
   [TOKEN_NUMBER] = {number,      NULL,      PREC_NONE},
   [TOKEN_AND] = {NULL,        and_,      PREC_AND},
+  [TOKEN_BREAK] = {NULL,        NULL,      PREC_NONE},
   [TOKEN_CLASS] = {NULL,        NULL,      PREC_NONE},
+  [TOKEN_CONTINUE] = {NULL,        NULL,      PREC_NONE},
   [TOKEN_ELSE] = {NULL,        NULL,      PREC_NONE},
   [TOKEN_FALSE] = {literal,     NULL,      PREC_NONE},
   [TOKEN_FOR] = {NULL,        NULL,      PREC_NONE},
@@ -786,6 +803,43 @@ static void expressionStatement(Parser* p, Scanner* s, Compiler* c, ClassCompile
     emitByte(p, c, OP_POP);
 }
 
+// --- STATEMENT COMPILATION ---
+
+static void breakStatement(Parser* p, Compiler* c) {
+    if (c->currentLoop == NULL) {
+        errorAt(p, &p->previous, "Can't use 'break' outside of a loop.");
+        return;
+    }
+
+    consume(p, NULL, TOKEN_SEMICOLON, "Expect ';' after 'break'.");
+
+    // Pop locals in the loop's scope
+    for (int i = c->localCount - 1; i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth; i--) {
+        emitByte(p, c, OP_POP);
+    }
+
+    // Emit jump to the end of the loop (to be patched later)
+    int jump = emitJump(p, c, OP_JUMP);
+    c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
+}
+
+static void continueStatement(Parser* p, Compiler* c) {
+    if (c->currentLoop == NULL) {
+        errorAt(p, &p->previous, "Can't use 'continue' outside of a loop.");
+        return;
+    }
+
+    consume(p, NULL, TOKEN_SEMICOLON, "Expect ';' after 'continue'.");
+
+    // Pop locals in the loop's scope
+    for (int i = c->localCount - 1; i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth; i--) {
+        emitByte(p, c, OP_POP);
+    }
+
+    // Jump back to the loop start (increment for 'for', condition for 'while')
+    emitLoop(p, c, c->currentLoop->start);
+}
+
 static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     beginScope(c);
     consume(p, s, TOKEN_LEFT_PAREN, "Expect '(' after 'for'.");
@@ -807,9 +861,21 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
         emitByte(p, c, OP_POP);
     }
 
+    // Handle Loop Nesting
+    Loop loop;
+    loop.start = loopStart;
+    loop.scopeDepth = c->scopeDepth;
+    loop.enclosing = c->currentLoop;
+    loop.breakCount = 0;
+    c->currentLoop = &loop;
+
     if (!match(p, s, TOKEN_RIGHT_PAREN)) {
         int bodyJump = emitJump(p, c, OP_JUMP);
         int incrementStart = currentChunk(c)->count;
+
+        // Continue jumps here for 'for' loops
+        c->currentLoop->start = incrementStart;
+
         expression(p, s, c, cc);
         emitByte(p, c, OP_POP);
         consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')' after for clauses.");
@@ -827,6 +893,12 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
         emitByte(p, c, OP_POP);
     }
 
+    // Patch all 'break' statements
+    for (int i = 0; i < c->currentLoop->breakCount; i++) {
+        patchJump(p, c, c->currentLoop->breakJumps[i]);
+    }
+
+    c->currentLoop = c->currentLoop->enclosing;
     endScope(p, c);
 }
 
@@ -874,6 +946,15 @@ static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
 
 static void whileStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     int loopStart = currentChunk(c)->count;
+
+    // Handle Loop Nesting
+    Loop loop;
+    loop.start = loopStart;
+    loop.scopeDepth = c->scopeDepth;
+    loop.enclosing = c->currentLoop;
+    loop.breakCount = 0;
+    c->currentLoop = &loop;
+
     consume(p, s, TOKEN_LEFT_PAREN, "Expect '(' after 'while'.");
     expression(p, s, c, cc);
     consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
@@ -885,6 +966,13 @@ static void whileStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc
 
     patchJump(p, c, exitJump);
     emitByte(p, c, OP_POP);
+
+    // Patch all 'break' statements
+    for (int i = 0; i < c->currentLoop->breakCount; i++) {
+        patchJump(p, c, c->currentLoop->breakJumps[i]);
+    }
+
+    c->currentLoop = c->currentLoop->enclosing;
 }
 
 static void synchronize(Parser* p, Scanner* s) {
@@ -928,6 +1016,10 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
 static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (match(p, s, TOKEN_PRINT)) {
         printStatement(p, s, c, cc);
+    } else if (match(p, s, TOKEN_BREAK)) {
+        breakStatement(p, c);
+    } else if (match(p, s, TOKEN_CONTINUE)) {
+        continueStatement(p, c);
     } else if (match(p, s, TOKEN_FOR)) {
         forStatement(p, s, c, cc);
     } else if (match(p, s, TOKEN_IF)) {
