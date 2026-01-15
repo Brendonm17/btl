@@ -17,7 +17,7 @@
 
 
 
-static void repl() {
+static void repl(VM* vm) {
     char line[1024];
     for (;;) {
         printf("> ");
@@ -27,7 +27,7 @@ static void repl() {
             break;
         }
 
-        interpret(line);
+        interpret(vm, line);
     }
 }
 
@@ -68,9 +68,9 @@ static char* readFile(const char* path) {
 }
 
 
-static void runFile(const char* path) {
+static void runFile(VM* vm, const char* path) {
     char* source = readFile(path);
-    InterpretResult result = interpret(source);
+    InterpretResult result = interpret(vm, source);
     free(source); // [owner]
 
     if (result == INTERPRET_COMPILE_ERROR) exit(65);
@@ -80,18 +80,20 @@ static void runFile(const char* path) {
 
 int main(int argc, const char* argv []) {
 
-    initVM();
+    VM* vm;
+
+    initVM(vm);
 
     if (argc == 1) {
-        repl();
+        repl(vm);
     } else if (argc == 2) {
-        runFile(argv[1]);
+        runFile(vm, argv[1]);
     } else {
         fprintf(stderr, "Usage: btl [path]\n");
         exit(64);
     }
 
-    freeVM();
+    freeVM(vm);
 
     return 0;
 }

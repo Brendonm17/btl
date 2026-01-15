@@ -2,23 +2,12 @@
 #ifndef btl_vm_h
 #define btl_vm_h
 
-
 #include "object.h"
-
-
 #include "table.h"
-
-
 #include "value.h"
-
-
-
-
 
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
-
-
 
 typedef struct {
 
@@ -28,64 +17,35 @@ typedef struct {
     Value* slots;
 } CallFrame;
 
-
-typedef struct {
-
-    CallFrame frames[FRAMES_MAX];
-    int frameCount;
-
-
-
-    Value stack[STACK_MAX];
-    Value* stackTop;
-
-
-    Table globals;
-
-
-    Table strings;
-
-
-    ObjString* initString;
-
-
-    ObjUpvalue* openUpvalues;
-
-
-
-    size_t bytesAllocated;
-    size_t nextGC;
-
-
-    Obj* objects;
-
-
-    int grayCount;
-    int grayCapacity;
-    Obj** grayStack;
-
-} VM;
-
-
 typedef enum {
     INTERPRET_OK,
     INTERPRET_COMPILE_ERROR,
     INTERPRET_RUNTIME_ERROR
 } InterpretResult;
 
+typedef struct {
+    CallFrame frames[FRAMES_MAX];
+    int frameCount;
+    Value stack[STACK_MAX];
+    Value* stackTop;
+    Table globals;
+    Table strings;
+    ObjString* initString;
+    ObjUpvalue* openUpvalues;
+    size_t bytesAllocated;
+    size_t nextGC;
+    Obj* objects;
+    int grayCount;
+    int grayCapacity;
+    Obj** grayStack;
+} VM;
 
+void initVM(VM* vm);
+void freeVM(VM* vm);
 
-extern VM vm;
+InterpretResult interpret(VM* vm, const char* source);
 
-
-void initVM();
-void freeVM();
-
-InterpretResult interpret(const char* source);
-
-
-void push(Value value);
-Value pop();
-
+void push(VM* vm, Value value);
+Value pop(VM* vm);
 
 #endif
