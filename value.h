@@ -1,11 +1,10 @@
 #ifndef btl_value_h
 #define btl_value_h
 
+#include <string.h>
 #include "common.h"
 
-// Forward declarations to avoid circular dependencies
 struct Obj;
-struct ObjString;
 struct VM;
 
 #ifdef NAN_BOXING
@@ -16,11 +15,13 @@ struct VM;
 #define TAG_NIL   1
 #define TAG_FALSE 2
 #define TAG_TRUE  3
+#define TAG_EMPTY 4 // Sentinel for undefined globals
 
 typedef uint64_t Value;
 
 #define IS_BOOL(value)      (((value) | 1) == TRUE_VAL)
 #define IS_NIL(value)       ((value) == NIL_VAL)
+#define IS_EMPTY(value)     ((value) == EMPTY_VAL)
 #define IS_NUMBER(value)    (((value) & QNAN) != QNAN)
 #define IS_OBJ(value)       (((value) & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT))
 
@@ -32,6 +33,7 @@ typedef uint64_t Value;
 #define FALSE_VAL           ((Value)(uint64_t)(QNAN | TAG_FALSE))
 #define TRUE_VAL            ((Value)(uint64_t)(QNAN | TAG_TRUE))
 #define NIL_VAL             ((Value)(uint64_t)(QNAN | TAG_NIL))
+#define EMPTY_VAL           ((Value)(uint64_t)(QNAN | TAG_EMPTY))
 #define NUMBER_VAL(num)     numToValue(num)
 #define OBJ_VAL(obj)        (Value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(obj))
 

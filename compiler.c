@@ -21,25 +21,28 @@ typedef struct {
 
 typedef enum {
     PREC_NONE,
-    PREC_ASSIGNMENT,
-    PREC_OR,
-    PREC_AND,
-    PREC_EQUALITY,
-    PREC_COMPARISON,
-    PREC_TERM,
-    PREC_FACTOR,
-    PREC_UNARY,
-    PREC_CALL,
+    PREC_ASSIGNMENT,  // =
+    PREC_OR,          // or
+    PREC_AND,         // and
+    PREC_EQUALITY,    // == !=
+    PREC_COMPARISON,  // < > <= >=
+    PREC_TERM,        // + -
+    PREC_FACTOR,      // * /
+    PREC_UNARY,       // ! -
+    PREC_CALL,        // . ()
     PREC_PRIMARY
 } Precedence;
 
-typedef void (*ParseFn)(Parser* p, Scanner* s, Compiler* c, struct ClassCompiler* cc, bool canAssign);
+typedef struct {
+    Token name;
+    int depth;
+    bool isCaptured;
+} Local;
 
 typedef struct {
-    ParseFn prefix;
-    ParseFn infix;
-    Precedence precedence;
-} ParseRule;
+    uint8_t index;
+    bool isLocal;
+} Upvalue;
 
 typedef enum {
     TYPE_FUNCTION,
@@ -48,10 +51,30 @@ typedef enum {
     TYPE_SCRIPT
 } FunctionType;
 
+typedef struct Compiler {
+    struct Compiler* enclosing;
+    ObjFunction* function;
+    FunctionType type;
+
+    Local locals[UINT8_COUNT];
+    int localCount;
+    Upvalue upvalues[UINT8_COUNT];
+    int scopeDepth;
+    VM* vm;
+} Compiler;
+
 typedef struct ClassCompiler {
     struct ClassCompiler* enclosing;
     bool hasSuperclass;
 } ClassCompiler;
+
+typedef void (*ParseFn)(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign);
+
+typedef struct {
+    ParseFn prefix;
+    ParseFn infix;
+    Precedence precedence;
+} ParseRule;
 
 static Chunk* currentChunk(Compiler* c) {
     return &c->function->chunk;
@@ -138,6 +161,16 @@ static int emitJump(Parser* p, Compiler* c, uint8_t instruction) {
     return currentChunk(c)->count - 2;
 }
 
+static void emitReturn(Parser* p, Compiler* c) {
+    if (c->type == TYPE_INITIALIZER) {
+        emitBytes(p, c, OP_GET_LOCAL, 0);
+    } else {
+        emitByte(p, c, OP_NIL);
+    }
+
+    emitByte(p, c, OP_RETURN);
+}
+
 static uint8_t makeConstant(Parser* p, Compiler* c, Value value) {
     int constant = addConstant(c->vm, currentChunk(c), value);
     if (constant > UINT8_MAX) {
@@ -166,7 +199,7 @@ static void patchJump(Parser* p, Compiler* c, int offset) {
 static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionType type) {
     c->enclosing = enclosing;
     c->function = NULL;
-    c->type = (int) type;
+    c->type = type;
     c->localCount = 0;
     c->scopeDepth = 0;
     c->vm = p->vm;
@@ -177,7 +210,7 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
         c->function->name = copyString(p->vm, p->previous.start, p->previous.length);
     }
 
-    struct Local* local = &c->locals[c->localCount++];
+    Local* local = &c->locals[c->localCount++];
     local->depth = 0;
     local->isCaptured = false;
     if (type != TYPE_SCRIPT) {
@@ -190,13 +223,7 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
 }
 
 static ObjFunction* endCompiler(Parser* p, Compiler* c) {
-    if (c->type == TYPE_INITIALIZER) {
-        emitBytes(p, c, OP_GET_LOCAL, 0);
-    } else {
-        emitByte(p, c, OP_NIL);
-    }
-    emitByte(p, c, OP_RETURN);
-
+    emitReturn(p, c);
     ObjFunction* function = c->function;
 
 #ifdef DEBUG_PRINT_CODE
@@ -234,7 +261,23 @@ static ParseRule* getRule(TokenType type);
 static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Precedence precedence);
 
 static uint8_t identifierConstant(Parser* p, Compiler* c, Token* name) {
-    return makeConstant(p, c, OBJ_VAL(copyString(c->vm, name->start, name->length)));
+    ObjString* nameString = copyString(c->vm, name->start, name->length);
+    Value indexValue;
+
+    // Check for Fast Global index
+    if (tableGet(&c->vm->globalNames, nameString, &indexValue)) {
+        return (uint8_t) AS_NUMBER(indexValue);
+    }
+
+    int index = c->vm->globalValues.count;
+    if (index > 255) {
+        errorAt(p, name, "Too many global variables in VM.");
+        return 0;
+    }
+
+    writeValueArray(c->vm, &c->vm->globalValues, EMPTY_VAL);
+    tableSet(c->vm, &c->vm->globalNames, nameString, NUMBER_VAL((double) index));
+    return (uint8_t) index;
 }
 
 static bool identifiersEqual(Token* a, Token* b) {
@@ -244,7 +287,7 @@ static bool identifiersEqual(Token* a, Token* b) {
 
 static int resolveLocal(Parser* p, Compiler* c, Token* name) {
     for (int i = c->localCount - 1; i >= 0; i--) {
-        struct Local* local = &c->locals[i];
+        Local* local = &c->locals[i];
         if (identifiersEqual(name, &local->name)) {
             if (local->depth == -1) {
                 errorAt(p, name, "Can't read local variable in its own initializer.");
@@ -260,7 +303,7 @@ static int addUpvalue(Parser* p, Compiler* c, uint8_t index, bool isLocal) {
     int upvalueCount = c->function->upvalueCount;
 
     for (int i = 0; i < upvalueCount; i++) {
-        struct Upvalue* upvalue = &c->upvalues[i];
+        Upvalue* upvalue = &c->upvalues[i];
         if (upvalue->index == index && upvalue->isLocal == isLocal) {
             return i;
         }
@@ -299,7 +342,7 @@ static void addLocal(Parser* p, Compiler* c, Token name) {
         return;
     }
 
-    struct Local* local = &c->locals[c->localCount++];
+    Local* local = &c->locals[c->localCount++];
     local->name = name;
     local->depth = -1;
     local->isCaptured = false;
@@ -310,7 +353,7 @@ static void declareVariable(Parser* p, Compiler* c) {
 
     Token* name = &p->previous;
     for (int i = c->localCount - 1; i >= 0; i--) {
-        struct Local* local = &c->locals[i];
+        Local* local = &c->locals[i];
         if (local->depth != -1 && local->depth < c->scopeDepth) {
             break;
         }
@@ -481,9 +524,9 @@ static Token syntheticToken(const char* text) {
 
 static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     if (cc == NULL) {
-        error(p, "Can't use 'super' outside of a class.");
+        errorAt(p, &p->previous, "Can't use 'super' outside of a class.");
     } else if (!cc->hasSuperclass) {
-        error(p, "Can't use 'super' in a class with no superclass.");
+        errorAt(p, &p->previous, "Can't use 'super' in a class with no superclass.");
     }
 
     consume(p, s, TOKEN_DOT, "Expect '.' after 'super'.");
@@ -504,7 +547,7 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
 
 static void this_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     if (cc == NULL) {
-        error(p, "Can't use 'this' outside of a class.");
+        errorAt(p, &p->previous, "Can't use 'this' outside of a class.");
         return;
     }
 
