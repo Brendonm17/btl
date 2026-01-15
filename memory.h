@@ -1,47 +1,25 @@
-
 #ifndef btl_memory_h
 #define btl_memory_h
 
 #include "common.h"
-
-#include "object.h"
-
-
+#include "value.h"
 
 #define ALLOCATE(vm, type, count) \
     (type*)reallocate(vm, NULL, 0, sizeof(type) * (count))
 
-
 #define FREE(vm, type, pointer) reallocate(vm, pointer, sizeof(type), 0)
 
+#define GROW_CAPACITY(cap) ((cap) < 8 ? 8 : (cap) * 2)
 
+#define GROW_ARRAY(vm, type, ptr, old, newCount) \
+    (type*)reallocate(vm, ptr, sizeof(type) * (old), sizeof(type) * (newCount))
 
-#define GROW_CAPACITY(capacity) \
-    ((capacity) < 8 ? 8 : (capacity) * 2)
+#define FREE_ARRAY(vm, type, ptr, old) reallocate(vm, ptr, sizeof(type) * (old), 0)
 
-
-#define GROW_ARRAY(vm, type, pointer, oldCount, newCount) \
-    (type*)reallocate(vm, pointer, sizeof(type) * (oldCount), \
-        sizeof(type) * (newCount))
-
-
-#define FREE_ARRAY(vm, type, pointer, oldCount) \
-    reallocate(vm, pointer, sizeof(type) * (oldCount), 0)
-
-
-void* reallocate(VM* vm, void* pointer, size_t oldSize, size_t newSize);
-
-
-void markObject(VM* vm, Obj* object);
-
-
-void markValue(VM* vm, Value value);
-
-
-void collectGarbage(VM* vm);
-
-
-void freeObjects(VM* vm);
-
+void* reallocate(struct VM* vm, void* pointer, size_t oldSize, size_t newSize);
+void markObject(struct VM* vm, Obj* object);
+void markValue(struct VM* vm, Value value);
+void collectGarbage(struct VM* vm);
+void freeObjects(struct VM* vm);
 
 #endif

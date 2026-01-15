@@ -1,17 +1,13 @@
-
 #ifndef btl_table_h
 #define btl_table_h
 
 #include "common.h"
 #include "value.h"
-#include "vm.h"
-
 
 typedef struct {
     ObjString* key;
     Value value;
 } Entry;
-
 
 typedef struct {
     int count;
@@ -19,34 +15,14 @@ typedef struct {
     Entry* entries;
 } Table;
 
-
 void initTable(Table* table);
-
-void freeTable(VM* vm, Table* table);
-
-
+void freeTable(struct VM* vm, Table* table);
 bool tableGet(Table* table, ObjString* key, Value* value);
-
-
-bool tableSet(VM* vm, Table* table, ObjString* key, Value value);
-
-
+bool tableSet(struct VM* vm, Table* table, ObjString* key, Value value);
 bool tableDelete(Table* table, ObjString* key);
-
-
-void tableAddAll(VM* vm, Table* from, Table* to);
-
-
-ObjString* tableFindString(Table* table, const char* chars,
-    int length, uint32_t hash);
-
-
-
+void tableAddAll(struct VM* vm, Table* from, Table* to);
+ObjString* tableFindString(Table* table, const char* chars, int len, uint32_t hash);
 void tableRemoveWhite(Table* table);
-
-
-void markTable(VM* vm, Table* table);
-
-
+void markTable(struct VM* vm, Table* table);
 
 #endif
