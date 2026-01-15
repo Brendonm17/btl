@@ -21,6 +21,10 @@ typedef enum {
     OP_SET_PROPERTY,
     OP_GET_SUPER,
     OP_EQUAL,
+    // Added List Opcodes
+    OP_BUILD_LIST,
+    OP_INDEX_GET,
+    OP_INDEX_SET,
     OP_GREATER,
     OP_LESS,
     OP_ADD,

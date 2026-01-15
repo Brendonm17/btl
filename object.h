@@ -14,6 +14,7 @@
 #define IS_CLOSURE(value)      isObjType(value, OBJ_CLOSURE)
 #define IS_FUNCTION(value)     isObjType(value, OBJ_FUNCTION)
 #define IS_INSTANCE(value)     isObjType(value, OBJ_INSTANCE)
+#define IS_LIST(value)         isObjType(value, OBJ_LIST)
 #define IS_NATIVE(value)       isObjType(value, OBJ_NATIVE)
 #define IS_STRING(value)       isObjType(value, OBJ_STRING)
 
@@ -22,6 +23,7 @@
 #define AS_CLOSURE(value)      ((ObjClosure*)AS_OBJ(value))
 #define AS_FUNCTION(value)     ((ObjFunction*)AS_OBJ(value))
 #define AS_INSTANCE(value)     ((ObjInstance*)AS_OBJ(value))
+#define AS_LIST(value)         ((ObjList*)AS_OBJ(value))
 #define AS_NATIVE(value)       (((ObjNative*)AS_OBJ(value))->function)
 #define AS_STRING(value)       ((ObjString*)AS_OBJ(value))
 #define AS_CSTRING(value)      (((ObjString*)AS_OBJ(value))->chars)
@@ -32,6 +34,7 @@ typedef enum {
     OBJ_CLOSURE,
     OBJ_FUNCTION,
     OBJ_INSTANCE,
+    OBJ_LIST,
     OBJ_NATIVE,
     OBJ_STRING,
     OBJ_UPVALUE
@@ -93,6 +96,11 @@ typedef struct {
 
 typedef struct {
     Obj obj;
+    ValueArray items;
+} ObjList;
+
+typedef struct {
+    Obj obj;
     Value receiver;
     ObjClosure* method;
 } ObjBoundMethod;
@@ -102,6 +110,7 @@ ObjClass* newClass(VM* vm, ObjString* name);
 ObjClosure* newClosure(VM* vm, ObjFunction* function);
 ObjFunction* newFunction(VM* vm);
 ObjInstance* newInstance(VM* vm, ObjClass* klass);
+ObjList* newList(VM* vm);
 ObjNative* newNative(VM* vm, NativeFn function);
 ObjString* takeString(VM* vm, char* chars, int length);
 ObjString* copyString(VM* vm, const char* chars, int length);

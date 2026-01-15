@@ -43,9 +43,21 @@ static Value clockNative(int argCount, Value* args) {
 }
 
 static void defineNative(VM* vm, const char* name, NativeFn function) {
-    push(vm, OBJ_VAL(copyString(vm, name, (int) strlen(name))));
+    ObjString* nameStr = copyString(vm, name, (int) strlen(name));
+    push(vm, OBJ_VAL(nameStr));
     push(vm, OBJ_VAL(newNative(vm, function)));
-    tableSet(vm, &vm->globals, AS_STRING(vm->stack[0]), vm->stack[1]);
+
+    Value indexValue;
+    int index;
+    if (tableGet(&vm->globalNames, nameStr, &indexValue)) {
+        index = (int) AS_NUMBER(indexValue);
+    } else {
+        index = vm->globalValues.count;
+        writeValueArray(vm, &vm->globalValues, EMPTY_VAL);
+        tableSet(vm, &vm->globalNames, nameStr, NUMBER_VAL((double) index));
+    }
+
+    vm->globalValues.values[index] = vm->stack[1];
     pop(vm);
     pop(vm);
 }
@@ -55,14 +67,13 @@ void initVM(VM* vm) {
     vm->objects = NULL;
     vm->bytesAllocated = 0;
     vm->nextGC = 1024 * 1024;
-
     vm->grayCount = 0;
     vm->grayCapacity = 0;
     vm->grayStack = NULL;
-
     vm->compiler = NULL;
 
-    initTable(&vm->globals);
+    initTable(&vm->globalNames);
+    initValueArray(&vm->globalValues);
     initTable(&vm->strings);
 
     vm->initString = NULL;
@@ -72,7 +83,8 @@ void initVM(VM* vm) {
 }
 
 void freeVM(VM* vm) {
-    freeTable(vm, &vm->globals);
+    freeTable(vm, &vm->globalNames);
+    freeValueArray(vm, &vm->globalValues);
     freeTable(vm, &vm->strings);
     vm->initString = NULL;
     freeObjects(vm);
@@ -290,6 +302,9 @@ static InterpretResult run(VM* vm) {
       && L_OP_SET_PROPERTY,
       && L_OP_GET_SUPER,
       && L_OP_EQUAL,
+      && L_OP_BUILD_LIST,
+      && L_OP_INDEX_GET,
+      && L_OP_INDEX_SET,
       && L_OP_GREATER,
       && L_OP_LESS,
       && L_OP_ADD,
@@ -338,28 +353,28 @@ frame->slots[slot] = peek(vm, 0);
 DISPATCH();
 }
 L_OP_GET_GLOBAL: {
-ObjString* name = READ_STRING();
-Value value;
-if (!tableGet(&vm->globals, name, &value)) {
-    runtimeError(vm, "Undefined variable '%s'.", name->chars);
+uint8_t index = READ_BYTE();
+Value value = vm->globalValues.values[index];
+if (IS_EMPTY(value)) {
+    runtimeError(vm, "Undefined variable.");
     return INTERPRET_RUNTIME_ERROR;
 }
 push(vm, value);
 DISPATCH();
 }
 L_OP_DEFINE_GLOBAL: {
-ObjString* name = READ_STRING();
-tableSet(vm, &vm->globals, name, peek(vm, 0));
+uint8_t index = READ_BYTE();
+vm->globalValues.values[index] = peek(vm, 0);
 pop(vm);
 DISPATCH();
 }
 L_OP_SET_GLOBAL: {
-ObjString* name = READ_STRING();
-if (tableSet(vm, &vm->globals, name, peek(vm, 0))) {
-    tableDelete(&vm->globals, name);
-    runtimeError(vm, "Undefined variable '%s'.", name->chars);
+uint8_t index = READ_BYTE();
+if (IS_EMPTY(vm->globalValues.values[index])) {
+    runtimeError(vm, "Undefined variable.");
     return INTERPRET_RUNTIME_ERROR;
 }
+vm->globalValues.values[index] = peek(vm, 0);
 DISPATCH();
 }
 L_OP_GET_UPVALUE: {
@@ -419,6 +434,59 @@ Value a = pop(vm);
 push(vm, BOOL_VAL(valuesEqual(a, b)));
 DISPATCH();
 }
+
+L_OP_BUILD_LIST: {
+int itemCount = READ_BYTE();
+ObjList* list = newList(vm);
+push(vm, OBJ_VAL(list)); // GC protection
+for (int i = itemCount; i > 0; i--) {
+    writeValueArray(vm, &list->items, peek(vm, i));
+}
+vm->stackTop -= (itemCount + 1);
+push(vm, OBJ_VAL(list));
+DISPATCH();
+}
+
+L_OP_INDEX_GET: {
+Value indexVal = pop(vm);
+Value listVal = pop(vm);
+if (!IS_LIST(listVal)) {
+    runtimeError(vm, "Can only index lists.");
+    return INTERPRET_RUNTIME_ERROR;
+}
+ObjList* list = AS_LIST(listVal);
+if (!IS_NUMBER(indexVal)) {
+    runtimeError(vm, "Index must be a number.");
+    return INTERPRET_RUNTIME_ERROR;
+}
+int index = (int) AS_NUMBER(indexVal);
+if (index < 0 || index >= list->items.count) {
+    runtimeError(vm, "List index out of bounds.");
+    return INTERPRET_RUNTIME_ERROR;
+}
+push(vm, list->items.values[index]);
+DISPATCH();
+}
+
+L_OP_INDEX_SET: {
+Value value = pop(vm);
+Value indexVal = pop(vm);
+Value listVal = pop(vm);
+if (!IS_LIST(listVal)) {
+    runtimeError(vm, "Can only index lists.");
+    return INTERPRET_RUNTIME_ERROR;
+}
+ObjList* list = AS_LIST(listVal);
+int index = (int) AS_NUMBER(indexVal);
+if (index < 0 || index >= list->items.count) {
+    runtimeError(vm, "List index out of bounds.");
+    return INTERPRET_RUNTIME_ERROR;
+}
+list->items.values[index] = value;
+push(vm, value);
+DISPATCH();
+}
+
 L_OP_GREATER:     BINARY_OP(BOOL_VAL, > ); DISPATCH();
 L_OP_LESS:        BINARY_OP(BOOL_VAL, < ); DISPATCH();
 L_OP_ADD: {
