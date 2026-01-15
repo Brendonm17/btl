@@ -5,7 +5,6 @@
 #include "table.h"
 #include "value.h"
 
-// Forward declare ALL object types used by the VM
 struct Obj;
 struct ObjClosure;
 struct ObjString;
@@ -26,7 +25,11 @@ typedef struct VM {
 
     Value stack[STACK_MAX];
     Value* stackTop;
-    Table globals;
+
+    // FAST GLOBALS
+    Table globalNames;       // Maps ObjString* -> Index (stored as NUMBER_VAL)
+    ValueArray globalValues; // The actual values stored at those indices
+
     Table strings;
     struct ObjString* initString;
     struct ObjUpvalue* openUpvalues;
@@ -34,11 +37,12 @@ typedef struct VM {
     size_t bytesAllocated;
     size_t nextGC;
     struct Obj* objects;
+
     int grayCount;
     int grayCapacity;
     struct Obj** grayStack;
 
-    void* compiler; // Threaded root for the compiler
+    void* compiler;
 } VM;
 
 typedef enum {
