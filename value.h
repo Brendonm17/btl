@@ -1,11 +1,12 @@
 #ifndef btl_value_h
 #define btl_value_h
 
-#include <string.h>
 #include "common.h"
 
-typedef struct Obj Obj;
-typedef struct ObjString ObjString;
+// Forward declarations to avoid circular dependencies
+struct Obj;
+struct ObjString;
+struct VM;
 
 #ifdef NAN_BOXING
 
@@ -18,28 +19,32 @@ typedef struct ObjString ObjString;
 
 typedef uint64_t Value;
 
-#define IS_BOOL(v)      (((v) | 1) == TRUE_VAL)
-#define IS_NIL(v)       ((v) == NIL_VAL)
-#define IS_NUMBER(v)    (((v) & QNAN) != QNAN)
-#define IS_OBJ(v)       (((v) & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT))
+#define IS_BOOL(value)      (((value) | 1) == TRUE_VAL)
+#define IS_NIL(value)       ((value) == NIL_VAL)
+#define IS_NUMBER(value)    (((value) & QNAN) != QNAN)
+#define IS_OBJ(value)       (((value) & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT))
 
-#define AS_BOOL(v)      ((v) == TRUE_VAL)
-#define AS_NUMBER(v)    valueToNum(v)
-#define AS_OBJ(v)       ((Obj*)(uintptr_t)((v) & ~(SIGN_BIT | QNAN)))
+#define AS_BOOL(value)      ((value) == TRUE_VAL)
+#define AS_NUMBER(value)    valueToNum(value)
+#define AS_OBJ(value)       ((struct Obj*)(uintptr_t)((value) & ~(SIGN_BIT | QNAN)))
 
-#define BOOL_VAL(b)     ((b) ? TRUE_VAL : FALSE_VAL)
-#define FALSE_VAL       ((Value)(uint64_t)(QNAN | TAG_FALSE))
-#define TRUE_VAL        ((Value)(uint64_t)(QNAN | TAG_TRUE))
-#define NIL_VAL         ((Value)(uint64_t)(QNAN | TAG_NIL))
-#define NUMBER_VAL(num) numToValue(num)
-#define OBJ_VAL(obj)    (Value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(obj))
+#define BOOL_VAL(b)         ((b) ? TRUE_VAL : FALSE_VAL)
+#define FALSE_VAL           ((Value)(uint64_t)(QNAN | TAG_FALSE))
+#define TRUE_VAL            ((Value)(uint64_t)(QNAN | TAG_TRUE))
+#define NIL_VAL             ((Value)(uint64_t)(QNAN | TAG_NIL))
+#define NUMBER_VAL(num)     numToValue(num)
+#define OBJ_VAL(obj)        (Value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(obj))
 
-static inline double valueToNum(Value v) {
-    double num; memcpy(&num, &v, sizeof(Value)); return num;
+static inline double valueToNum(Value value) {
+    double num;
+    memcpy(&num, &value, sizeof(Value));
+    return num;
 }
 
 static inline Value numToValue(double num) {
-    Value v; memcpy(&v, &num, sizeof(double)); return v;
+    Value value;
+    memcpy(&value, &num, sizeof(double));
+    return value;
 }
 
 #endif

@@ -5,7 +5,7 @@
 #include "chunk.h"
 #include "table.h"
 #include "value.h"
-#include "vm.h" // We can include vm.h here now
+#include "vm.h"
 
 #define OBJ_TYPE(value)        (AS_OBJ(value)->type)
 
@@ -37,18 +37,18 @@ typedef enum {
     OBJ_UPVALUE
 } ObjType;
 
-struct Obj {
+typedef struct Obj {
     ObjType type;
     bool isMarked;
     struct Obj* next;
-};
+} Obj;
 
 typedef struct {
     Obj obj;
     int arity;
     int upvalueCount;
     Chunk chunk;
-    ObjString* name;
+    struct ObjString* name;
 } ObjFunction;
 
 typedef Value (*NativeFn)(int argCount, Value* args);
@@ -58,12 +58,12 @@ typedef struct {
     NativeFn function;
 } ObjNative;
 
-struct ObjString {
+typedef struct ObjString {
     Obj obj;
     int length;
     char* chars;
     uint32_t hash;
-};
+} ObjString;
 
 typedef struct ObjUpvalue {
     Obj obj;
@@ -97,7 +97,6 @@ typedef struct {
     ObjClosure* method;
 } ObjBoundMethod;
 
-/* Constructors and Helpers */
 ObjBoundMethod* newBoundMethod(VM* vm, Value receiver, ObjClosure* method);
 ObjClass* newClass(VM* vm, ObjString* name);
 ObjClosure* newClosure(VM* vm, ObjFunction* function);
