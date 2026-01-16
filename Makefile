@@ -28,8 +28,14 @@ $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
 # Debug Build (adds debug symbols and can enable internal clox tracing)
-debug: CFLAGS = -Wall -Wextra -std=c11 -g -DDEBUG_TRACE_EXECUTION -DDEBUG_PRINT_CODE
-debug: clean $(TARGET)
+# Add this near the top
+DEBUG_FLAGS = -DDEBUG_TRACE_EXECUTION -DDEBUG_LOG_GC -DDEBUG_STRESS_GC -DDEBUG_PRINT_CODE
+
+debug: 
+	$(CC) $(CFLAGS) $(DEBUG_FLAGS) *.c -o btl_debug
+
+#debug: CFLAGS = -Wall -Wextra -std=c11 -g -DDEBUG_TRACE_EXECUTION -DDEBUG_PRINT_CODE
+#debug: clean $(TARGET)
 
 # Run the test suite
 test: $(TARGET)

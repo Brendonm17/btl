@@ -4,26 +4,28 @@
 #include "value.h"
 
 void disassembleChunk(Chunk* chunk, const char* name) {
-    printf("== %s ==\n", name);
+    fprintf(stderr, "== %s ==\n", name);
     for (int offset = 0; offset < chunk->count;) {
         offset = disassembleInstruction(chunk, offset);
     }
 }
 static int simple(const char* n, int o) {
-    printf("%s\n", n); return o + 1;
+    fprintf(stderr, "%s\n", n); return o + 1;
 }
 static int byte(const char* n, Chunk* c, int o) {
-    printf("%-16s %4d\n", n, c->code[o + 1]); return o + 2;
+    fprintf(stderr, "%-16s %4d\n", n, c->code[o + 1]); return o + 2;
 }
 static int constant(const char* n, Chunk* c, int o) {
-    printf("%-16s %4d '", n, c->code[o + 1]); printValue(c->constants.values[c->code[o + 1]]); printf("'\n"); return o + 2;
+    fprintf(stderr, "%-16s %4d '", n, c->code[o + 1]);
+    printValueStderr(c->constants.values[c->code[o + 1]]);
+    fprintf(stderr, "'\n"); return o + 2;
 }
 static int jump(const char* n, int s, Chunk* c, int o) {
     uint16_t j = (uint16_t) (c->code[o + 1] << 8) | c->code[o + 2];
-    printf("%-16s %4d -> %d\n", n, o, o + 3 + s * j); return o + 3;
+    fprintf(stderr, "%-16s %4d -> %d\n", n, o, o + 3 + s * j); return o + 3;
 }
 int disassembleInstruction(Chunk* chunk, int offset) {
-    printf("%04d ", offset);
+    fprintf(stderr, "%04d ", offset);
     uint8_t instruction = chunk->code[offset];
     switch (instruction) {
     case OP_CONSTANT: return constant("OP_CONSTANT", chunk, offset);
@@ -58,12 +60,14 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_INVOKE: return constant("OP_INVOKE", chunk, offset);
     case OP_SUPER_INVOKE: return constant("OP_SUPER_INVOKE", chunk, offset);
     case OP_CLOSURE: {
-        offset++; uint8_t con = chunk->code[offset++]; printf("%-16s %4d ", "OP_CLOSURE", con);
-        printValue(chunk->constants.values[con]); printf("\n");
+        offset++; uint8_t con = chunk->code[offset++];
+        fprintf(stderr, "%-16s %4d ", "OP_CLOSURE", con);
+        printValueStderr(chunk->constants.values[con]);
+        fprintf(stderr, "\n");
         ObjFunction* f = AS_FUNCTION(chunk->constants.values[con]);
         for (int j = 0; j < f->upvalueCount; j++) {
             int isL = chunk->code[offset++]; int idx = chunk->code[offset++];
-            printf("%04d      |                     %s %d\n", offset - 2, isL ? "local" : "upvalue", idx);
+            fprintf(stderr, "%04d      |                     %s %d\n", offset - 2, isL ? "local" : "upvalue", idx);
         }
         return offset;
     }
