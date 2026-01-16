@@ -1,1 +1,1 @@
-import "tests/math_lib.btl" math; // expect error: Expect 'as' after import path.
+import "tests/math_lib.btl" math; // expect error: Expect ';' after import.

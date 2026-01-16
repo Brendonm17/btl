@@ -78,8 +78,10 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
         break;
     }
     case OBJ_LIST: {
-        ObjList* l = (ObjList*) object;
-        markArray(vm, &l->items);
+        ObjList* list = (ObjList*) object;
+        for (int i = 0; i < list->items.count; i++) {
+            markValue(vm, list->items.values[i]);
+        }
         break;
     }
     case OBJ_MODULE: {
