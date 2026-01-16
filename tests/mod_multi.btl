@@ -1,0 +1,5 @@
+import "tests/lib_colors.btl" as col;
+import "tests/lib_meta.btl" as meta;
+
+print col.red;     // expect: #ff0000
+print meta.version; // expect: 1.2

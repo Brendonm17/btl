@@ -1,0 +1,21 @@
+fun createCounter() {
+  var count = 0;
+  fun increment() {
+    count = count + 1;
+    print count;
+  }
+  fun decrement() {
+    count = count - 1;
+    print count;
+  }
+  return [increment, decrement]; // Testing list of functions!
+}
+
+var counters = createCounter();
+var inc = counters[0];
+var dec = counters[1];
+
+inc(); // expect: 1
+inc(); // expect: 2
+dec(); // expect: 1
+inc(); // expect: 2

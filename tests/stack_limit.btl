@@ -1,0 +1,7 @@
+fun recurse(n) {
+  if (n == 0) return "done";
+  return recurse(n - 1);
+}
+
+print recurse(50); // expect: done
+// Try 500 or 1000 to find your VM's "Breaking Point"

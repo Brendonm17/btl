@@ -1,0 +1,8 @@
+class Person {
+  init(name) { this.name = name; }
+  sayName() { print this.name; }
+}
+
+var p = Person("Alice");
+var method = p.sayName; 
+method(); // expect: Alice

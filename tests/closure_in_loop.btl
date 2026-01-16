@@ -1,0 +1,12 @@
+var functions = [];
+
+for (var i = 0; i < 3; i = i + 1) {
+  fun getI() {
+    return i;
+  }
+  functions[i] = getI;
+}
+
+print functions[0](); // expect: 0
+print functions[1](); // expect: 1
+print functions[2](); // expect: 2

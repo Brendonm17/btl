@@ -1,0 +1,15 @@
+fun level1(a) {
+  fun level2(b) {
+    fun level3(c) {
+      fun level4(d) {
+        return a + b + c + d;
+      }
+      return level4;
+    }
+    return level3;
+  }
+  return level2;
+}
+
+var closure = level1(1)(10)(100)(1000);
+print closure; // expect: 1111

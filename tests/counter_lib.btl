@@ -1,0 +1,2 @@
+var count = 0;
+fun inc() { count = count + 1; return count; }

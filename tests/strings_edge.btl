@@ -1,0 +1,6 @@
+print ""; // expect: 
+print "line one
+line two"; 
+// expect: line one
+// expect: line two
+print "alpha" + " " + "beta"; // expect: alpha beta

@@ -46,6 +46,7 @@ static void expression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
+static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static uint8_t parseVariable(Parser* p, Scanner* s, Compiler* c, const char* errorMessage);
 static void defineVariable(Parser* p, Compiler* c, uint8_t global);
 static ParseRule* getRule(TokenType type);
@@ -334,7 +335,7 @@ static void variable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool
 
 static void defineVariable(Parser* p, Compiler* c, uint8_t global) {
     if (c->scopeDepth > 0) {
-        markInitialized(c); // Ensure you have markInitialized defined too!
+        markInitialized(c);
         return;
     }
     emitBytes(p, c, OP_DEFINE_GLOBAL, global);
@@ -493,11 +494,10 @@ static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
 static ParseRule* getRule(TokenType type) {
     return &rules[type];
 }
+
 static void expression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     parsePrecedence(p, s, c, cc, PREC_ASSIGNMENT);
 }
-
-static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 
 static void block(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
@@ -546,8 +546,7 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         c->currentLoop = loop.enclosing;
     } else if (match(p, s, TOKEN_LEFT_BRACE)) {
         beginScope(c);
-        while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) declaration(p, s, c, cc);
-        consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}'.");
+        block(p, s, c, cc);
         endScope(p, c);
     } else {
         expression(p, s, c, cc);
@@ -578,6 +577,14 @@ static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Func
         emitByte(p, c, sub.upvalues[i].isLocal ? 1 : 0);
         emitByte(p, c, sub.upvalues[i].index);
     }
+}
+
+// RESTORED: funDeclaration
+static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
+    uint8_t global = parseVariable(p, s, c, "Expect function name.");
+    markInitialized(c); // Local functions can refer to themselves for recursion
+    function(p, s, c, cc, TYPE_FUNCTION);
+    defineVariable(p, c, global);
 }
 
 static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
@@ -615,7 +622,10 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
 }
 
 static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    if (match(p, s, TOKEN_IMPORT)) {
+    // RESTORED: Added match(TOKEN_FUN)
+    if (match(p, s, TOKEN_FUN)) {
+        funDeclaration(p, s, c, cc);
+    } else if (match(p, s, TOKEN_IMPORT)) {
         consume(p, s, TOKEN_STRING, "Expect filename.");
         uint8_t file = identifierConstant(p, c, &p->previous);
         consume(p, s, TOKEN_AS, "Expect 'as'.");
@@ -632,8 +642,28 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         else emitByte(p, c, OP_NIL);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
         defineVariable(p, c, global);
-        //emitBytes(p, c, OP_DEFINE_GLOBAL, global);
     } else statement(p, s, c, cc);
+
+    if (p->panicMode) {
+        // Synchronize parser
+        advance(p, s);
+        while (p->current.type != TOKEN_EOF) {
+            if (p->previous.type == TOKEN_SEMICOLON) return;
+            switch (p->current.type) {
+            case TOKEN_CLASS:
+            case TOKEN_FUN:
+            case TOKEN_VAR:
+            case TOKEN_FOR:
+            case TOKEN_IF:
+            case TOKEN_WHILE:
+            case TOKEN_PRINT:
+            case TOKEN_RETURN:
+                return;
+            default:; // Do nothing.
+            }
+            advance(p, s);
+        }
+    }
 }
 
 static uint8_t parseVariable(Parser* p, Scanner* s, Compiler* c, const char* msg) {

@@ -1,0 +1,5 @@
+fun infinite() {
+  return infinite();
+}
+
+infinite(); // expect error: Stack overflow

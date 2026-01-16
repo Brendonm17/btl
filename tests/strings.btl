@@ -1,0 +1,4 @@
+var a = "hello";
+var b = "he" + "llo";
+print a == b;   // expect: true
+print a == "hi"; // expect: false

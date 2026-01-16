@@ -1,0 +1,8 @@
+var data = ["BTL", 2026, true];
+var output = "";
+
+if (data[2]) {
+  output = data[0] + " is from " + data[1];
+}
+
+print output; // expect: BTL is from 2026

@@ -1,0 +1,9 @@
+class Person {
+  sayName() {
+    print this.name;
+  }
+}
+
+var p = Person();
+p.name = "Brendon";
+p.sayName(); // expect: Brendon

@@ -1,0 +1,1 @@
+var x = 10 - "hello"; // expect error: Operands must be numbers

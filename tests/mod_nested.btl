@@ -1,0 +1,3 @@
+import "tests/outer.btl" as outer;
+
+print outer.shared; // expect: 42

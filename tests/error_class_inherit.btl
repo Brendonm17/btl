@@ -1,0 +1,2 @@
+var NotAClass = 123;
+class Sub < NotAClass {} // expect error: Superclass must be a class.

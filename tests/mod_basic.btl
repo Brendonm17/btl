@@ -1,0 +1,4 @@
+import "tests/math_lib.btl" as math;
+
+print math.PI;        // expect: 3.14159
+print math.square(3); // expect: 9
