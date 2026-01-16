@@ -1,23 +1,33 @@
 # Compiler and Flags
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c11 -O3
+CFLAGS = -Wall -Wextra -std=c11
+LIBS = -lm
 TARGET = btl
+DEBUG_TARGET = btl_debug
 
-# Directories (assuming everything is in the root for now)
+# Directories
 SRC_DIR = .
 OBJ_DIR = obj
 
-# Find all .c files EXCEPT btl_bin.c (since it's unused)
+# Find all .c files EXCEPT btl_bin.c
 SRCS = $(filter-out $(SRC_DIR)/btl_bin.c, $(wildcard $(SRC_DIR)/*.c))
 # Convert .c filenames to .o filenames inside the obj/ folder
 OBJS = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
-# Default Rule
+# Default Rule (Release)
+all: CFLAGS += -O3
 all: $(TARGET)
 
-# Link the executable
+# Debug Build
+# We use a separate target and don't use the same .o files to avoid 
+# mixing optimized code with debug-traced code.
+debug: CFLAGS += -g -O0 -DDEBUG_TRACE_EXECUTION -DDEBUG_LOG_GC -DDEBUG_STRESS_GC -DDEBUG_PRINT_CODE
+debug: $(SRCS)
+	$(CC) $(CFLAGS) $(SRCS) -o $(DEBUG_TARGET) $(LIBS)
+
+# Link the release executable
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) $^ -o $@
+	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 
 # Compile source files to object files
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
@@ -27,22 +37,12 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
-# Debug Build (adds debug symbols and can enable internal clox tracing)
-# Add this near the top
-DEBUG_FLAGS = -DDEBUG_TRACE_EXECUTION -DDEBUG_LOG_GC -DDEBUG_STRESS_GC -DDEBUG_PRINT_CODE
-
-debug: 
-	$(CC) $(CFLAGS) $(DEBUG_FLAGS) *.c -o btl_debug
-
-#debug: CFLAGS = -Wall -Wextra -std=c11 -g -DDEBUG_TRACE_EXECUTION -DDEBUG_PRINT_CODE
-#debug: clean $(TARGET)
-
 # Run the test suite
 test: $(TARGET)
 	@python3 test.py
 
 # Clean up build artifacts
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
+	rm -rf $(OBJ_DIR) $(TARGET) $(DEBUG_TARGET)
 
-.PHONY: all clean debug
+.PHONY: all clean debug test

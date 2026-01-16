@@ -1,0 +1,22 @@
+fun wrapper() {
+  var secret = "correct";
+  
+  // 1. Declare the names first
+  var isEven;
+  var isOdd;
+
+  // 2. Assign the functions to the variables
+  isEven = fun(n) {
+    if (n == 0) return secret;
+    return isOdd(n - 1);
+  };
+
+  isOdd = fun(n) {
+    if (n == 0) return "wrong";
+    return isEven(n - 1);
+  };
+
+  return isEven(10);
+}
+
+print wrapper();    // expect: correct

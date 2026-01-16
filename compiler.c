@@ -44,6 +44,7 @@ typedef struct {
 static void expression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
+static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, FunctionType type);
 static uint8_t parseVariable(Parser* p, Scanner* s, Compiler* c, const char* errorMessage);
 static void defineVariable(Parser* p, Compiler* c, uint8_t global);
 static ParseRule* getRule(TokenType type);
@@ -267,6 +268,11 @@ static void declareVariable(Parser* p, Compiler* c) {
     l->name = *name; l->depth = -1; l->isCaptured = false;
 }
 
+static void funExpression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+    (void) canAssign; // Silence the unused parameter warning
+    function(p, s, c, cc, TYPE_FUNCTION);
+}
+
 // Pratt Parser Prefix/Infix Functions
 static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
@@ -284,6 +290,7 @@ static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
     case TOKEN_MINUS:         emitByte(p, c, OP_SUBTRACT); break;
     case TOKEN_STAR:          emitByte(p, c, OP_MULTIPLY); break;
     case TOKEN_SLASH:         emitByte(p, c, OP_DIVIDE); break;
+    case TOKEN_PERCENT:       emitByte(p, c, OP_MODULO); break;
     default: return;
     }
 }
@@ -450,6 +457,7 @@ ParseRule rules [] = {
   [TOKEN_PLUS] = {NULL, binary, PREC_TERM},
   [TOKEN_STAR] = {NULL, binary, PREC_FACTOR},
   [TOKEN_SLASH] = {NULL, binary, PREC_FACTOR},
+  [TOKEN_PERCENT] = {NULL, binary, PREC_FACTOR},
   [TOKEN_BANG_EQUAL] = {NULL, binary, PREC_EQUALITY},
   [TOKEN_EQUAL_EQUAL] = {NULL, binary, PREC_EQUALITY},
   [TOKEN_GREATER] = {NULL, binary, PREC_COMPARISON},
@@ -467,6 +475,7 @@ ParseRule rules [] = {
   [TOKEN_SUPER] = {super_, NULL, PREC_NONE},
   [TOKEN_THIS] = {this_, NULL, PREC_NONE},
   [TOKEN_EOF] = {NULL, NULL, PREC_NONE},
+  [TOKEN_FUN] = {funExpression, NULL,   PREC_NONE},
 };
 
 static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Precedence prec) {
@@ -591,9 +600,13 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
 }
 
 static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
+    // 1. Parse the function name (the variable that will hold the closure)
     uint8_t global = parseVariable(p, s, c, "Expect function name.");
+    // 2. Mark it as initialized so the function can be recursive
     markInitialized(c);
+    // 3. Compile the body using your helper
     function(p, s, c, cc, TYPE_FUNCTION);
+    // 4. Finalize the variable
     defineVariable(p, c, global);
 }
 

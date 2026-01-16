@@ -188,6 +188,7 @@ Token scanToken(Scanner* scanner) {
     case '+': return makeToken(scanner, TOKEN_PLUS);
     case '/': return makeToken(scanner, TOKEN_SLASH);
     case '*': return makeToken(scanner, TOKEN_STAR);
+    case '%': return makeToken(scanner, TOKEN_PERCENT);
     case '!':
         return makeToken(scanner, match(scanner, '=') ? TOKEN_BANG_EQUAL : TOKEN_BANG);
     case '=':

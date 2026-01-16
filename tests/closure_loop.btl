@@ -1,0 +1,23 @@
+var functions = [];
+
+for (var i = 0; i < 10; i = i + 1) {
+  var j = i; 
+  fun f() { return j; }
+  if (f() != i) print "Error: captured wrong value";
+}
+
+// Harder variant: Nested closures with shared upvalues
+fun outer() {
+  var x = "initial";
+  fun inner() {
+    fun innermost() {
+      x = "updated";
+    }
+    innermost();
+  }
+  inner();
+  return x;
+}
+
+if (outer() != "updated") print "Error: Upvalue assignment failed";
+else print "Closure test passed";   // expect: Closure test passed

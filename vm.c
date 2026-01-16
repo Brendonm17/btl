@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 #include "common.h"
 #include "compiler.h"
@@ -235,32 +236,34 @@ static ObjString* valueToString(struct VM* vm, Value value) {
 }
 
 static void concatenate(struct VM* vm) {
-    // 1. Pop the raw values
-    Value bVal = pop(vm);
-    Value aVal = pop(vm);
+    // 1. PEEK the values instead of popping. 
+    // This keeps them as "Roots" so the GC won't kill them.
+    Value bVal = peek(vm, 0);
+    Value aVal = peek(vm, 1);
 
-    // 2. Convert A and push it immediately to protect from GC
+    // 2. Convert to strings. If these allocate, the originals are safe on stack.
     ObjString* a = valueToString(vm, aVal);
-    push(vm, OBJ_VAL(a));
+    push(vm, OBJ_VAL(a)); // Temporarily push a to protect it
 
-    // 3. Convert B and push it immediately
     ObjString* b = valueToString(vm, bVal);
-    push(vm, OBJ_VAL(b));
+    push(vm, OBJ_VAL(b)); // Temporarily push b to protect it
 
-    // 4. Now both strings are safe on the stack. 
-    // Create the destination buffer.
+    // 3. Now we have a, b on stack. Allocate the buffer.
     int length = a->length + b->length;
     char* chars = ALLOCATE(vm, char, length + 1);
+
     memcpy(chars, a->chars, a->length);
     memcpy(chars + a->length, b->chars, b->length);
     chars[length] = '\0';
 
-    // 5. Take ownership of the new string
     ObjString* result = takeString(vm, chars, length);
 
-    // 6. Pop the two temporary strings and push the result
-    pop(vm); // pop b
-    pop(vm); // pop a
+    // 4. Clean up the stack: pop b_obj, a_obj, and the original bVal, aVal
+    pop(vm); // pop b_obj
+    pop(vm); // pop a_obj
+    pop(vm); // pop original bVal
+    pop(vm); // pop original aVal
+
     push(vm, OBJ_VAL(result));
 }
 
@@ -301,7 +304,7 @@ static InterpretResult run(VM* vm) {
       && L_OP_GET_LOCAL,&& L_OP_SET_LOCAL,&& L_OP_GET_GLOBAL,&& L_OP_DEFINE_GLOBAL,
       && L_OP_SET_GLOBAL,&& L_OP_GET_UPVALUE,&& L_OP_SET_UPVALUE,&& L_OP_GET_PROPERTY,
       && L_OP_SET_PROPERTY,&& L_OP_GET_SUPER,&& L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,
-      && L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,&& L_OP_DIVIDE,&& L_OP_NOT,
+      && L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,&& L_OP_DIVIDE,&& L_OP_MODULO,&& L_OP_NOT,
       && L_OP_NEGATE,&& L_OP_PRINT,&& L_OP_JUMP,&& L_OP_JUMP_IF_FALSE,&& L_OP_LOOP,
       && L_OP_CALL,&& L_OP_INVOKE,&& L_OP_SUPER_INVOKE,&& L_OP_CLOSURE,
       && L_OP_CLOSE_UPVALUE,&& L_OP_RETURN,&& L_OP_CLASS,&& L_OP_INHERIT,&& L_OP_METHOD,
@@ -524,6 +527,12 @@ static InterpretResult run(VM* vm) {
                 BINARY_OP(NUMBER_VAL, *); DISPATCH(); }
             OPCODE(OP_DIVIDE) : {
                 BINARY_OP(NUMBER_VAL, / ); DISPATCH(); }
+            OPCODE(OP_MODULO) : {
+                double b = AS_NUMBER(pop(vm));
+                double a = AS_NUMBER(pop(vm));
+                push(vm, NUMBER_VAL(fmod(a, b)));
+                DISPATCH();
+            }
             OPCODE(OP_NOT) : {
                 Value v = pop(vm); push(vm, BOOL_VAL(IS_NIL(v) || (IS_BOOL(v) && !AS_BOOL(v)))); DISPATCH(); }
             OPCODE(OP_NEGATE) : { if (!IS_NUMBER(peek(vm, 0))) {

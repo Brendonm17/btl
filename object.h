@@ -85,6 +85,7 @@ struct ObjString* takeString(struct VM* vm, char* chars, int length);
 struct ObjString* copyString(struct VM* vm, const char* chars, int length);
 ObjUpvalue* newUpvalue(struct VM* vm, Value* slot);
 void printObject(Value value);
+void printObjectStderr(Value value);
 static inline bool isObjType(Value v, ObjType t) {
     return IS_OBJ(v) && AS_OBJ(v)->type == t;
 }

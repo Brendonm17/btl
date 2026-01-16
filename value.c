@@ -74,7 +74,8 @@ void printValueStderr(Value value) {
     case VAL_BOOL:   fprintf(stderr, AS_BOOL(value) ? "true" : "false"); break;
     case VAL_NIL:    fprintf(stderr, "nil"); break;
     case VAL_NUMBER: fprintf(stderr, "%g", AS_NUMBER(value)); break;
-    case VAL_OBJ:    /* ... include the switch above ... */ break;
+    case VAL_OBJ:    printObjectStderr(value); break;
+    case VAL_EMPTY: printf("<empty>"); break;
     }
 #endif
 }

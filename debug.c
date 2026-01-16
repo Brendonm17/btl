@@ -50,6 +50,7 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_SUBTRACT: return simple("OP_SUBTRACT", offset);
     case OP_MULTIPLY: return simple("OP_MULTIPLY", offset);
     case OP_DIVIDE: return simple("OP_DIVIDE", offset);
+    case OP_MODULO: return simple("OP_MODULO", offset);
     case OP_NOT: return simple("OP_NOT", offset);
     case OP_NEGATE: return simple("OP_NEGATE", offset);
     case OP_PRINT: return simple("OP_PRINT", offset);
