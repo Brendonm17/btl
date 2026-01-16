@@ -5,31 +5,37 @@
 #include "vm.h"
 #include "scanner.h"
 
-// We define the Compiler struct here so memory.c can see it for GC marking
+typedef struct {
+    Token name; int depth; bool isCaptured;
+} Local;
+typedef struct {
+    uint8_t index; bool isLocal;
+} Upvalue;
+typedef struct Loop {
+    struct Loop* enclosing; int start; int bodyJump; int scopeDepth; int breakJumps[255]; int breakCount;
+} Loop;
+typedef enum {
+    TYPE_FUNCTION, TYPE_INITIALIZER, TYPE_METHOD, TYPE_SCRIPT
+} FunctionType;
+
 typedef struct Compiler {
     struct Compiler* enclosing;
     ObjFunction* function;
-    int type; // Internal FunctionType
-
-    // We only need the locals/upvalues for the compiler's own logic
-    // but memory.c only needs to see the linked list of compilers.
-    struct Local {
-        Token name;
-        int depth;
-        bool isCaptured;
-    } locals[UINT8_COUNT];
+    FunctionType type;
+    Local locals[UINT8_COUNT];
     int localCount;
-
-    struct Upvalue {
-        uint8_t index;
-        bool isLocal;
-    } upvalues[UINT8_COUNT];
-
+    Upvalue upvalues[UINT8_COUNT];
     int scopeDepth;
-    VM* vm;
+    Loop* currentLoop;
+    ObjModule* module;
+    struct VM* vm;
 } Compiler;
 
-ObjFunction* compile(VM* vm, const char* source);
-void markCompilerRoots(VM* vm);
+typedef struct ClassCompiler {
+    struct ClassCompiler* enclosing; bool hasSuperclass;
+} ClassCompiler;
+
+ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source);
+void markCompilerRoots(struct VM* vm);
 
 #endif

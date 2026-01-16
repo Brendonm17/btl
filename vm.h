@@ -9,6 +9,7 @@ struct Obj;
 struct ObjClosure;
 struct ObjString;
 struct ObjUpvalue;
+struct ObjModule;
 
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
@@ -22,15 +23,13 @@ typedef struct {
 typedef struct VM {
     CallFrame frames[FRAMES_MAX];
     int frameCount;
-
     Value stack[STACK_MAX];
     Value* stackTop;
 
-    // FAST GLOBALS
-    Table globalNames;       // Maps ObjString* -> Index (stored as NUMBER_VAL)
-    ValueArray globalValues; // The actual values stored at those indices
-
     Table strings;
+    Table modules;
+    struct ObjModule* rootModule;
+
     struct ObjString* initString;
     struct ObjUpvalue* openUpvalues;
 
@@ -53,7 +52,7 @@ typedef enum {
 
 void initVM(VM* vm);
 void freeVM(VM* vm);
-InterpretResult interpret(VM* vm, const char* source);
+InterpretResult interpret(VM* vm, struct ObjModule* module, const char* source);
 void push(VM* vm, Value value);
 Value pop(VM* vm);
 

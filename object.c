@@ -1,152 +1,118 @@
 #include <stdio.h>
 #include <string.h>
-
 #include "memory.h"
 #include "object.h"
 #include "table.h"
 #include "value.h"
 #include "vm.h"
 
-#define ALLOCATE_OBJ(vm, type, objectType) \
-    (type*)allocateObject(vm, sizeof(type), objectType)
+#define ALLOCATE_OBJ(vm, type, ot) (type*)allocateObject(vm, sizeof(type), ot)
 
-static Obj* allocateObject(VM* vm, size_t size, ObjType type) {
-    Obj* object = (Obj*) reallocate(vm, NULL, 0, size);
-    object->type = type;
-    object->isMarked = false;
-    object->next = vm->objects;
-    vm->objects = object;
+static struct Obj* allocateObject(struct VM* vm, size_t size, ObjType type) {
+    struct Obj* object = (struct Obj*) reallocate(vm, NULL, 0, size);
+    object->type = type; object->isMarked = false; object->next = vm->objects; vm->objects = object;
     return object;
 }
 
-ObjBoundMethod* newBoundMethod(VM* vm, Value receiver, ObjClosure* method) {
+ObjBoundMethod* newBoundMethod(struct VM* vm, Value receiver, ObjClosure* method) {
     ObjBoundMethod* bound = ALLOCATE_OBJ(vm, ObjBoundMethod, OBJ_BOUND_METHOD);
-    bound->receiver = receiver;
-    bound->method = method;
-    return bound;
+    bound->receiver = receiver; bound->method = method; return bound;
 }
 
-ObjClass* newClass(VM* vm, ObjString* name) {
+ObjClass* newClass(struct VM* vm, struct ObjString* name) {
     ObjClass* klass = ALLOCATE_OBJ(vm, ObjClass, OBJ_CLASS);
-    klass->name = name;
-    initTable(&klass->methods);
-    return klass;
+    klass->name = name; initTable(&klass->methods); return klass;
 }
 
-ObjClosure* newClosure(VM* vm, ObjFunction* function) {
+ObjClosure* newClosure(struct VM* vm, ObjFunction* function) {
     ObjUpvalue** upvalues = ALLOCATE(vm, ObjUpvalue*, function->upvalueCount);
-    for (int i = 0; i < function->upvalueCount; i++) {
-        upvalues[i] = NULL;
-    }
+    for (int i = 0; i < function->upvalueCount; i++) upvalues[i] = NULL;
     ObjClosure* closure = ALLOCATE_OBJ(vm, ObjClosure, OBJ_CLOSURE);
-    closure->function = function;
-    closure->upvalues = upvalues;
-    closure->upvalueCount = function->upvalueCount;
+    closure->function = function; closure->upvalues = upvalues; closure->upvalueCount = function->upvalueCount;
     return closure;
 }
 
-ObjFunction* newFunction(VM* vm) {
+ObjFunction* newFunction(struct VM* vm, ObjModule* module) {
     ObjFunction* function = ALLOCATE_OBJ(vm, ObjFunction, OBJ_FUNCTION);
-    function->arity = 0;
-    function->upvalueCount = 0;
-    function->name = NULL;
-    initChunk(&function->chunk);
-    return function;
+    function->arity = 0; function->upvalueCount = 0; function->name = NULL;
+    function->module = module; initChunk(&function->chunk); return function;
 }
 
-ObjInstance* newInstance(VM* vm, ObjClass* klass) {
+ObjInstance* newInstance(struct VM* vm, ObjClass* klass) {
     ObjInstance* instance = ALLOCATE_OBJ(vm, ObjInstance, OBJ_INSTANCE);
-    instance->klass = klass;
-    initTable(&instance->fields);
-    return instance;
+    instance->klass = klass; initTable(&instance->fields); return instance;
 }
 
-ObjList* newList(VM* vm) {
+ObjList* newList(struct VM* vm) {
     ObjList* list = ALLOCATE_OBJ(vm, ObjList, OBJ_LIST);
-    initValueArray(&list->items);
-    return list;
+    initValueArray(&list->items); return list;
 }
 
-ObjNative* newNative(VM* vm, NativeFn function) {
+ObjModule* newModule(struct VM* vm, struct ObjString* name) {
+    ObjModule* module = ALLOCATE_OBJ(vm, ObjModule, OBJ_MODULE);
+    module->name = name; initTable(&module->globalNames); initValueArray(&module->globalValues);
+    return module;
+}
+
+ObjNative* newNative(struct VM* vm, NativeFn function) {
     ObjNative* native = ALLOCATE_OBJ(vm, ObjNative, OBJ_NATIVE);
-    native->function = function;
-    return native;
+    native->function = function; return native;
 }
 
-static ObjString* allocateString(VM* vm, char* chars, int length, uint32_t hash) {
-    ObjString* string = ALLOCATE_OBJ(vm, ObjString, OBJ_STRING);
-    string->length = length;
-    string->chars = chars;
-    string->hash = hash;
-    push(vm, OBJ_VAL(string));
-    tableSet(vm, &vm->strings, string, NIL_VAL);
-    pop(vm);
+static struct ObjString* allocateString(struct VM* vm, char* chars, int length, uint32_t hash) {
+    struct ObjString* string = (struct ObjString*) allocateObject(vm, sizeof(struct ObjString), OBJ_STRING);
+    string->length = length; string->chars = chars; string->hash = hash;
+    push(vm, OBJ_VAL(string)); tableSet(vm, &vm->strings, string, NIL_VAL); pop(vm);
     return string;
 }
 
 static uint32_t hashString(const char* key, int length) {
     uint32_t hash = 2166136261u;
     for (int i = 0; i < length; i++) {
-        hash ^= (uint8_t) key[i];
-        hash *= 16777619;
+        hash ^= (uint8_t) key[i]; hash *= 16777619;
     }
     return hash;
 }
 
-ObjString* takeString(VM* vm, char* chars, int length) {
+struct ObjString* takeString(struct VM* vm, char* chars, int length) {
     uint32_t hash = hashString(chars, length);
-    ObjString* interned = tableFindString(&vm->strings, chars, length, hash);
+    struct ObjString* interned = tableFindString(&vm->strings, chars, length, hash);
     if (interned != NULL) {
-        FREE_ARRAY(vm, char, chars, length + 1);
-        return interned;
+        FREE_ARRAY(vm, char, chars, length + 1); return interned;
     }
     return allocateString(vm, chars, length, hash);
 }
 
-ObjString* copyString(VM* vm, const char* chars, int length) {
+struct ObjString* copyString(struct VM* vm, const char* chars, int length) {
     uint32_t hash = hashString(chars, length);
-    ObjString* interned = tableFindString(&vm->strings, chars, length, hash);
+    struct ObjString* interned = tableFindString(&vm->strings, chars, length, hash);
     if (interned != NULL) return interned;
     char* heapChars = ALLOCATE(vm, char, length + 1);
-    memcpy(heapChars, chars, length);
-    heapChars[length] = '\0';
+    memcpy(heapChars, chars, length); heapChars[length] = '\0';
     return allocateString(vm, heapChars, length, hash);
 }
 
-ObjUpvalue* newUpvalue(VM* vm, Value* slot) {
+ObjUpvalue* newUpvalue(struct VM* vm, Value* slot) {
     ObjUpvalue* upvalue = ALLOCATE_OBJ(vm, ObjUpvalue, OBJ_UPVALUE);
-    upvalue->closed = NIL_VAL;
-    upvalue->location = slot;
-    upvalue->next = NULL;
+    upvalue->closed = NIL_VAL; upvalue->location = slot; upvalue->next = NULL;
     return upvalue;
 }
 
 void printObject(Value value) {
     switch (OBJ_TYPE(value)) {
-    case OBJ_BOUND_METHOD:
-        if (AS_BOUND_METHOD(value)->method->function->name == NULL) printf("<script>");
-        else printf("<fn %s>", AS_BOUND_METHOD(value)->method->function->name->chars);
-        break;
+    case OBJ_BOUND_METHOD: printf("<fn %s>", AS_BOUND_METHOD(value)->method->function->name->chars); break;
     case OBJ_CLASS: printf("%s", AS_CLASS(value)->name->chars); break;
-    case OBJ_CLOSURE:
-        if (AS_CLOSURE(value)->function->name == NULL) printf("<script>");
-        else printf("<fn %s>", AS_CLOSURE(value)->function->name->chars);
-        break;
-    case OBJ_FUNCTION:
-        if (AS_FUNCTION(value)->name == NULL) printf("<script>");
-        else printf("<fn %s>", AS_FUNCTION(value)->name->chars);
-        break;
+    case OBJ_CLOSURE: printf("<fn %s>", AS_CLOSURE(value)->function->name->chars); break;
+    case OBJ_FUNCTION: printf("<fn %s>", AS_FUNCTION(value)->name->chars); break;
     case OBJ_INSTANCE: printf("%s instance", AS_INSTANCE(value)->klass->name->chars); break;
     case OBJ_LIST: {
-        ObjList* list = AS_LIST(value);
-        printf("[");
+        ObjList* list = AS_LIST(value); printf("[");
         for (int i = 0; i < list->items.count; i++) {
-            printValue(list->items.values[i]);
-            if (i < list->items.count - 1) printf(", ");
+            printValue(list->items.values[i]); if (i < list->items.count - 1) printf(", ");
         }
-        printf("]");
-        break;
+        printf("]"); break;
     }
+    case OBJ_MODULE: printf("<module %s>", AS_MODULE(value)->name->chars); break;
     case OBJ_NATIVE: printf("<native fn>"); break;
     case OBJ_STRING: printf("%s", AS_CSTRING(value)); break;
     case OBJ_UPVALUE: printf("upvalue"); break;

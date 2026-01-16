@@ -5,8 +5,7 @@
 #include "value.h"
 
 typedef struct {
-    struct ObjString* key;
-    Value value;
+    struct ObjString* key; Value value;
 } Entry;
 
 typedef struct {
