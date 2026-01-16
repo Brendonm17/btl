@@ -7,9 +7,9 @@
 
 #define NAN_BOXING
 
-#if defined(__GNUC__) || defined(__clang__)
+//#if defined(__GNUC__) || defined(__clang__)
 #define HAS_COMPUTED_GOTOS
-#endif
+//#endif
 
 // #define DEBUG_TRACE_EXECUTION
 // #define DEBUG_PRINT_CODE
