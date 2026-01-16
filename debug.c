@@ -58,6 +58,7 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_JUMP_IF_FALSE: return jump("OP_JUMP_IF_FALSE", 1, chunk, offset);
     case OP_LOOP: return jump("OP_LOOP", -1, chunk, offset);
     case OP_CALL: return byte("OP_CALL", chunk, offset);
+    case OP_TAIL_CALL: return byte("OP_TAIL_CALL", chunk, offset);
     case OP_INVOKE: return constant("OP_INVOKE", chunk, offset);
     case OP_SUPER_INVOKE: return constant("OP_SUPER_INVOKE", chunk, offset);
     case OP_CLOSURE: {

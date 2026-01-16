@@ -706,16 +706,29 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     c->currentLoop = loop.enclosing;
     endScope(p, c); // Closes the outer loop scope (including the master variable)
 }
-
 static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    if (c->type == TYPE_SCRIPT) errorAt(p, &p->previous, "Can't return from top-level code.");
-    if (match(p, s, TOKEN_SEMICOLON)) emitByte(p, c, OP_NIL);
-    else {
+    if (c->type == TYPE_SCRIPT) {
+        errorAt(p, &p->previous, "Can't return from top-level code.");
+    }
+
+    if (match(p, s, TOKEN_SEMICOLON)) {
+        // Emit logic for 'return;'
+        emitByte(p, c, OP_NIL);
+        emitByte(p, c, OP_RETURN);
+    } else {
         if (c->type == TYPE_INITIALIZER) errorAt(p, &p->previous, "Can't return a value from an initializer.");
         expression(p, s, c, cc);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';' after return value.");
+        // --- TCO Logic ---
+        Chunk* chunk = currentChunk(c);
+        // We look at the very last byte emitted by 'expression'
+        // If it was OP_CALL, we swap it for OP_TAIL_CALL
+        if (chunk->count >= 2 && chunk->code[chunk->count - 2] == OP_CALL) {
+            chunk->code[chunk->count - 2] = OP_TAIL_CALL;
+        } else {
+            emitByte(p, c, OP_RETURN);
+        }
     }
-    emitByte(p, c, OP_RETURN);
 }
 
 static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {

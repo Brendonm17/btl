@@ -306,7 +306,7 @@ static InterpretResult run(VM* vm) {
       && L_OP_SET_PROPERTY,&& L_OP_GET_SUPER,&& L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,
       && L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,&& L_OP_DIVIDE,&& L_OP_MODULO,&& L_OP_NOT,
       && L_OP_NEGATE,&& L_OP_PRINT,&& L_OP_JUMP,&& L_OP_JUMP_IF_FALSE,&& L_OP_LOOP,
-      && L_OP_CALL,&& L_OP_INVOKE,&& L_OP_SUPER_INVOKE,&& L_OP_CLOSURE,
+      && L_OP_CALL,&& L_OP_TAIL_CALL,&& L_OP_INVOKE,&& L_OP_SUPER_INVOKE,&& L_OP_CLOSURE,
       && L_OP_CLOSE_UPVALUE,&& L_OP_RETURN,&& L_OP_CLASS,&& L_OP_INHERIT,&& L_OP_METHOD,
       && L_OP_BUILD_LIST,&& L_OP_INDEX_GET,&& L_OP_INDEX_SET,&& L_OP_IMPORT
     };
@@ -558,6 +558,42 @@ static InterpretResult run(VM* vm) {
                 }
                 frame = &vm->frames[vm->frameCount - 1];
                 DISPATCH(); }
+            OPCODE(OP_TAIL_CALL) : {
+                int argCount = READ_BYTE();
+                Value callee = peek(vm, argCount);
+                // We can only tail-call closures
+                // Natives don't have a bytecode frame to recycle.
+                if (!IS_CLOSURE(callee)) {
+                    // Fallback to a normal call logic or error
+                    if (!callValue(vm, callee, argCount)) {
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    DISPATCH();
+                }
+                ObjClosure* closure = AS_CLOSURE(callee);
+                if (argCount != closure->function->arity) {
+                    runtimeError(vm, "Expected %d arguments but got %d.",
+                        closure->function->arity, argCount);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                // --- RECYCLE THE FRAME ---
+                CallFrame* frame = &vm->frames[vm->frameCount - 1];
+                // 1. VERY IMPORTANT: Close any upvalues in the current frame.
+                // If we overwrite these slots without closing, we break closures.
+                closeUpvalues(vm, frame->slots);
+                // 2. Shift the new function and its arguments down the stack
+                // into the slots used by the current function.
+                // Use memmove because the memory regions overlap.
+                int totalSlotsToMove = argCount + 1; // callee + args
+                memmove(frame->slots, vm->stackTop - totalSlotsToMove, sizeof(Value)* totalSlotsToMove);
+                // 3. Reset the stack top to just after our new shifted arguments.
+                vm->stackTop = frame->slots + totalSlotsToMove;
+                // 4. Update the frame pointers to the new closure.
+                frame->closure = closure;
+                frame->ip = closure->function->chunk.code;
+                // Notice: We DO NOT increment vm->frameCount.
+                DISPATCH();
+            }
             OPCODE(OP_INVOKE) : {
                 struct ObjString* m = AS_STRING(READ_CONSTANT());
                 int a = READ_BYTE();
