@@ -6,33 +6,51 @@
 #include "scanner.h"
 
 typedef struct {
-    Token name; int depth; bool isCaptured;
+    Token name;
+    int depth;
+    bool isCaptured;
 } Local;
+
 typedef struct {
-    uint8_t index; bool isLocal;
+    uint8_t index;
+    bool isLocal;
 } Upvalue;
+
 typedef struct Loop {
-    struct Loop* enclosing; int start; int bodyJump; int scopeDepth; int breakJumps[255]; int breakCount;
+    struct Loop* enclosing;
+    int start;
+    int bodyJump;
+    int scopeDepth;
+    int breakJumps[255];
+    int breakCount;
 } Loop;
+
 typedef enum {
-    TYPE_FUNCTION, TYPE_INITIALIZER, TYPE_METHOD, TYPE_SCRIPT
+    TYPE_FUNCTION,
+    TYPE_INITIALIZER,
+    TYPE_METHOD,
+    TYPE_SCRIPT
 } FunctionType;
 
 typedef struct Compiler {
     struct Compiler* enclosing;
     ObjFunction* function;
     FunctionType type;
+
     Local locals[UINT8_COUNT];
     int localCount;
     Upvalue upvalues[UINT8_COUNT];
     int scopeDepth;
+
     Loop* currentLoop;
     ObjModule* module;
+
     struct VM* vm;
 } Compiler;
 
 typedef struct ClassCompiler {
-    struct ClassCompiler* enclosing; bool hasSuperclass;
+    struct ClassCompiler* enclosing;
+    bool hasSuperclass;
 } ClassCompiler;
 
 ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source);
