@@ -1,0 +1,9 @@
+fun apply(func, value) {
+  return func(value);
+}
+
+fun triple(n) {
+  return n * 3;
+}
+
+print apply(triple, 10); // expect: 30

@@ -1,0 +1,8 @@
+class Coffee {
+  init(type) {
+    this.type = type;
+  }
+}
+
+var c = Coffee("Espresso");
+print c.type; // expect: Espresso

@@ -1,0 +1,15 @@
+class Doughnut {
+  cook() {
+    print "Fry until golden brown.";
+  }
+}
+
+class BostonCream < Doughnut {
+  fill() {
+    print "Insert custard.";
+  }
+}
+
+var b = BostonCream();
+b.cook(); // expect: Fry until golden brown.
+b.fill(); // expect: Insert custard.

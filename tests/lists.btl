@@ -1,0 +1,7 @@
+var list = [1, 2, 3];
+print list[0]; // expect: 1
+print list[1]; // expect: 2
+print list[2]; // expect: 3
+
+list[1] = 10;
+print list[1]; // expect: 10

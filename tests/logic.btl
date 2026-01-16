@@ -1,0 +1,16 @@
+var sideEffect = "did not run";
+
+fun setSideEffect() {
+  sideEffect = "ran";
+  return true;
+}
+
+// True OR should not evaluate the second part
+true or setSideEffect();
+print sideEffect; // expect: did not run
+
+// False AND should not evaluate the second part
+false and setSideEffect();
+print sideEffect; // expect: did not run
+
+print true and "ok"; // expect: ok

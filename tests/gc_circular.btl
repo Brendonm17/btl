@@ -1,0 +1,10 @@
+{
+  var a = [1];
+  var b = [2];
+  a[0] = b;
+  b[0] = a;
+} 
+// Variables 'a' and 'b' go out of scope here.
+// The GC must be able to reclaim them even though they point to each other.
+
+print "GC handled circularity"; // expect: GC handled circularity

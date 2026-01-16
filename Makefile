@@ -31,6 +31,10 @@ $(OBJ_DIR):
 debug: CFLAGS = -Wall -Wextra -std=c11 -g -DDEBUG_TRACE_EXECUTION -DDEBUG_PRINT_CODE
 debug: clean $(TARGET)
 
+# Run the test suite
+test: $(TARGET)
+	@python3 test.py
+
 # Clean up build artifacts
 clean:
 	rm -rf $(OBJ_DIR) $(TARGET)

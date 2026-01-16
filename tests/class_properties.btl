@@ -1,0 +1,7 @@
+class Toast {}
+var t = Toast();
+t.jam = "strawberry";
+t.bread = "wheat";
+
+print t.jam;   // expect: strawberry
+print t.bread; // expect: wheat

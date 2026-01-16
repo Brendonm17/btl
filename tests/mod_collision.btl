@@ -1,0 +1,5 @@
+var name = "Main Script";
+import "tests/lib_a.btl" as lib;
+
+print name;     // expect: Main Script
+print lib.name; // expect: Module A

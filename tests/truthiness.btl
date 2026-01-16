@@ -1,0 +1,4 @@
+if (0) { print "0 is true"; }        // expect: 0 is true
+if ("") { print "empty is true"; }   // expect: empty is true
+if (nil) { print "nil is true"; } else { print "nil is false"; } // expect: nil is false
+if (false) { print "f is true"; } else { print "f is false"; }   // expect: f is false

@@ -1,0 +1,7 @@
+fun addElement(l, val) {
+  l[3] = val; // Assuming list started with 3 elements
+}
+
+var myList = [1, 2, 3, nil];
+addElement(myList, "added");
+print myList[3]; // expect: added

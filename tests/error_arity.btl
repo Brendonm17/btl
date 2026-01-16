@@ -1,0 +1,5 @@
+fun takeTwo(a, b) {
+  return a + b;
+}
+
+takeTwo(1); // expect error: Expected 2 arguments but got 1

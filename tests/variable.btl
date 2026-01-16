@@ -1,0 +1,4 @@
+var x = "hello";
+print x;              // expect: hello
+x = "world";
+print x;              // expect: world
