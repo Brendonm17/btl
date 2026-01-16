@@ -1,13 +1,10 @@
-fun fib(n) {
-  if (n < 2) return n;
-  return fib(n - 1) + fib(n - 2);
+fun fib_tco(n, a, b) {
+  if (n == 0) return a;
+  if (n == 1) return b;
+  return fib_tco(n - 1, b, a + b); // TAIL CALL
 }
 
 var start = clock();
-var result = fib(35);
-var end = clock();
-
-print "Result:";
-print result;
-print "BTL Time (seconds):";
-print end - start;
+print fib_tco(35, 0, 1);
+print "BTL Time:";
+print clock() - start;
