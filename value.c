@@ -29,6 +29,13 @@ void printValueStderr(Value value) {
     } else if (IS_BOOL(value)) {
         fprintf(stderr, AS_BOOL(value) ? "true" : "false");
     } else if (IS_OBJ(value)) {
+        Obj* obj = AS_OBJ(value);
+
+        // DEFENSIVE: If the pointer is obvious garbage, don't follow it
+        if ((uintptr_t) obj < 0x10000 || (uintptr_t) obj > 0x7FFFFFFFFFFF) {
+            fprintf(stderr, "<corrupt pointer %p>", (void*) obj);
+            return;
+        }
         // Handle Object types
         switch (OBJ_TYPE(value)) {
         case OBJ_BOUND_METHOD:
@@ -75,7 +82,7 @@ void printValueStderr(Value value) {
     case VAL_NIL:    fprintf(stderr, "nil"); break;
     case VAL_NUMBER: fprintf(stderr, "%g", AS_NUMBER(value)); break;
     case VAL_OBJ:    printObjectStderr(value); break;
-    case VAL_EMPTY: printf("<empty>"); break;
+    case VAL_EMPTY: fprintf(stderr, "<empty>"); break;
     }
 #endif
 }

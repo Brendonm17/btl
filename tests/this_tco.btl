@@ -1,0 +1,18 @@
+class Transformer {
+  init(val) {
+    this.val = val;
+  }
+
+  first(n) {
+    if (n == 0) return this.val;
+    return this.second(n - 1); // Tail call involving 'this'
+  }
+
+  second(n) {
+    return this.first(n); // Mutual method tail call
+  }
+}
+
+
+var t = Transformer("recycled this");
+print t.first(100); // expect: recycled this
