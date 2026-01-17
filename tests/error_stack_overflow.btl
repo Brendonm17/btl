@@ -1,5 +1,14 @@
-fun infinite() {
-  return infinite();
+// This function recurses far beyond the 64-call limit of the standard VM.
+fun count(n) {
+  if (n == 0) {
+    return "TCO Success";
+  }
+  // This is a tail call. 
+  // Your compiler should turn this into OP_TAIL_CALL.
+  return count(n - 1); 
 }
 
-infinite(); // expect error: Stack overflow
+// 10,000 is much larger than the 64 frame limit.
+print count(10000);
+
+// expect: TCO Success

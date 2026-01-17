@@ -20,6 +20,14 @@ static int constant(const char* n, Chunk* c, int o) {
     printValueStderr(c->constants.values[c->code[o + 1]]);
     fprintf(stderr, "'\n"); return o + 2;
 }
+static int invokeInstruction(const char* name, Chunk* chunk, int offset) {
+    uint8_t constant = chunk->code[offset + 1];
+    uint8_t argCount = chunk->code[offset + 2];
+    fprintf(stderr, "%-16s (%d args) %4d '", name, argCount, constant);
+    printValueStderr(chunk->constants.values[constant]);
+    fprintf(stderr, "'\n");
+    return offset + 3;
+}
 static int jump(const char* n, int s, Chunk* c, int o) {
     uint16_t j = (uint16_t) (c->code[o + 1] << 8) | c->code[o + 2];
     fprintf(stderr, "%-16s %4d -> %d\n", n, o, o + 3 + s * j); return o + 3;
@@ -58,9 +66,11 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_JUMP_IF_FALSE: return jump("OP_JUMP_IF_FALSE", 1, chunk, offset);
     case OP_LOOP: return jump("OP_LOOP", -1, chunk, offset);
     case OP_CALL: return byte("OP_CALL", chunk, offset);
-    case OP_TAIL_CALL: return byte("OP_TAIL_CALL", chunk, offset);
-    case OP_INVOKE: return constant("OP_INVOKE", chunk, offset);
-    case OP_SUPER_INVOKE: return constant("OP_SUPER_INVOKE", chunk, offset);
+    case OP_TAIL_CALL:     return byte("OP_TAIL_CALL", chunk, offset);
+    case OP_INVOKE:        return invokeInstruction("OP_INVOKE", chunk, offset);
+    case OP_TAIL_INVOKE:   return invokeInstruction("OP_TAIL_INVOKE", chunk, offset);
+    case OP_SUPER_INVOKE:  return invokeInstruction("OP_SUPER_INVOKE", chunk, offset);
+    case OP_TAIL_SUPER_INVOKE: return invokeInstruction("OP_TAIL_SUPER_INVOKE", chunk, offset);
     case OP_CLOSURE: {
         offset++; uint8_t con = chunk->code[offset++];
         fprintf(stderr, "%-16s %4d ", "OP_CLOSURE", con);

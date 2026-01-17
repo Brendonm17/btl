@@ -21,7 +21,7 @@ all: $(TARGET)
 # Debug Build
 # We use a separate target and don't use the same .o files to avoid 
 # mixing optimized code with debug-traced code.
-debug: CFLAGS += -g -O0 -DDEBUG_TRACE_EXECUTION -DDEBUG_LOG_GC -DDEBUG_STRESS_GC -DDEBUG_PRINT_CODE
+debug: CFLAGS += -g -O0 -DDEBUG_LOG_GC -DDEBUG_STRESS_GC -DDEBUG_PRINT_CODE
 debug: $(SRCS)
 	$(CC) $(CFLAGS) $(SRCS) -o $(DEBUG_TARGET) $(LIBS)
 

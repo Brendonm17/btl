@@ -17,6 +17,7 @@ void freeTable(struct VM* vm, Table* table) {
 }
 
 static Entry* findEntry(Entry* entries, int capacity, struct ObjString* key) {
+    if (capacity == 0) return NULL;
     uint32_t index = key->hash & (capacity - 1);
     Entry* tombstone = NULL;
     for (;;) {
@@ -70,6 +71,7 @@ bool tableDelete(Table* table, struct ObjString* key) {
 }
 
 void tableAddAll(struct VM* vm, Table* from, Table* to) {
+    if (from == to) return;
     for (int i = 0; i < from->capacity; i++) {
         Entry* entry = &from->entries[i];
         if (entry->key != NULL) tableSet(vm, to, entry->key, entry->value);
@@ -77,7 +79,7 @@ void tableAddAll(struct VM* vm, Table* from, Table* to) {
 }
 
 struct ObjString* tableFindString(Table* table, const char* chars, int length, uint32_t hash) {
-    if (table->count == 0) return NULL;
+    if (table->capacity == 0) return NULL;
     uint32_t index = hash & (table->capacity - 1);
     for (;;) {
         Entry* entry = &table->entries[index];

@@ -1,0 +1,10 @@
+var big = 1234567.89;
+var result = (big * 2 / 2 + 1) - big;
+if (result == 1) {
+  print "Numbers OK";   // expect: Numbers OK
+} else {
+  print "Precision Error";
+}
+
+print nil == nil;   // expect: true
+print true != false; // expect: true

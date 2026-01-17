@@ -67,6 +67,7 @@ static void errorAt(Parser* p, Token* token, const char* message) {
     }
 
     fprintf(stderr, ": %s\n", message);
+    fflush(stderr);
 }
 
 static void advance(Parser* p, Scanner* s) {
@@ -564,13 +565,11 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
 
     if (match(p, s, TOKEN_LESS)) {
         consume(p, s, TOKEN_IDENTIFIER, "Expect superclass name.");
-
-        // Push superclass onto stack
-        variable(p, s, c, &classC, false);
-
         if (identifiersEqual(&nameToken, &p->previous)) {
             errorAt(p, &p->previous, "A class can't inherit from itself.");
         }
+        // Push superclass onto stack
+        variable(p, s, c, &classC, false);
 
         beginScope(c);
         // Manual 'super' local variable
@@ -706,25 +705,35 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     c->currentLoop = loop.enclosing;
     endScope(p, c); // Closes the outer loop scope (including the master variable)
 }
+
 static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (c->type == TYPE_SCRIPT) {
         errorAt(p, &p->previous, "Can't return from top-level code.");
+        // Skip the rest of the statement to avoid cascading errors or crashes
+        consume(p, s, TOKEN_SEMICOLON, "Expect ';' after return.");
+        return;
     }
 
     if (match(p, s, TOKEN_SEMICOLON)) {
-        // Emit logic for 'return;'
         emitByte(p, c, OP_NIL);
         emitByte(p, c, OP_RETURN);
     } else {
-        if (c->type == TYPE_INITIALIZER) errorAt(p, &p->previous, "Can't return a value from an initializer.");
+        if (c->type == TYPE_INITIALIZER) {
+            errorAt(p, &p->previous, "Can't return a value from an initializer.");
+        }
+
         expression(p, s, c, cc);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';' after return value.");
-        // --- TCO Logic ---
+
         Chunk* chunk = currentChunk(c);
-        // We look at the very last byte emitted by 'expression'
-        // If it was OP_CALL, we swap it for OP_TAIL_CALL
+
+        // Safety: Ensure count is high enough before looking back
         if (chunk->count >= 2 && chunk->code[chunk->count - 2] == OP_CALL) {
             chunk->code[chunk->count - 2] = OP_TAIL_CALL;
+        } else if (chunk->count >= 3 && chunk->code[chunk->count - 3] == OP_INVOKE) {
+            chunk->code[chunk->count - 3] = OP_TAIL_INVOKE;
+        } else if (chunk->count >= 3 && chunk->code[chunk->count - 3] == OP_SUPER_INVOKE) {
+            chunk->code[chunk->count - 3] = OP_TAIL_SUPER_INVOKE;
         } else {
             emitByte(p, c, OP_RETURN);
         }
