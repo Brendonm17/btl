@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "common.h"
 #include "compiler.h"
@@ -40,6 +41,12 @@ typedef struct {
     ParseFn infix;
     Precedence precedence;
 } ParseRule;
+
+typedef struct {
+    bool isConstant;
+    Value value;
+    int length;
+} LastInstruction;
 
 static void expression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
@@ -99,13 +106,39 @@ static bool match(Parser* p, Scanner* s, TokenType type) {
     return true;
 }
 
+// Fixed: emitByte is the only one that updates markers
 static void emitByte(Parser* p, Compiler* c, uint8_t byte) {
+    c->previousInstruction = c->lastInstruction;
+    c->lastInstruction = currentChunk(c)->count;
     writeChunk(c->vm, currentChunk(c), byte, p->previous.line);
 }
 
+// Fixed: emitBytes writes the second byte directly so the marker points to opcode
 static void emitBytes(Parser* p, Compiler* c, uint8_t byte1, uint8_t byte2) {
     emitByte(p, c, byte1);
-    emitByte(p, c, byte2);
+    writeChunk(c->vm, currentChunk(c), byte2, p->previous.line);
+}
+
+static LastInstruction getInstructionAt(Compiler* c, int offset) {
+    Chunk* chunk = currentChunk(c);
+    LastInstruction result = { .isConstant = false, .value = NIL_VAL, .length = 0 };
+    if (offset < 0 || offset >= chunk->count) return result;
+
+    uint8_t op = chunk->code[offset];
+    if (op == OP_CONSTANT) {
+        uint8_t index = chunk->code[offset + 1];
+        result.isConstant = true;
+        result.value = chunk->constants.values[index];
+        result.length = 2;
+    } else if (op == OP_CONSTANT_LONG) {
+        uint8_t lo = chunk->code[offset + 1];
+        uint8_t hi = chunk->code[offset + 2];
+        uint16_t index = (hi << 8) | lo;
+        result.isConstant = true;
+        result.value = chunk->constants.values[index];
+        result.length = 3;
+    }
+    return result;
 }
 
 static void emitLoop(Parser* p, Compiler* c, int loopStart) {
@@ -117,8 +150,8 @@ static void emitLoop(Parser* p, Compiler* c, int loopStart) {
 
 static int emitJump(Parser* p, Compiler* c, uint8_t instruction) {
     emitByte(p, c, instruction);
-    emitByte(p, c, 0xff);
-    emitByte(p, c, 0xff);
+    writeChunk(c->vm, currentChunk(c), 0xff, p->previous.line);
+    writeChunk(c->vm, currentChunk(c), 0xff, p->previous.line);
     return currentChunk(c)->count - 2;
 }
 
@@ -131,25 +164,28 @@ static int makeConstant(Parser* p, Compiler* c, Value value) {
     return constant;
 }
 
+// Fixed: operands written via writeChunk to keep marker on the Opcode
 static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index) {
     if (index < 256) {
-        emitBytes(p, c, shortOp, (uint8_t) index);
+        emitByte(p, c, shortOp);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) index, p->previous.line);
     } else {
         emitByte(p, c, longOp);
-        emitByte(p, c, (uint8_t) (index & 0xff));
-        emitByte(p, c, (uint8_t) ((index >> 8) & 0xff));
+        writeChunk(c->vm, currentChunk(c), (uint8_t) (index & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) ((index >> 8) & 0xff), p->previous.line);
     }
 }
 
 static void emitLongInvoke(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index, uint8_t argCount) {
     if (index < 256) {
-        emitBytes(p, c, shortOp, (uint8_t) index);
-        emitByte(p, c, argCount);
+        emitByte(p, c, shortOp);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) index, p->previous.line);
+        writeChunk(c->vm, currentChunk(c), argCount, p->previous.line);
     } else {
         emitByte(p, c, longOp);
-        emitByte(p, c, (uint8_t) (index & 0xff));
-        emitByte(p, c, (uint8_t) ((index >> 8) & 0xff));
-        emitByte(p, c, argCount);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) (index & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) ((index >> 8) & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), argCount, p->previous.line);
     }
 }
 
@@ -166,6 +202,8 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
     c->type = type;
     c->localCount = 0;
     c->scopeDepth = 0;
+    c->lastInstruction = -1;
+    c->previousInstruction = -1;
     c->vm = p->vm;
     c->module = module;
     c->currentLoop = NULL;
@@ -180,13 +218,11 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
     local->depth = 0;
     local->isCaptured = false;
 
-    // Fix: Ensure slot 0 is named to prevent indexing errors in closures/recursion
     if (type != TYPE_SCRIPT) {
         if (type == TYPE_METHOD || type == TYPE_INITIALIZER) {
             local->name.start = "this";
             local->name.length = 4;
         } else {
-            // Function slot 0 is named after the function itself
             local->name.start = p->previous.start;
             local->name.length = p->previous.length;
         }
@@ -290,16 +326,51 @@ static void declareVariable(Parser* p, Compiler* c) {
 }
 
 static void func(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    (void) canAssign; // Silence the unused parameter warning
+    (void) canAssign;
     function(p, s, c, cc, TYPE_FUNCTION);
 }
 
-// Pratt Parser Prefix/Infix Functions
+// Fixed: Robust Constant Folding in binary
 static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     TokenType opType = p->previous.type;
     ParseRule* rule = getRule(opType);
+
+    int lhsOffset = c->lastInstruction;
+    LastInstruction lhs = getInstructionAt(c, lhsOffset);
+
     parsePrecedence(p, s, c, cc, (Precedence) (rule->precedence + 1));
+
+    int rhsOffset = c->lastInstruction;
+    LastInstruction rhs = getInstructionAt(c, rhsOffset);
+
+    if (lhs.isConstant && rhs.isConstant && (lhsOffset + lhs.length == rhsOffset)) {
+        if (IS_NUMBER(lhs.value) && IS_NUMBER(rhs.value)) {
+            double a = AS_NUMBER(lhs.value);
+            double b = AS_NUMBER(rhs.value);
+            double result;
+            bool folded = true;
+            switch (opType) {
+            case TOKEN_PLUS:    result = a + b; break;
+            case TOKEN_MINUS:   result = a - b; break;
+            case TOKEN_STAR:    result = a * b; break;
+            case TOKEN_SLASH:
+                if (b == 0) {
+                    errorAt(p, &p->previous, "Division by zero."); return;
+                }
+                result = a / b; break;
+            case TOKEN_PERCENT: result = fmod(a, b); break;
+            default: folded = false;
+            }
+            if (folded) {
+                currentChunk(c)->count = lhsOffset;
+                c->lastInstruction = c->previousInstruction;
+                emitLong(p, c, OP_CONSTANT, OP_CONSTANT_LONG, makeConstant(p, c, NUMBER_VAL(result)));
+                return;
+            }
+        }
+    }
+
     switch (opType) {
     case TOKEN_BANG_EQUAL:    emitBytes(p, c, OP_EQUAL, OP_NOT); break;
     case TOKEN_EQUAL_EQUAL:   emitByte(p, c, OP_EQUAL); break;
@@ -346,38 +417,28 @@ static void string(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
 
 static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Token name, bool canAssign) {
     uint8_t getOp, setOp;
-    uint8_t getOp16, setOp16; // Long variants
+    uint8_t getOp16, setOp16;
     bool isGlobal = false;
 
     int arg = resolveLocal(p, c, &name);
     if (arg != -1) {
-        getOp = OP_GET_LOCAL;
-        setOp = OP_SET_LOCAL;
+        getOp = OP_GET_LOCAL; setOp = OP_SET_LOCAL;
     } else if ((arg = resolveUpvalue(p, c, &name)) != -1) {
-        getOp = OP_GET_UPVALUE;
-        setOp = OP_SET_UPVALUE;
+        getOp = OP_GET_UPVALUE; setOp = OP_SET_UPVALUE;
     } else {
         arg = identifierConstant(p, c, &name);
-        getOp = OP_GET_GLOBAL;
-        setOp = OP_SET_GLOBAL;
-        getOp16 = OP_GET_GLOBAL_LONG;
-        setOp16 = OP_SET_GLOBAL_LONG;
+        getOp = OP_GET_GLOBAL; setOp = OP_SET_GLOBAL;
+        getOp16 = OP_GET_GLOBAL_LONG; setOp16 = OP_SET_GLOBAL_LONG;
         isGlobal = true;
     }
 
     if (canAssign && match(p, s, TOKEN_EQUAL)) {
         expression(p, s, c, cc);
-        if (isGlobal) {
-            emitLong(p, c, setOp, setOp16, arg);
-        } else {
-            emitBytes(p, c, setOp, (uint8_t) arg);
-        }
+        if (isGlobal) emitLong(p, c, setOp, setOp16, arg);
+        else emitBytes(p, c, setOp, (uint8_t) arg);
     } else {
-        if (isGlobal) {
-            emitLong(p, c, getOp, getOp16, arg);
-        } else {
-            emitBytes(p, c, getOp, (uint8_t) arg);
-        }
+        if (isGlobal) emitLong(p, c, getOp, getOp16, arg);
+        else emitBytes(p, c, getOp, (uint8_t) arg);
     }
 }
 
@@ -429,10 +490,20 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
     }
 }
 
+// Fixed: Constant folding for Unary Negation
 static void unary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     TokenType op = p->previous.type;
     parsePrecedence(p, s, c, cc, PREC_UNARY);
+
+    LastInstruction operand = getInstructionAt(c, c->lastInstruction);
+    if (op == TOKEN_MINUS && operand.isConstant && IS_NUMBER(operand.value)) {
+        currentChunk(c)->count = c->lastInstruction; // Rollback
+        c->lastInstruction = c->previousInstruction;
+        emitLong(p, c, OP_CONSTANT, OP_CONSTANT_LONG, makeConstant(p, c, NUMBER_VAL(-AS_NUMBER(operand.value))));
+        return;
+    }
+
     switch (op) {
     case TOKEN_BANG:  emitByte(p, c, OP_NOT); break;
     case TOKEN_MINUS: emitByte(p, c, OP_NEGATE); break;
@@ -480,21 +551,18 @@ static void this_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool ca
 
 static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    if (cc == NULL)
-        errorAt(p, &p->previous, "Can't use 'super' outside of a class.");
-    else if (!cc->hasSuperclass)
-        errorAt(p, &p->previous, "Can't use 'super' in a class with no superclass.");
+    if (cc == NULL) errorAt(p, &p->previous, "Can't use 'super' outside of a class.");
+    else if (!cc->hasSuperclass) errorAt(p, &p->previous, "Can't use 'super' in a class with no superclass.");
 
     consume(p, s, TOKEN_DOT, "Expect '.'.");
     consume(p, s, TOKEN_IDENTIFIER, "Expect superclass method name.");
     int name = makeConstant(p, c, OBJ_VAL(copyString(c->vm, p->previous.start, p->previous.length)));
-    // might need to move this
+
     Token thisT = { .start = "this", .length = 4 };
     namedVariable(p, s, c, cc, thisT, false);
     Token superT = { .start = "super", .length = 5 };
     namedVariable(p, s, c, cc, superT, false);
 
-    // If it's a super call: super.method(args)
     if (match(p, s, TOKEN_LEFT_PAREN)) {
         uint8_t args = 0;
         if (!check(p, TOKEN_RIGHT_PAREN)) {
@@ -503,10 +571,8 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
             } while (match(p, s, TOKEN_COMMA));
         }
         consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        // Check if it's a tail call if your language has that logic
         emitLongInvoke(p, c, OP_SUPER_INVOKE, OP_SUPER_INVOKE_LONG, name, args);
     } else {
-        // Just getting the method: super.method
         emitLong(p, c, OP_GET_SUPER, OP_GET_SUPER_LONG, name);
     }
 }
@@ -544,8 +610,7 @@ static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
     advance(p, s);
     ParseFn prefix = getRule(p->previous.type)->prefix;
     if (!prefix) {
-        errorAt(p, &p->previous, "Expect expression.");
-        return;
+        errorAt(p, &p->previous, "Expect expression."); return;
     }
 
     bool canAssign = prec <= PREC_ASSIGNMENT;
@@ -556,11 +621,7 @@ static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
         ParseFn infix = getRule(p->previous.type)->infix;
         infix(p, s, c, cc, canAssign);
     }
-    // If we are at assignment precedence but didn't consume the '=', 
-    // it means the left-hand side wasn't a valid assignment target.
-    if (canAssign && match(p, s, TOKEN_EQUAL)) {
-        errorAt(p, &p->previous, "Invalid assignment target.");
-    }
+    if (canAssign && match(p, s, TOKEN_EQUAL)) errorAt(p, &p->previous, "Invalid assignment target.");
 }
 
 static ParseRule* getRule(TokenType type) {
@@ -594,8 +655,8 @@ static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Func
     int index = makeConstant(p, c, OBJ_VAL(f));
     emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, index);
     for (int i = 0; i < f->upvalueCount; i++) {
-        emitByte(p, c, sub.upvalues[i].isLocal ? 1 : 0);
-        emitByte(p, c, sub.upvalues[i].index);
+        writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
+        writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
     }
 }
 
@@ -611,75 +672,48 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
 static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect class name.");
     Token nameToken = p->previous;
-
-    // 1. Get string constant for the VM to name the class
     int nameStringConst = makeConstant(p, c, OBJ_VAL(copyString(c->vm, nameToken.start, nameToken.length)));
-    // 2. Get global table index to store the class variable
     int nameGlobalIdx = identifierConstant(p, c, &nameToken);
 
     declareVariable(p, c);
-
-    // Create class and define the global variable
-    emitLong(p, c, OP_CLASS, OP_CLASS_LONG, nameStringConst); // Use the string constant index
-    defineVariable(p, c, nameGlobalIdx);        // Use the global table index
+    emitLong(p, c, OP_CLASS, OP_CLASS_LONG, nameStringConst);
+    defineVariable(p, c, nameGlobalIdx);
 
     ClassCompiler classC = { .enclosing = cc, .hasSuperclass = false };
-
     if (match(p, s, TOKEN_LESS)) {
         consume(p, s, TOKEN_IDENTIFIER, "Expect superclass name.");
-        if (identifiersEqual(&nameToken, &p->previous)) {
-            errorAt(p, &p->previous, "A class can't inherit from itself.");
-        }
-        // Push superclass onto stack
+        if (identifiersEqual(&nameToken, &p->previous)) errorAt(p, &p->previous, "A class can't inherit from itself.");
         variable(p, s, c, &classC, false);
-
         beginScope(c);
-        // Manual 'super' local variable
         Local* l = &c->locals[c->localCount++];
         l->name.start = "super"; l->name.length = 5; l->depth = c->scopeDepth; l->isCaptured = false;
-
-        // Push subclass back onto stack for OP_INHERIT
         namedVariable(p, s, c, &classC, nameToken, false);
         emitByte(p, c, OP_INHERIT);
         classC.hasSuperclass = true;
     }
 
-    // Now load the class back onto the stack to bind methods
     namedVariable(p, s, c, &classC, nameToken, false);
-
-    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{' before class body.");
-    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
-        method(p, s, c, &classC);
-    }
-    consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
-
-    emitByte(p, c, OP_POP); // Pop the class
-
-    if (classC.hasSuperclass) {
-        endScope(p, c);
-    }
+    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
+    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) method(p, s, c, &classC);
+    consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}'.");
+    emitByte(p, c, OP_POP);
+    if (classC.hasSuperclass) endScope(p, c);
 }
 
 static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    // 1. Parse the function name (the variable that will hold the closure)
     int global = parseVariable(p, s, c, "Expect function name.");
-    // 2. Mark it as initialized so the function can be recursive
     markInitialized(c);
-    // 3. Compile the body using your helper
     function(p, s, c, cc, TYPE_FUNCTION);
-    // 4. Finalize the variable
     defineVariable(p, c, global);
 }
 
 static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     beginScope(c);
-    consume(p, s, TOKEN_LEFT_PAREN, "Expect '(' after 'for'.");
+    consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
 
-    // 1. Initializer Clause
     if (match(p, s, TOKEN_SEMICOLON)) {
-        // No initializer.
     } else if (match(p, s, TOKEN_VAR)) {
-        int global = parseVariable(p, s, c, "Expect variable name.");
+        int global = parseVariable(p, s, c, "Expect name.");
         if (match(p, s, TOKEN_EQUAL)) expression(p, s, c, cc);
         else emitByte(p, c, OP_NIL);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
@@ -691,24 +725,20 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     }
 
     int loopStart = currentChunk(c)->count;
-
-    // 2. Condition Clause
     int exitJump = -1;
     if (!match(p, s, TOKEN_SEMICOLON)) {
         expression(p, s, c, cc);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';' after loop condition.");
+        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
         exitJump = emitJump(p, c, OP_JUMP_IF_FALSE);
         emitByte(p, c, OP_POP);
     }
 
-    // 3. Increment Clause
     if (!match(p, s, TOKEN_RIGHT_PAREN)) {
         int bodyJump = emitJump(p, c, OP_JUMP);
         int incrementStart = currentChunk(c)->count;
         expression(p, s, c, cc);
         emitByte(p, c, OP_POP);
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')' after for clauses.");
-
+        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
         emitLoop(p, c, loopStart);
         loopStart = incrementStart;
         patchJump(p, c, bodyJump);
@@ -717,142 +747,88 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     Loop loop = { .enclosing = c->currentLoop, .start = loopStart, .scopeDepth = c->scopeDepth, .breakCount = 0 };
     c->currentLoop = &loop;
 
-    // --- SHADOWING LOGIC START ---
-    // We look for the loop variable in the scope we just created in the initializer.
     int loopVar = -1;
     for (int i = c->localCount - 1; i >= 0; i--) {
         if (c->locals[i].depth != -1 && c->locals[i].depth == c->scopeDepth) {
-            loopVar = i;
-            break;
+            loopVar = i; break;
         }
     }
 
-    beginScope(c); // Inner iteration scope
-
+    beginScope(c);
     if (loopVar != -1) {
-        // Load the current value of the master loop variable
         emitBytes(p, c, OP_GET_LOCAL, (uint8_t) loopVar);
-
-        // Manually create a new local variable with the same name in the inner scope
         Local* shadow = &c->locals[c->localCount++];
-        shadow->name = c->locals[loopVar].name;
-        shadow->depth = c->scopeDepth; // Initialize immediately
-        shadow->isCaptured = false;
+        shadow->name = c->locals[loopVar].name; shadow->depth = c->scopeDepth; shadow->isCaptured = false;
     }
 
-    statement(p, s, c, cc); // Parse the loop body
+    statement(p, s, c, cc);
 
     if (loopVar != -1) {
-        // Copy the value from the iteration variable back to the master variable
-        // so that the increment clause (e.g., i++) uses the updated value.
         emitBytes(p, c, OP_GET_LOCAL, (uint8_t) c->localCount - 1);
         emitBytes(p, c, OP_SET_LOCAL, (uint8_t) loopVar);
         emitByte(p, c, OP_POP);
     }
 
-    endScope(p, c); // Emits OP_CLOSE_UPVALUE for the iteration-specific variable
-    // --- SHADOWING LOGIC END ---
-
+    endScope(p, c);
     emitLoop(p, c, loopStart);
-
     if (exitJump != -1) {
-        patchJump(p, c, exitJump);
-        emitByte(p, c, OP_POP);
+        patchJump(p, c, exitJump); emitByte(p, c, OP_POP);
     }
-
-    for (int i = 0; i < loop.breakCount; i++) {
-        patchJump(p, c, loop.breakJumps[i]);
-    }
-
+    for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
     c->currentLoop = loop.enclosing;
-    endScope(p, c); // Closes the outer loop scope (including the master variable)
+    endScope(p, c);
 }
 
 static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (c->type == TYPE_SCRIPT) {
-        errorAt(p, &p->previous, "Can't return from top-level code.");
-        // Skip the rest of the statement to avoid cascading errors or crashes
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';' after return.");
-        return;
+        errorAt(p, &p->previous, "Can't return from top-level code."); return;
     }
-
     if (match(p, s, TOKEN_SEMICOLON)) {
-        emitByte(p, c, OP_NIL);
-        emitByte(p, c, OP_RETURN);
+        emitByte(p, c, OP_NIL); emitByte(p, c, OP_RETURN);
     } else {
-        if (c->type == TYPE_INITIALIZER) {
-            errorAt(p, &p->previous, "Can't return a value from an initializer.");
-        }
-
+        if (c->type == TYPE_INITIALIZER) errorAt(p, &p->previous, "Can't return a value from an initializer.");
         expression(p, s, c, cc);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';' after return value.");
-
+        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
         Chunk* chunk = currentChunk(c);
-
-        if (chunk->count >= 2 && chunk->code[chunk->count - 2] == OP_CALL) {
-            chunk->code[chunk->count - 2] = OP_TAIL_CALL;
-        } else if (chunk->count >= 3 && chunk->code[chunk->count - 3] == OP_INVOKE) {
-            chunk->code[chunk->count - 3] = OP_TAIL_INVOKE;
-        } else if (chunk->count >= 4 && chunk->code[chunk->count - 4] == OP_INVOKE_LONG) {
-            chunk->code[chunk->count - 4] = OP_TAIL_INVOKE_LONG;
-        } else if (chunk->count >= 3 && chunk->code[chunk->count - 3] == OP_SUPER_INVOKE) {
-            chunk->code[chunk->count - 3] = OP_TAIL_SUPER_INVOKE;
-        } else if (chunk->count >= 4 && chunk->code[chunk->count - 4] == OP_SUPER_INVOKE_LONG) {
-            chunk->code[chunk->count - 4] = OP_TAIL_SUPER_INVOKE_LONG;
-        } else {
-            emitByte(p, c, OP_RETURN);
-        }
+        if (chunk->count >= 2 && chunk->code[chunk->count - 2] == OP_CALL) chunk->code[chunk->count - 2] = OP_TAIL_CALL;
+        else if (chunk->count >= 3 && chunk->code[chunk->count - 3] == OP_INVOKE) chunk->code[chunk->count - 3] = OP_TAIL_INVOKE;
+        else emitByte(p, c, OP_RETURN);
     }
 }
 
 static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (match(p, s, TOKEN_PRINT)) {
-        expression(p, s, c, cc);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        emitByte(p, c, OP_PRINT);
+        expression(p, s, c, cc); consume(p, s, TOKEN_SEMICOLON, "Expect ';'."); emitByte(p, c, OP_PRINT);
     } else if (match(p, s, TOKEN_FOR)) forStatement(p, s, c, cc);
     else if (match(p, s, TOKEN_IF)) {
-        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
-        expression(p, s, c, cc);
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        int thenJ = emitJump(p, c, OP_JUMP_IF_FALSE);
-        emitByte(p, c, OP_POP);
+        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('."); expression(p, s, c, cc); consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        int thenJ = emitJump(p, c, OP_JUMP_IF_FALSE); emitByte(p, c, OP_POP);
         statement(p, s, c, cc);
         int elseJ = emitJump(p, c, OP_JUMP);
         patchJump(p, c, thenJ);
         emitByte(p, c, OP_POP);
-        if (match(p, s, TOKEN_ELSE)) statement(p, s, c, cc);
+        if (match(p, s, TOKEN_ELSE))
+            statement(p, s, c, cc);
         patchJump(p, c, elseJ);
     } else if (match(p, s, TOKEN_RETURN)) returnStatement(p, s, c, cc);
     else if (match(p, s, TOKEN_WHILE)) {
         int start = currentChunk(c)->count;
         Loop loop = { .enclosing = c->currentLoop, .start = start, .scopeDepth = c->scopeDepth, .breakCount = 0 };
         c->currentLoop = &loop;
-        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
-        expression(p, s, c, cc);
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        int exitJ = emitJump(p, c, OP_JUMP_IF_FALSE);
-        emitByte(p, c, OP_POP);
-        statement(p, s, c, cc);
-        emitLoop(p, c, start);
-        patchJump(p, c, exitJ);
-        emitByte(p, c, OP_POP);
+        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('."); expression(p, s, c, cc); consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        int exitJ = emitJump(p, c, OP_JUMP_IF_FALSE); emitByte(p, c, OP_POP);
+        statement(p, s, c, cc); emitLoop(p, c, start); patchJump(p, c, exitJ); emitByte(p, c, OP_POP);
         for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
         c->currentLoop = loop.enclosing;
     } else if (match(p, s, TOKEN_BREAK)) {
-        if (c->currentLoop == NULL) errorAt(p, &p->previous, "Can't use 'break' outside loop.");
+        if (c->currentLoop == NULL) errorAt(p, &p->previous, "Lonely break.");
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
         for (int i = c->localCount - 1; i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth; i--) emitByte(p, c, OP_POP);
-        int jump = emitJump(p, c, OP_JUMP);
-        c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
+        int jump = emitJump(p, c, OP_JUMP); c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
     } else if (match(p, s, TOKEN_LEFT_BRACE)) {
-        beginScope(c);
-        block(p, s, c, cc);
-        endScope(p, c);
+        beginScope(c); block(p, s, c, cc); endScope(p, c);
     } else {
-        expression(p, s, c, cc);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        emitByte(p, c, OP_POP);
+        expression(p, s, c, cc); consume(p, s, TOKEN_SEMICOLON, "Expect ';'."); emitByte(p, c, OP_POP);
     }
 }
 
@@ -874,7 +850,7 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (match(p, s, TOKEN_CLASS)) classDeclaration(p, s, c, cc);
     else if (match(p, s, TOKEN_FUN)) funDeclaration(p, s, c, cc);
     else if (match(p, s, TOKEN_VAR)) {
-        int global = parseVariable(p, s, c, "Expect variable name.");
+        int global = parseVariable(p, s, c, "Expect name.");
         if (match(p, s, TOKEN_EQUAL)) expression(p, s, c, cc);
         else emitByte(p, c, OP_NIL);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
@@ -882,45 +858,21 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     } else if (match(p, s, TOKEN_IMPORT)) {
         consume(p, s, TOKEN_STRING, "Expect filename.");
         Token pathToken = p->previous;
-
-        // 1. Path constant for the VM
         int file = makeConstant(p, c, OBJ_VAL(copyString(c->vm, pathToken.start + 1, pathToken.length - 2)));
-
         int alias;
-        if (match(p, s, TOKEN_AS)) {
-            // Case: import "libs/math" as Math;
-            alias = parseVariable(p, s, c, "Expect variable name after 'as'.");
-        } else {
-            // Case: import "libs/math.btl"; -> extract "math"
-            const char* path = pathToken.start + 1;
-            int length = pathToken.length - 2;
-
-            // Find the start of the filename (after last / or \)
+        if (match(p, s, TOKEN_AS)) alias = parseVariable(p, s, c, "Expect variable name after 'as'.");
+        else {
+            const char* path = pathToken.start + 1; int length = pathToken.length - 2;
             const char* filename = path;
-            for (int i = 0; i < length; i++) {
-                if (path[i] == '/' || path[i] == '\\') filename = path + i + 1;
-            }
-
-            // Determine length until the first dot
+            for (int i = 0; i < length; i++) if (path[i] == '/' || path[i] == '\\') filename = path + i + 1;
             int nameLength = (int) (path + length - filename);
-            for (int i = 0; i < nameLength; i++) {
-                if (filename[i] == '.') {
-                    nameLength = i;
-                    break;
-                }
+            for (int i = 0; i < nameLength; i++) if (filename[i] == '.') {
+                nameLength = i; break;
             }
-
-            // Create a synthetic token for the "math" variable
-            Token nameToken;
-            nameToken.start = filename;
-            nameToken.length = nameLength;
-
-            declareVariable(p, c);
-            alias = identifierConstant(p, c, &nameToken);
+            Token nameToken = { .start = filename, .length = nameLength };
+            declareVariable(p, c); alias = identifierConstant(p, c, &nameToken);
         }
-
-        emitLong(p, c, OP_IMPORT, OP_IMPORT_LONG, file);
-        defineVariable(p, c, alias);
+        emitLong(p, c, OP_IMPORT, OP_IMPORT_LONG, file); defineVariable(p, c, alias);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';' after import.");
     } else statement(p, s, c, cc);
 

@@ -46,6 +46,8 @@ typedef struct Compiler {
     ObjModule* module;
 
     struct VM* vm;
+    int lastInstruction;
+    int previousInstruction;
 } Compiler;
 
 typedef struct ClassCompiler {
