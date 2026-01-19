@@ -25,6 +25,8 @@ void writeChunk(struct VM* vm, Chunk* chunk, uint8_t byte, int line) {
 }
 
 int addConstant(struct VM* vm, Chunk* chunk, Value value) {
-    push(vm, value); writeValueArray(vm, &chunk->constants, value); pop(vm);
+    push(vm, value);
+    writeValueArray(vm, &chunk->constants, value);
+    pop(vm);
     return chunk->constants.count - 1;
 }
