@@ -56,8 +56,10 @@ static char* readFile(const char* path) {
 static struct ObjString* findGlobalName(ObjModule* module, uint8_t index) {
     for (int i = 0; i < module->globalNames.capacity; i++) {
         Entry* entry = &module->globalNames.entries[i];
-        if (entry->key != NULL && (int) AS_NUMBER(entry->value) == (int) index) {
-            return entry->key;
+        // Check if slot is not empty, is a string, and matches the index
+        if (!IS_EMPTY(entry->key) && IS_STRING(entry->key) &&
+            (int) AS_NUMBER(entry->value) == (int) index) {
+            return AS_STRING(entry->key);
         }
     }
     return NULL;
@@ -75,12 +77,12 @@ static void defineNative(VM* vm, const char* name, NativeFn function) {
 
     Value indexValue;
     int index;
-    if (tableGet(&vm->rootModule->globalNames, nameStr, &indexValue)) {
+    if (tableGet(&vm->rootModule->globalNames, OBJ_VAL(nameStr), &indexValue)) {
         index = (int) AS_NUMBER(indexValue);
     } else {
         index = vm->rootModule->globalValues.count;
         writeValueArray(vm, &vm->rootModule->globalValues, EMPTY_VAL);
-        tableSet(vm, &vm->rootModule->globalNames, nameStr, NUMBER_VAL((double) index));
+        tableSet(vm, &vm->rootModule->globalNames, OBJ_VAL(nameStr), NUMBER_VAL((double) index));
     }
     vm->rootModule->globalValues.values[index] = vm->stack[1];
     pop(vm);
@@ -148,7 +150,7 @@ static bool callValue(VM* vm, Value callee, int argCount) {
             ObjClass* klass = AS_CLASS(callee);
             vm->stackTop[-argCount - 1] = OBJ_VAL(newInstance(vm, klass));
             Value initializer;
-            if (tableGet(&klass->methods, vm->initString, &initializer)) {
+            if (tableGet(&klass->methods, OBJ_VAL(vm->initString), &initializer)) {
                 return call(vm, AS_CLOSURE(initializer), argCount);
             }
             return true;
@@ -170,24 +172,27 @@ static bool callValue(VM* vm, Value callee, int argCount) {
 
 static bool invokeFromClass(VM* vm, ObjClass* klass, struct ObjString* name, int argCount) {
     Value method;
-    if (!tableGet(&klass->methods, name, &method)) return false;
+    if (!tableGet(&klass->methods, OBJ_VAL(name), &method)) return false;
     return call(vm, AS_CLOSURE(method), argCount);
 }
 
 static bool invoke(VM* vm, struct ObjString* name, int argCount) {
     Value receiver = peek(vm, argCount);
     if (!IS_OBJ(receiver)) return false;
+
+    Value nameVal = OBJ_VAL(name);
+
     if (IS_INSTANCE(receiver)) {
         ObjInstance* i = AS_INSTANCE(receiver);
         Value v;
-        if (tableGet(&i->fields, name, &v)) {
+        if (tableGet(&i->fields, nameVal, &v)) {
             vm->stackTop[-argCount - 1] = v; return callValue(vm, v, argCount);
         }
         return invokeFromClass(vm, i->klass, name, argCount);
     } else if (IS_MODULE(receiver)) {
         ObjModule* m = AS_MODULE(receiver);
         Value idx;
-        if (tableGet(&m->globalNames, name, &idx)) {
+        if (tableGet(&m->globalNames, nameVal, &idx)) {
             int i = (int) AS_NUMBER(idx);
             vm->stackTop[-argCount - 1] = m->globalValues.values[i];
             return callValue(vm, m->globalValues.values[i], argCount);
@@ -198,7 +203,7 @@ static bool invoke(VM* vm, struct ObjString* name, int argCount) {
 
 static bool bindMethod(VM* vm, ObjClass* klass, struct ObjString* name) {
     Value method;
-    if (!tableGet(&klass->methods, name, &method)) return false;
+    if (!tableGet(&klass->methods, OBJ_VAL(name), &method)) return false;
     ObjBoundMethod* bound = newBoundMethod(vm, peek(vm, 0), AS_CLOSURE(method));
     pop(vm); push(vm, OBJ_VAL(bound));
     return true;
@@ -386,7 +391,7 @@ static InterpretResult run(VM* vm) {
                 push(vm, value);
                 DISPATCH(); }
             OPCODE(OP_GET_GLOBAL_LONG) : {
-                uint8_t index = READ_SHORT();
+                uint16_t index = READ_SHORT();
                 ObjModule* module = frame->closure->function->module;
                 Value value = module->globalValues.values[index];
                 if (IS_EMPTY(value)) {
@@ -405,7 +410,7 @@ static InterpretResult run(VM* vm) {
                 module->globalValues.values[index] = pop(vm);
                 DISPATCH(); }
             OPCODE(OP_DEFINE_GLOBAL_LONG) : {
-                uint8_t index = READ_SHORT();
+                uint16_t index = READ_SHORT();
                 // Use the current frame's module, not vm.globals
                 ObjModule* module = frame->closure->function->module;
                 module->globalValues.values[index] = pop(vm);
@@ -422,7 +427,7 @@ static InterpretResult run(VM* vm) {
                 module->globalValues.values[index] = peek(vm, 0);
                 DISPATCH();}
             OPCODE(OP_SET_GLOBAL_LONG) : {
-                uint8_t index = READ_SHORT();
+                uint16_t index = READ_SHORT();
                 ObjModule* module = frame->closure->function->module;
                 if (IS_EMPTY(module->globalValues.values[index])) {
                     STORE_FRAME();
@@ -441,7 +446,7 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_IMPORT) : {
                 struct ObjString* filename = READ_STRING();
                 Value mVal;
-                if (tableGet(&vm->modules, filename, &mVal)) {
+                if (tableGet(&vm->modules, OBJ_VAL(filename), &mVal)) {
                     push(vm, mVal);
                     DISPATCH();
                 }
@@ -466,13 +471,13 @@ static InterpretResult run(VM* vm) {
                 // Because we updated endCompiler, the module will now return 'm' when it finishes.
                 vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
                 // 4. Cache the module
-                tableSet(vm, &vm->modules, filename, OBJ_VAL(m));
+                tableSet(vm, &vm->modules, OBJ_VAL(filename), OBJ_VAL(m));
                 REFRESH_FRAME();
                 DISPATCH();}
             OPCODE(OP_IMPORT_LONG) : {
                 struct ObjString* filename = READ_STRING_LONG();
                 Value mVal;
-                if (tableGet(&vm->modules, filename, &mVal)) {
+                if (tableGet(&vm->modules, OBJ_VAL(filename), &mVal)) {
                     push(vm, mVal);
                     DISPATCH();
                 }
@@ -497,7 +502,7 @@ static InterpretResult run(VM* vm) {
                 // Because we updated endCompiler, the module will now return 'm' when it finishes.
                 vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
                 // 4. Cache the module
-                tableSet(vm, &vm->modules, filename, OBJ_VAL(m));
+                tableSet(vm, &vm->modules, OBJ_VAL(filename), OBJ_VAL(m));
                 REFRESH_FRAME();
                 DISPATCH();}
             OPCODE(OP_GET_PROPERTY) : {
@@ -506,7 +511,7 @@ static InterpretResult run(VM* vm) {
                 if (IS_INSTANCE(receiver)) {
                     ObjInstance* instance = AS_INSTANCE(receiver);
                     Value value;
-                    if (tableGet(&instance->fields, name, &value)) {
+                    if (tableGet(&instance->fields, OBJ_VAL(name), &value)) {
                         pop(vm); // instance
                         push(vm, value);
                         DISPATCH();
@@ -521,7 +526,7 @@ static InterpretResult run(VM* vm) {
                 if (IS_MODULE(receiver)) {
                     ObjModule* module = AS_MODULE(receiver);
                     Value indexValue;
-                    if (tableGet(&module->globalNames, name, &indexValue)) {
+                    if (tableGet(&module->globalNames, OBJ_VAL(name), &indexValue)) {
                         int index = (int) AS_NUMBER(indexValue);
                         pop(vm); // module
                         push(vm, module->globalValues.values[index]);
@@ -540,7 +545,7 @@ static InterpretResult run(VM* vm) {
                 if (IS_INSTANCE(receiver)) {
                     ObjInstance* instance = AS_INSTANCE(receiver);
                     Value value;
-                    if (tableGet(&instance->fields, name, &value)) {
+                    if (tableGet(&instance->fields, OBJ_VAL(name), &value)) {
                         pop(vm); // instance
                         push(vm, value);
                         DISPATCH();
@@ -555,7 +560,7 @@ static InterpretResult run(VM* vm) {
                 if (IS_MODULE(receiver)) {
                     ObjModule* module = AS_MODULE(receiver);
                     Value indexValue;
-                    if (tableGet(&module->globalNames, name, &indexValue)) {
+                    if (tableGet(&module->globalNames, OBJ_VAL(name), &indexValue)) {
                         int index = (int) AS_NUMBER(indexValue);
                         pop(vm); // module
                         push(vm, module->globalValues.values[index]);
@@ -698,10 +703,10 @@ static InterpretResult run(VM* vm) {
                 ip += offset;
                 DISPATCH();}
             OPCODE(OP_JUMP_IF_FALSE) : {
-                int o = READ_SHORT();
+                uint16_t offset = READ_SHORT();
                 Value v = peek(vm, 0);
                 if (IS_NIL(v) || (IS_BOOL(v) && !AS_BOOL(v)))
-                    ip += o;
+                    ip += offset;
                 DISPATCH(); }
             OPCODE(OP_LOOP) : {
                 uint16_t offset = READ_SHORT();
@@ -785,7 +790,7 @@ static InterpretResult run(VM* vm) {
                 ObjInstance* instance = AS_INSTANCE(receiver);
                 // 2. Look up the method
                 Value methodVal;
-                if (!tableGet(&instance->klass->methods, method, &methodVal)) {
+                if (!tableGet(&instance->klass->methods, OBJ_VAL(method), &methodVal)) {
                     STORE_FRAME();
                     runtimeError(vm, "Undefined property '%s'.", method->chars);
                     return INTERPRET_RUNTIME_ERROR;
@@ -821,7 +826,7 @@ static InterpretResult run(VM* vm) {
                 ObjInstance* instance = AS_INSTANCE(receiver);
                 // 2. Look up the method
                 Value methodVal;
-                if (!tableGet(&instance->klass->methods, method, &methodVal)) {
+                if (!tableGet(&instance->klass->methods, OBJ_VAL(method), &methodVal)) {
                     STORE_FRAME();
                     runtimeError(vm, "Undefined property '%s'.", method->chars);
                     return INTERPRET_RUNTIME_ERROR;
@@ -895,14 +900,14 @@ static InterpretResult run(VM* vm) {
                 ObjString* name = READ_STRING(); // Get method name from constants
                 Value method = peek(vm, 0);          // Get closure from stack top
                 ObjClass* klass = AS_CLASS(peek(vm, 1)); // Get class from below closure
-                tableSet(vm, &klass->methods, name, method);
+                tableSet(vm, &klass->methods, OBJ_VAL(name), method);
                 pop(vm); // Pop the closure
                 DISPATCH(); }
             OPCODE(OP_METHOD_LONG) : {
                 ObjString* name = READ_STRING_LONG(); // Get method name from constants
                 Value method = peek(vm, 0);          // Get closure from stack top
                 ObjClass* klass = AS_CLASS(peek(vm, 1)); // Get class from below closure
-                tableSet(vm, &klass->methods, name, method);
+                tableSet(vm, &klass->methods, OBJ_VAL(name), method);
                 pop(vm); // Pop the closure
                 DISPATCH(); }
             OPCODE(OP_SET_PROPERTY) : {
@@ -912,7 +917,8 @@ static InterpretResult run(VM* vm) {
                     runtimeError(vm, "Only instances have fields."); return INTERPRET_RUNTIME_ERROR;
                 }
                 ObjInstance* i = AS_INSTANCE(pop(vm));
-                tableSet(vm, &i->fields, READ_STRING(), val);
+                ObjString* name = READ_STRING();
+                tableSet(vm, &i->fields, OBJ_VAL(name), val);
                 push(vm, val);
                 DISPATCH();}
             OPCODE(OP_SET_PROPERTY_LONG) : {
@@ -922,7 +928,8 @@ static InterpretResult run(VM* vm) {
                     runtimeError(vm, "Only instances have fields."); return INTERPRET_RUNTIME_ERROR;
                 }
                 ObjInstance* i = AS_INSTANCE(pop(vm));
-                tableSet(vm, &i->fields, READ_STRING_LONG(), val);
+                ObjString* name = READ_STRING_LONG();
+                tableSet(vm, &i->fields, OBJ_VAL(name), val);
                 push(vm, val);
                 DISPATCH();}
             OPCODE(OP_GET_SUPER) : {
@@ -962,7 +969,7 @@ static InterpretResult run(VM* vm) {
                 int argCount = READ_BYTE();
                 ObjClass* superclass = AS_CLASS(pop(vm)); // Superclass is pushed by the compiler
                 Value methodVal;
-                if (!tableGet(&superclass->methods, method, &methodVal)) {
+                if (!tableGet(&superclass->methods, OBJ_VAL(method), &methodVal)) {
                     STORE_FRAME();
                     runtimeError(vm, "Undefined property '%s'.", method->chars);
                     return INTERPRET_RUNTIME_ERROR;
@@ -988,7 +995,7 @@ static InterpretResult run(VM* vm) {
                 int argCount = READ_BYTE();
                 ObjClass* superclass = AS_CLASS(pop(vm)); // Superclass is pushed by the compiler
                 Value methodVal;
-                if (!tableGet(&superclass->methods, method, &methodVal)) {
+                if (!tableGet(&superclass->methods, OBJ_VAL(method), &methodVal)) {
                     STORE_FRAME();
                     runtimeError(vm, "Undefined property '%s'.", method->chars);
                     return INTERPRET_RUNTIME_ERROR;

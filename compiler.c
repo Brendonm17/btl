@@ -58,6 +58,8 @@ static ParseRule* getRule(TokenType type);
 static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Precedence precedence);
 static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index);
 static void emitLongInvoke(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index, uint8_t argCount);
+static int makeConstant(Parser* p, Compiler* c, Value value);
+static void emitConstant(Parser* p, Compiler* c, Value value);
 
 static Chunk* currentChunk(Compiler* c) {
     return &c->function->chunk;
@@ -119,6 +121,10 @@ static void emitBytes(Parser* p, Compiler* c, uint8_t byte1, uint8_t byte2) {
     writeChunk(c->vm, currentChunk(c), byte2, p->previous.line);
 }
 
+static void emitConstant(Parser* p, Compiler* c, Value value) {
+    emitLong(p, c, OP_CONSTANT, OP_CONSTANT_LONG, makeConstant(p, c, value));
+}
+
 static LastInstruction getInstructionAt(Compiler* c, int offset) {
     Chunk* chunk = currentChunk(c);
     LastInstruction result = { .isConstant = false, .value = NIL_VAL, .length = 0 };
@@ -156,11 +162,19 @@ static int emitJump(Parser* p, Compiler* c, uint8_t instruction) {
 }
 
 static int makeConstant(Parser* p, Compiler* c, Value value) {
+    Value existingIndex;
+    if (tableGet(&c->constants, value, &existingIndex)) {
+        return (int) AS_NUMBER(existingIndex);
+    }
+    push(c->vm, value);
     int constant = addConstant(c->vm, currentChunk(c), value);
     if (constant > UINT16_MAX) {
         errorAt(p, &p->previous, "Too many constants in chunk.");
+        pop(c->vm);
         return 0;
     }
+    tableSet(c->vm, &c->constants, value, NUMBER_VAL((double) constant));
+    pop(c->vm);
     return constant;
 }
 
@@ -206,6 +220,7 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
     c->previousInstruction = -1;
     c->vm = p->vm;
     c->module = module;
+    initTable(&c->constants);
     c->currentLoop = NULL;
     c->function = newFunction(p->vm, module);
     c->vm->compiler = (void*) c;
@@ -243,6 +258,7 @@ static ObjFunction* endCompiler(Parser* p, Compiler* c) {
 #ifdef DEBUG_PRINT_CODE
     if (!p->hadError) disassembleChunk(currentChunk(c), function->name != NULL ? function->name->chars : "<script>");
 #endif
+    freeTable(c->vm, &c->constants);
     c->vm->compiler = (void*) c->enclosing;
     return function;
 }
@@ -267,12 +283,17 @@ static bool identifiersEqual(Token* a, Token* b) {
 
 static int identifierConstant(Parser* p, Compiler* c, Token* name) {
     (void) p;
-    struct ObjString* nameString = copyString(c->vm, name->start, name->length);
+    ObjString* nameString = copyString(c->vm, name->start, name->length);
+    push(c->vm, OBJ_VAL(nameString));
     Value indexValue;
-    if (tableGet(&c->module->globalNames, nameString, &indexValue)) return (int) AS_NUMBER(indexValue);
+    if (tableGet(&c->module->globalNames, OBJ_VAL(nameString), &indexValue)) {
+        pop(c->vm);
+        return (int) AS_NUMBER(indexValue);
+    }
     int index = c->module->globalValues.count;
     writeValueArray(c->vm, &c->module->globalValues, EMPTY_VAL);
-    tableSet(c->vm, &c->module->globalNames, nameString, NUMBER_VAL((double) index));
+    tableSet(c->vm, &c->module->globalNames, OBJ_VAL(nameString), NUMBER_VAL((double) index));
+    pop(c->vm);
     return index;
 }
 
@@ -330,47 +351,45 @@ static void func(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool can
     function(p, s, c, cc, TYPE_FUNCTION);
 }
 
-// Fixed: Robust Constant Folding in binary
 static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    (void) canAssign;
+    (void) canAssign; // Suppress unused parameter warning
     TokenType opType = p->previous.type;
     ParseRule* rule = getRule(opType);
-
+    // Capture LHS before parsing RHS
     int lhsOffset = c->lastInstruction;
     LastInstruction lhs = getInstructionAt(c, lhsOffset);
-
     parsePrecedence(p, s, c, cc, (Precedence) (rule->precedence + 1));
-
+    // Capture RHS
     int rhsOffset = c->lastInstruction;
     LastInstruction rhs = getInstructionAt(c, rhsOffset);
-
+    // Constant Folding Logic
     if (lhs.isConstant && rhs.isConstant && (lhsOffset + lhs.length == rhsOffset)) {
         if (IS_NUMBER(lhs.value) && IS_NUMBER(rhs.value)) {
             double a = AS_NUMBER(lhs.value);
             double b = AS_NUMBER(rhs.value);
-            double result;
+            double res;
             bool folded = true;
             switch (opType) {
-            case TOKEN_PLUS:    result = a + b; break;
-            case TOKEN_MINUS:   result = a - b; break;
-            case TOKEN_STAR:    result = a * b; break;
+            case TOKEN_PLUS:    res = a + b; break;
+            case TOKEN_MINUS:   res = a - b; break;
+            case TOKEN_STAR:    res = a * b; break;
             case TOKEN_SLASH:
                 if (b == 0) {
                     errorAt(p, &p->previous, "Division by zero."); return;
                 }
-                result = a / b; break;
-            case TOKEN_PERCENT: result = fmod(a, b); break;
+                res = a / b; break;
+            case TOKEN_PERCENT: res = fmod(a, b); break;
             default: folded = false;
             }
             if (folded) {
-                currentChunk(c)->count = lhsOffset;
-                c->lastInstruction = c->previousInstruction;
-                emitLong(p, c, OP_CONSTANT, OP_CONSTANT_LONG, makeConstant(p, c, NUMBER_VAL(result)));
+                currentChunk(c)->count = lhsOffset; // Roll back
+                c->lastInstruction = c->previousInstruction; // Step back marker
+                emitConstant(p, c, NUMBER_VAL(res));
                 return;
             }
         }
     }
-
+    // Standard Binary Opcodes
     switch (opType) {
     case TOKEN_BANG_EQUAL:    emitBytes(p, c, OP_EQUAL, OP_NOT); break;
     case TOKEN_EQUAL_EQUAL:   emitByte(p, c, OP_EQUAL); break;
@@ -405,22 +424,20 @@ static void grouping(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool
 
 static void number(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
-    double value = strtod(p->previous.start, NULL);
-    emitLong(p, c, OP_CONSTANT, OP_CONSTANT_LONG, makeConstant(p, c, NUMBER_VAL(value)));
+    emitConstant(p, c, NUMBER_VAL(strtod(p->previous.start, NULL)));
 }
 
 static void string(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
-    Value value = OBJ_VAL(copyString(c->vm, p->previous.start + 1, p->previous.length - 2));
-    emitLong(p, c, OP_CONSTANT, OP_CONSTANT_LONG, makeConstant(p, c, value));
+    emitConstant(p, c, OBJ_VAL(copyString(c->vm, p->previous.start + 1, p->previous.length - 2)));
 }
 
 static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Token name, bool canAssign) {
     uint8_t getOp, setOp;
-    uint8_t getOp16, setOp16;
+    uint8_t getOp16 = 0, setOp16 = 0; // 0 means not supported for this type
+    int arg = resolveLocal(p, c, &name);
     bool isGlobal = false;
 
-    int arg = resolveLocal(p, c, &name);
     if (arg != -1) {
         getOp = OP_GET_LOCAL; setOp = OP_SET_LOCAL;
     } else if ((arg = resolveUpvalue(p, c, &name)) != -1) {
@@ -490,21 +507,36 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
     }
 }
 
-// Fixed: Constant folding for Unary Negation
 static void unary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    (void) canAssign;
-    TokenType op = p->previous.type;
+    (void) canAssign; // Suppress unused parameter warning
+    TokenType opType = p->previous.type;
+    // Compile the operand. Unary operators are right-associative, 
+    // so we call parsePrecedence with the same PREC_UNARY level.
     parsePrecedence(p, s, c, cc, PREC_UNARY);
-
-    LastInstruction operand = getInstructionAt(c, c->lastInstruction);
-    if (op == TOKEN_MINUS && operand.isConstant && IS_NUMBER(operand.value)) {
-        currentChunk(c)->count = c->lastInstruction; // Rollback
-        c->lastInstruction = c->previousInstruction;
-        emitLong(p, c, OP_CONSTANT, OP_CONSTANT_LONG, makeConstant(p, c, NUMBER_VAL(-AS_NUMBER(operand.value))));
-        return;
+    // Look at what we just compiled to see if we can fold it
+    int operandOffset = c->lastInstruction;
+    LastInstruction operand = getInstructionAt(c, operandOffset);
+    if (operand.isConstant) {
+        // Case 1: Numerical Negation (e.g., -5)
+        if (opType == TOKEN_MINUS && IS_NUMBER(operand.value)) {
+            currentChunk(c)->count = operandOffset; // Roll back the operand
+            c->lastInstruction = c->previousInstruction; // Restore the compiler marker
+            emitConstant(p, c, NUMBER_VAL(-AS_NUMBER(operand.value)));
+            return;
+        }
+        // Case 2: Logical Inversion (e.g., !true, !5, !nil)
+        // Note: You can fold this too! !nil is true, !false is true, others are false.
+        if (opType == TOKEN_BANG) {
+            currentChunk(c)->count = operandOffset;
+            c->lastInstruction = c->previousInstruction;
+            bool isFalsey = IS_NIL(operand.value) || (IS_BOOL(operand.value) && !AS_BOOL(operand.value));
+            // We use standard literal emitters for booleans to save constant pool space
+            emitByte(p, c, isFalsey ? OP_TRUE : OP_FALSE);
+            return;
+        }
     }
-
-    switch (op) {
+    // If we couldn't fold, emit the standard operator
+    switch (opType) {
     case TOKEN_BANG:  emitByte(p, c, OP_NOT); break;
     case TOKEN_MINUS: emitByte(p, c, OP_NEGATE); break;
     default: return;
@@ -652,8 +684,10 @@ static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Func
     consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
     block(p, s, &sub, cc);
     ObjFunction* f = endCompiler(p, &sub);
+    push(c->vm, OBJ_VAL(f)); // Protect from GC
     int index = makeConstant(p, c, OBJ_VAL(f));
     emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, index);
+    pop(c->vm); // Release protection
     for (int i = 0; i < f->upvalueCount; i++) {
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
@@ -781,18 +815,44 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
 
 static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (c->type == TYPE_SCRIPT) {
-        errorAt(p, &p->previous, "Can't return from top-level code."); return;
+        errorAt(p, &p->previous, "Can't return from top-level code.");
+        return;
     }
     if (match(p, s, TOKEN_SEMICOLON)) {
-        emitByte(p, c, OP_NIL); emitByte(p, c, OP_RETURN);
+        emitByte(p, c, OP_NIL);
+        emitByte(p, c, OP_RETURN);
     } else {
-        if (c->type == TYPE_INITIALIZER) errorAt(p, &p->previous, "Can't return a value from an initializer.");
+        if (c->type == TYPE_INITIALIZER) {
+            errorAt(p, &p->previous, "Can't return a value from an initializer.");
+        }
         expression(p, s, c, cc);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        Chunk* chunk = currentChunk(c);
-        if (chunk->count >= 2 && chunk->code[chunk->count - 2] == OP_CALL) chunk->code[chunk->count - 2] = OP_TAIL_CALL;
-        else if (chunk->count >= 3 && chunk->code[chunk->count - 3] == OP_INVOKE) chunk->code[chunk->count - 3] = OP_TAIL_INVOKE;
-        else emitByte(p, c, OP_RETURN);
+        // 1. Check if the last instruction emitted was a call or invoke
+        if (c->lastInstruction != -1) {
+            Chunk* chunk = currentChunk(c);
+            uint8_t* opcode = &chunk->code[c->lastInstruction];
+            switch (*opcode) {
+            case OP_CALL:
+                *opcode = OP_TAIL_CALL;
+                return;
+            case OP_INVOKE:
+                *opcode = OP_TAIL_INVOKE;
+                return;
+            case OP_INVOKE_LONG:
+                *opcode = OP_TAIL_INVOKE_LONG;
+                return;
+            case OP_SUPER_INVOKE:
+                *opcode = OP_TAIL_SUPER_INVOKE;
+                return;
+            case OP_SUPER_INVOKE_LONG:
+                *opcode = OP_TAIL_SUPER_INVOKE_LONG;
+                return;
+            default:
+                // Not a tail-call candidate, proceed to emit normal return
+                break;
+            }
+        }
+        emitByte(p, c, OP_RETURN);
     }
 }
 
@@ -905,6 +965,8 @@ ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source) {
 void markCompilerRoots(struct VM* vm) {
     Compiler* c = (Compiler*) vm->compiler;
     while (c) {
-        markObject(vm, (Obj*) c->function); c = c->enclosing;
+        markObject(vm, (Obj*) c->function);
+        markTable(vm, &c->constants);
+        c = c->enclosing;
     }
 }

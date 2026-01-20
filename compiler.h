@@ -44,6 +44,7 @@ typedef struct Compiler {
 
     Loop* currentLoop;
     ObjModule* module;
+    Table constants;
 
     struct VM* vm;
     int lastInstruction;
