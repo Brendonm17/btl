@@ -62,7 +62,7 @@ ObjNative* newNative(struct VM* vm, NativeFn function) {
 static struct ObjString* allocateString(struct VM* vm, char* chars, int length, uint32_t hash) {
     struct ObjString* string = (struct ObjString*) allocateObject(vm, sizeof(struct ObjString), OBJ_STRING);
     string->length = length; string->chars = chars; string->hash = hash;
-    push(vm, OBJ_VAL(string)); tableSet(vm, &vm->strings, string, NIL_VAL); pop(vm);
+    push(vm, OBJ_VAL(string)); tableSet(vm, &vm->strings, OBJ_VAL(string), NIL_VAL); pop(vm);
     return string;
 }
 
