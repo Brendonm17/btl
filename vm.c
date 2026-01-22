@@ -334,7 +334,7 @@ static InterpretResult run(VM* vm) {
 
 #ifdef HAS_COMPUTED_GOTOS
     static void* dispatchTable [] = {
-      && L_OP_CONSTANT,&& L_OP_CONSTANT_LONG,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_POP,
+      && L_OP_CONSTANT,&& L_OP_CONSTANT_LONG,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_POP,&& L_OP_POP_N,
       && L_OP_GET_LOCAL,&& L_OP_SET_LOCAL,&& L_OP_GET_GLOBAL,&& L_OP_GET_GLOBAL_LONG,
       && L_OP_DEFINE_GLOBAL,&& L_OP_DEFINE_GLOBAL_LONG,&& L_OP_SET_GLOBAL,&& L_OP_SET_GLOBAL_LONG,
       && L_OP_GET_UPVALUE,&& L_OP_SET_UPVALUE,&& L_OP_GET_PROPERTY,&& L_OP_GET_PROPERTY_LONG,
@@ -375,6 +375,10 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_TRUE) : push(vm, BOOL_VAL(true)); DISPATCH();
             OPCODE(OP_FALSE) : push(vm, BOOL_VAL(false)); DISPATCH();
             OPCODE(OP_POP) : pop(vm); DISPATCH();
+            OPCODE(OP_POP_N) : {
+                uint8_t n = READ_BYTE();
+                vm->stackTop -= n;
+                DISPATCH(); }
             OPCODE(OP_GET_LOCAL) : push(vm, frame->slots[READ_BYTE()]); DISPATCH();
             OPCODE(OP_SET_LOCAL) : frame->slots[READ_BYTE()] = peek(vm, 0); DISPATCH();
             OPCODE(OP_GET_GLOBAL) : {
@@ -638,11 +642,16 @@ static InterpretResult run(VM* vm) {
                 push(vm, value);
                 DISPATCH();}
             OPCODE(OP_RETURN) : {
-                Value res = pop(vm); closeUpvalues(vm, frame->slots); vm->frameCount--;
+                Value res = pop(vm);
+                closeUpvalues(vm, frame->slots);
+                vm->frameCount--;
                 if (vm->frameCount == 0) {
-                    pop(vm); return INTERPRET_OK;
+                    push(vm, res); // leave the result on the stack for the host
+                    pop(vm); // remove the initial function/closure below it
+                    return INTERPRET_OK;
                 }
-                vm->stackTop = frame->slots; push(vm, res);
+                vm->stackTop = frame->slots;
+                push(vm, res);
                 REFRESH_FRAME();
                 DISPATCH();}
             OPCODE(OP_ADD) : {

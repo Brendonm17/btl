@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <math.h>
 
 #include "common.h"
@@ -108,17 +109,300 @@ static bool match(Parser* p, Scanner* s, TokenType type) {
     return true;
 }
 
-// Fixed: emitByte is the only one that updates markers
+// emitByte is the only one that updates markers
 static void emitByte(Parser* p, Compiler* c, uint8_t byte) {
     c->previousInstruction = c->lastInstruction;
     c->lastInstruction = currentChunk(c)->count;
     writeChunk(c->vm, currentChunk(c), byte, p->previous.line);
 }
 
-// Fixed: emitBytes writes the second byte directly so the marker points to opcode
+// emitBytes writes the second byte directly so the marker points to opcode
 static void emitBytes(Parser* p, Compiler* c, uint8_t byte1, uint8_t byte2) {
+    Chunk* chunk = currentChunk(c);
+    // optimize
+    if ((byte1 == OP_GET_LOCAL || byte1 == OP_GET_UPVALUE) && c->lastInstruction >= 0 && c->lastInstruction + 2 == chunk->count) {
+        // previous opcode byte
+        uint8_t prevOp = chunk->code[c->lastInstruction];
+        uint8_t prevOperand = chunk->code[c->lastInstruction + 1];
+        if (byte1 == OP_GET_LOCAL && prevOp == OP_SET_LOCAL && prevOperand == byte2) {
+            return;
+        }
+        if (byte1 == OP_GET_UPVALUE && prevOp == OP_SET_UPVALUE && prevOperand == byte2) {
+            return;
+        }
+    }
+
     emitByte(p, c, byte1);
     writeChunk(c->vm, currentChunk(c), byte2, p->previous.line);
+}
+
+// Helpers for reading/writing 2-byte big-endian jump operands
+static uint16_t readJump(const Chunk* chunk, int opndIndex) {
+    if (opndIndex + 1 >= chunk->count) return 0;
+    return (uint16_t) ((chunk->code[opndIndex] << 8) | chunk->code[opndIndex + 1]);
+}
+static void writeJump(Chunk* chunk, int opndIndex, uint16_t value) {
+    if (opndIndex + 1 >= chunk->count) return;
+    chunk->code[opndIndex] = (uint8_t) ((value >> 8) & 0xFF);
+    chunk->code[opndIndex + 1] = (uint8_t) (value & 0xFF);
+}
+
+// Remove `n` bytes from the end of the chunk and implicitly trim lines[]
+// We rely on chunk->count as the authoritative length for both code and lines
+static void removeChunkTail(Chunk* chunk, int n) {
+    if (n <= 0) return;
+    if (n > chunk->count) n = chunk->count;
+    chunk->count -= n;
+}
+
+/* Compute the size (in bytes) of the instruction whose opcode is at index `i`.
+ * This must match your bytecode encoding exactly. Adjust as needed.
+ *
+ * Conservative assumptions made here:
+ * - Short constant/opcodes use 1-byte operand.
+ * - *_LONG variants use 3-byte operand (opcode + 3 bytes).
+ * - JUMP / JUMP_IF_FALSE / LOOP use 2-byte operands (big-endian).
+ * - POP_N uses 1-byte operand.
+ * - Many opcodes are single-byte.
+ *
+ * If you have variable-length opcodes (e.g., OP_CLOSURE with a following
+ * upvalue spec), update this function to compute the full size.
+ */
+static int instructionSize(const Chunk* chunk, int i) {
+    if (i < 0 || i >= chunk->count) return 1;
+    uint8_t op = chunk->code[i];
+    switch (op) {
+        /* 1-byte opcodes (no operand) */
+    case OP_NIL: case OP_TRUE: case OP_FALSE:
+    case OP_POP: case OP_PRINT:
+    case OP_EQUAL: case OP_GREATER: case OP_LESS:
+    case OP_ADD: case OP_SUBTRACT: case OP_MULTIPLY:
+    case OP_DIVIDE: case OP_MODULO:
+    case OP_NOT: case OP_NEGATE:
+    case OP_CLOSE_UPVALUE: case OP_RETURN:
+    case OP_INHERIT: case OP_METHOD:
+    case OP_INDEX_GET: case OP_INDEX_SET:
+        return 1;
+
+        /* 1-byte operand opcodes (opcode + 1 byte) */
+    case OP_CONSTANT:
+    case OP_GET_LOCAL: case OP_SET_LOCAL:
+    case OP_GET_UPVALUE: case OP_SET_UPVALUE:
+    case OP_GET_PROPERTY: case OP_SET_PROPERTY:
+    case OP_GET_SUPER:
+    case OP_CALL: case OP_TAIL_CALL:
+    case OP_DEFINE_GLOBAL: case OP_SET_GLOBAL:
+    case OP_GET_GLOBAL:
+    case OP_BUILD_LIST:
+    case OP_IMPORT:
+        return 2;
+
+        /* 3-byte operand opcodes (opcode + 3 bytes) - LONG variants */
+    case OP_CONSTANT_LONG:
+    case OP_GET_GLOBAL_LONG: case OP_DEFINE_GLOBAL_LONG:
+    case OP_SET_GLOBAL_LONG:
+    case OP_GET_PROPERTY_LONG: case OP_SET_PROPERTY_LONG:
+    case OP_GET_SUPER_LONG:
+    case OP_CLASS_LONG: case OP_METHOD_LONG:
+    case OP_INVOKE_LONG: case OP_TAIL_INVOKE_LONG:
+    case OP_SUPER_INVOKE_LONG: case OP_TAIL_SUPER_INVOKE_LONG:
+    case OP_IMPORT_LONG:
+        return 4; /* opcode + 3 bytes */
+
+        /* POP_N has a 1-byte operand (count) */
+    case OP_POP_N:
+        return 2;
+
+        /* Jumps and loops: opcode + 2-byte offset */
+    case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_LOOP:
+        return 3;
+
+        /* INVOKE / INVOKE_LONG / TAIL variants - assume 1 or 3 bytes respectively */
+    case OP_INVOKE: case OP_TAIL_INVOKE:
+    case OP_SUPER_INVOKE: case OP_TAIL_SUPER_INVOKE:
+        return 2;
+
+        /* CLOSURE variants: conservative handling
+         * OP_CLOSURE: opcode + 1-byte constant index, followed by upvalue spec bytes.
+         * We cannot reliably compute the full size without parsing the upvalue spec.
+         * To be safe, treat OP_CLOSURE as 2 bytes here; if you need full correctness,
+         * replace this with code that reads the constant index and then reads the
+         * upvalue count from the constant and computes the exact size.
+         */
+    case OP_CLOSURE:
+        return 2; /* conservative; adjust if you parse upvalue spec */
+    case OP_CLOSURE_LONG:
+        return 4; /* conservative; adjust if needed */
+
+        /* CALL/INVOKE variants already handled above; other opcodes default to 1 */
+    default:
+        return 1;
+    }
+}
+
+// Given the opcode index of an OP_JUMP (i.e., index points at the opcode),
+// compute the absolute byte index of its target, or -1 on error
+static int jumpTarget(const Chunk* chunk, int opcodeIndex) {
+    if (opcodeIndex + 2 >= chunk->count) return -1;
+    uint16_t offset = readJump(chunk, opcodeIndex + 1);
+    return opcodeIndex + 3 + (int) offset;
+}
+
+// Resolve a chain of unconditional jumps to the final non-jump target
+// If the opcode at `jumpOpcodeIndex` is not OP_JUMP, returns -1
+static int resolveJumpTarget(Chunk* chunk, int jumpOpcodeIndex) {
+    if (jumpOpcodeIndex < 0 || jumpOpcodeIndex >= chunk->count) return -1;
+    if (chunk->code[jumpOpcodeIndex] != OP_JUMP) return -1;
+
+    int cur = jumpOpcodeIndex;
+    int safety = 0;
+    while (safety++ < 1000) {
+        int tgt = jumpTarget(chunk, cur);
+        if (tgt < 0 || tgt >= chunk->count) return -1;
+        uint8_t opAtTarget = chunk->code[tgt];
+        if (opAtTarget != OP_JUMP) return tgt;
+        /* follow the chain */
+        cur = tgt;
+    }
+    return -1;
+}
+
+// Compact `chunk->code` and `chunk->lines` by removing `removeBytes` at index `i`
+static void removeBytesAt(Chunk* chunk, int i, int removeBytes) {
+    if (removeBytes <= 0) return;
+    if (i < 0 || i >= chunk->count) return;
+    int tail = chunk->count - (i + removeBytes);
+    if (tail > 0) {
+        memmove(&chunk->code[i], &chunk->code[i + removeBytes], tail);
+        memmove(&chunk->lines[i], &chunk->lines[i + removeBytes], tail * sizeof(int));
+    }
+    chunk->count -= removeBytes;
+}
+
+// Main optimizer pass for jumps. Call after codegen for a function is complete
+void optimizeJumps(Chunk* chunk) {
+    int i = 0;
+    while (i < chunk->count) {
+        uint8_t op = chunk->code[i];
+        if (op == OP_JUMP) {
+            // opcode + 2-byte operand
+            if (i + 2 >= chunk->count) {
+                i += 1; continue;
+            }
+            int target = jumpTarget(chunk, i);
+            if (target < 0) {
+                i += 3; continue;
+            }
+            // Remove jump-to-next (no-op)
+            if (target == i + 3) {
+                removeBytesAt(chunk, i, 3);
+                // re-examine at same index
+                continue;
+            }
+            // Thread jump chains: if target is an OP_JUMP, redirect to final target
+            if (target < chunk->count && chunk->code[target] == OP_JUMP) {
+                int finalTarget = resolveJumpTarget(chunk, target);
+                if (finalTarget >= 0 && finalTarget != target) {
+                    int newOffset = finalTarget - (i + 3);
+                    if (newOffset >= 0 && newOffset <= 0xFFFF) {
+                        writeJump(chunk, i + 1, (uint16_t) newOffset);
+                    }
+                }
+            }
+            i += 3;
+            continue;
+        }
+        if (op == OP_JUMP_IF_FALSE) {
+            if (i + 2 >= chunk->count) {
+                i += 1; continue;
+            }
+            int target = jumpTarget(chunk, i);
+            if (target < 0) {
+                i += 3; continue;
+            }
+            // If conditional jump targets the next instruction, it's redundant. Remove it
+            if (target == i + 3) {
+                removeBytesAt(chunk, i, 3);
+                continue;
+            }
+            // Thread conditional -> unconditional jump
+            if (target < chunk->count && chunk->code[target] == OP_JUMP) {
+                int finalTarget = resolveJumpTarget(chunk, target);
+                if (finalTarget >= 0 && finalTarget != target) {
+                    int newOffset = finalTarget - (i + 3);
+                    if (newOffset >= 0 && newOffset <= 0xFFFF) {
+                        writeJump(chunk, i + 1, (uint16_t) newOffset);
+                    }
+                }
+            }
+
+            i += 3;
+            continue;
+        }
+        // For other opcodes, advance by their instruction size
+        int size = instructionSize(chunk, i);
+        if (size <= 0) size = 1;
+        i += size;
+    }
+}
+
+static void emitPopOrRemoveLoad(Parser* p, Compiler* c) {
+    Chunk* chunk = currentChunk(c);
+    // If the previous instruction is a return, do nothing. returns clean themselves up
+    if (c->lastInstruction >= 0 && c->lastInstruction < chunk->count) {
+        uint8_t prevOp = chunk->code[c->lastInstruction];
+        if (prevOp == OP_RETURN) {
+            return;
+        }
+    }
+    // nothing to clean up
+    if (chunk->count < 2) {
+        emitByte(p, c, OP_POP);
+        return;
+    }
+    int lastIndex = chunk->count - 1;
+    int opcodeIndex = lastIndex - 1;
+    if (opcodeIndex < 0) {
+        emitByte(p, c, OP_POP);
+        return;
+    }
+    // try to optimize
+    uint8_t possibleOp = chunk->code[opcodeIndex];
+    if (possibleOp == OP_GET_LOCAL || possibleOp == OP_GET_UPVALUE) {
+        // Remove opcode + operand (2 bytes).
+        removeChunkTail(chunk, 2);
+        // Update compiler bookkeeping for last/previous instruction.
+        // We set lastInstruction to a safe value
+        if (chunk->count == 0) {
+            c->lastInstruction = -1;
+            c->previousInstruction = -1;
+        } else {
+            c->lastInstruction = chunk->count - 1;
+            c->previousInstruction = -1;
+        }
+        return;
+    }
+    // normal pop
+    emitByte(p, c, OP_POP);
+}
+
+static void emitPopN(Parser* p, Compiler* c, unsigned int count) {
+    if (count == 0)
+        return;
+    if (count == 1) {
+        emitPopOrRemoveLoad(p, c);
+        return;
+    }
+    const unsigned int CHUNK = 255;
+    while (count > CHUNK) {
+        emitBytes(p, c, OP_POP_N, (uint8_t) CHUNK);
+        count -= CHUNK;
+    }
+    if (count == 1) {
+        emitPopOrRemoveLoad(p, c);
+    } else {
+        emitBytes(p, c, OP_POP_N, (uint8_t) count);
+    }
 }
 
 static void emitConstant(Parser* p, Compiler* c, Value value) {
@@ -269,12 +553,24 @@ static void beginScope(Compiler* c) {
 
 static void endScope(Parser* p, Compiler* c) {
     c->scopeDepth--;
+    int popCount = 0;
     while (c->localCount > 0 && c->locals[c->localCount - 1].depth > c->scopeDepth) {
-        if (c->locals[c->localCount - 1].isCaptured) emitByte(p, c, OP_CLOSE_UPVALUE);
-        else emitByte(p, c, OP_POP);
+        if (c->locals[c->localCount - 1].isCaptured) {
+            // flush any pending pops before close-upvalue
+            if (popCount) {
+                emitPopN(p, c, popCount);
+                popCount = 0;
+            }
+            emitByte(p, c, OP_CLOSE_UPVALUE);
+        } else {
+            popCount++;
+        }
         c->localCount--;
     }
+    if (popCount)
+        emitPopN(p, c, popCount);
 }
+
 
 static bool identifiersEqual(Token* a, Token* b) {
     if (a->length != b->length) return false;
@@ -546,7 +842,7 @@ static void unary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool ca
 static void and_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     int endJump = emitJump(p, c, OP_JUMP_IF_FALSE);
-    emitByte(p, c, OP_POP);
+    emitPopOrRemoveLoad(p, c);
     parsePrecedence(p, s, c, cc, PREC_AND);
     patchJump(p, c, endJump);
 }
@@ -556,7 +852,7 @@ static void or_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
     int elseJump = emitJump(p, c, OP_JUMP_IF_FALSE);
     int endJump = emitJump(p, c, OP_JUMP);
     patchJump(p, c, elseJump);
-    emitByte(p, c, OP_POP);
+    emitPopOrRemoveLoad(p, c);
     parsePrecedence(p, s, c, cc, PREC_OR);
     patchJump(p, c, endJump);
 }
@@ -683,6 +979,8 @@ static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Func
     consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
     consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
     block(p, s, &sub, cc);
+    if (!p->hadError)
+        optimizeJumps(currentChunk(c));
     ObjFunction* f = endCompiler(p, &sub);
     push(c->vm, OBJ_VAL(f)); // Protect from GC
     int index = makeConstant(p, c, OBJ_VAL(f));
@@ -730,7 +1028,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
     while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) method(p, s, c, &classC);
     consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}'.");
-    emitByte(p, c, OP_POP);
+    emitPopOrRemoveLoad(p, c);
     if (classC.hasSuperclass) endScope(p, c);
 }
 
@@ -755,7 +1053,7 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     } else {
         expression(p, s, c, cc);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        emitByte(p, c, OP_POP);
+        emitPopOrRemoveLoad(p, c);
     }
 
     int loopStart = currentChunk(c)->count;
@@ -764,14 +1062,14 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
         expression(p, s, c, cc);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
         exitJump = emitJump(p, c, OP_JUMP_IF_FALSE);
-        emitByte(p, c, OP_POP);
+        emitPopOrRemoveLoad(p, c);
     }
 
     if (!match(p, s, TOKEN_RIGHT_PAREN)) {
         int bodyJump = emitJump(p, c, OP_JUMP);
         int incrementStart = currentChunk(c)->count;
         expression(p, s, c, cc);
-        emitByte(p, c, OP_POP);
+        emitPopOrRemoveLoad(p, c);
         consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
         emitLoop(p, c, loopStart);
         loopStart = incrementStart;
@@ -792,7 +1090,9 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     if (loopVar != -1) {
         emitBytes(p, c, OP_GET_LOCAL, (uint8_t) loopVar);
         Local* shadow = &c->locals[c->localCount++];
-        shadow->name = c->locals[loopVar].name; shadow->depth = c->scopeDepth; shadow->isCaptured = false;
+        shadow->name = c->locals[loopVar].name;
+        shadow->depth = c->scopeDepth;
+        shadow->isCaptured = false;
     }
 
     statement(p, s, c, cc);
@@ -800,15 +1100,17 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     if (loopVar != -1) {
         emitBytes(p, c, OP_GET_LOCAL, (uint8_t) c->localCount - 1);
         emitBytes(p, c, OP_SET_LOCAL, (uint8_t) loopVar);
-        emitByte(p, c, OP_POP);
+        emitPopOrRemoveLoad(p, c);
     }
 
     endScope(p, c);
     emitLoop(p, c, loopStart);
     if (exitJump != -1) {
-        patchJump(p, c, exitJump); emitByte(p, c, OP_POP);
+        patchJump(p, c, exitJump);
+        emitPopOrRemoveLoad(p, c);
     }
-    for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
+    for (int i = 0; i < loop.breakCount; i++)
+        patchJump(p, c, loop.breakJumps[i]);
     c->currentLoop = loop.enclosing;
     endScope(p, c);
 }
@@ -858,39 +1160,85 @@ static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
 
 static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (match(p, s, TOKEN_PRINT)) {
-        expression(p, s, c, cc); consume(p, s, TOKEN_SEMICOLON, "Expect ';'."); emitByte(p, c, OP_PRINT);
-    } else if (match(p, s, TOKEN_FOR)) forStatement(p, s, c, cc);
-    else if (match(p, s, TOKEN_IF)) {
-        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('."); expression(p, s, c, cc); consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        int thenJ = emitJump(p, c, OP_JUMP_IF_FALSE); emitByte(p, c, OP_POP);
+        expression(p, s, c, cc);
+        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
+        emitByte(p, c, OP_PRINT);
+    } else if (match(p, s, TOKEN_FOR)) {
+        forStatement(p, s, c, cc);
+    } else if (match(p, s, TOKEN_IF)) {
+        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
+        expression(p, s, c, cc);
+        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        int thenJ = emitJump(p, c, OP_JUMP_IF_FALSE);
+        emitPopOrRemoveLoad(p, c);
         statement(p, s, c, cc);
         int elseJ = emitJump(p, c, OP_JUMP);
         patchJump(p, c, thenJ);
-        emitByte(p, c, OP_POP);
+        emitPopOrRemoveLoad(p, c);
         if (match(p, s, TOKEN_ELSE))
             statement(p, s, c, cc);
         patchJump(p, c, elseJ);
-    } else if (match(p, s, TOKEN_RETURN)) returnStatement(p, s, c, cc);
-    else if (match(p, s, TOKEN_WHILE)) {
+    } else if (match(p, s, TOKEN_RETURN)) {
+        returnStatement(p, s, c, cc);
+    } else if (match(p, s, TOKEN_WHILE)) {
         int start = currentChunk(c)->count;
-        Loop loop = { .enclosing = c->currentLoop, .start = start, .scopeDepth = c->scopeDepth, .breakCount = 0 };
+        Loop loop = {
+            .enclosing = c->currentLoop,
+            .start = start,
+            .scopeDepth = c->scopeDepth,
+            .breakCount = 0
+        };
         c->currentLoop = &loop;
-        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('."); expression(p, s, c, cc); consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        int exitJ = emitJump(p, c, OP_JUMP_IF_FALSE); emitByte(p, c, OP_POP);
-        statement(p, s, c, cc); emitLoop(p, c, start); patchJump(p, c, exitJ); emitByte(p, c, OP_POP);
-        for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
+        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
+        expression(p, s, c, cc);
+        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        int exitJ = emitJump(p, c, OP_JUMP_IF_FALSE);
+        emitPopOrRemoveLoad(p, c);
+        statement(p, s, c, cc);
+        emitLoop(p, c, start);
+        patchJump(p, c, exitJ);
+        emitPopOrRemoveLoad(p, c);
+        for (int i = 0; i < loop.breakCount; i++)
+            patchJump(p, c, loop.breakJumps[i]);
         c->currentLoop = loop.enclosing;
     } else if (match(p, s, TOKEN_BREAK)) {
-        if (c->currentLoop == NULL) errorAt(p, &p->previous, "Lonely break.");
+        if (c->currentLoop == NULL)
+            errorAt(p, &p->previous, "Lonely break.");
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        for (int i = c->localCount - 1; i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth; i--) emitByte(p, c, OP_POP);
-        int jump = emitJump(p, c, OP_JUMP); c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
+        //Unwind locals that are deeper than the loop scope.
+        //Coalesce non-captured locals into emitPopN and emit
+        //OP_CLOSE_UPVALUE immediately for captured locals.
+        int i = c->localCount - 1;
+        int popCount = 0;
+        while (i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth) {
+            if (c->locals[i].isCaptured) {
+                if (popCount > 0) {
+                    emitPopN(p, c, (unsigned int) popCount);
+                    popCount = 0;
+                }
+                emitByte(p, c, OP_CLOSE_UPVALUE);
+            } else {
+                popCount++;
+            }
+            i--;
+            c->localCount--; /* keep localCount in sync as we unwind */
+        }
+        if (popCount > 0) {
+            emitPopN(p, c, (unsigned int) popCount);
+        }
+        int jump = emitJump(p, c, OP_JUMP);
+        c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
     } else if (match(p, s, TOKEN_LEFT_BRACE)) {
-        beginScope(c); block(p, s, c, cc); endScope(p, c);
+        beginScope(c);
+        block(p, s, c, cc);
+        endScope(p, c);
     } else {
-        expression(p, s, c, cc); consume(p, s, TOKEN_SEMICOLON, "Expect ';'."); emitByte(p, c, OP_POP);
+        expression(p, s, c, cc);
+        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
+        emitPopOrRemoveLoad(p, c);
     }
 }
+
 
 static void defineVariable(Parser* p, Compiler* c, int global) {
     if (c->scopeDepth > 0) {
@@ -955,9 +1303,13 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
 ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source) {
     Scanner s; initScanner(&s, source);
     Parser p = { .vm = vm, .hadError = false, .panicMode = false };
-    Compiler c; initCompiler(&p, &c, NULL, TYPE_SCRIPT, module);
+    Compiler c;
+    initCompiler(&p, &c, NULL, TYPE_SCRIPT, module);
     advance(&p, &s);
-    while (!match(&p, &s, TOKEN_EOF)) declaration(&p, &s, &c, NULL);
+    while (!match(&p, &s, TOKEN_EOF))
+        declaration(&p, &s, &c, NULL);
+    if (!p.hadError)
+        optimizeJumps(currentChunk(&c));
     ObjFunction* function = endCompiler(&p, &c);
     return p.hadError ? NULL : function;
 }
