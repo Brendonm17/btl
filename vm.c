@@ -13,12 +13,12 @@
 #include "vm.h"
 #include "value.h"
 
+// --- Stack & Error Handling ---
+
 static void resetStack(VM* vm) {
     vm->stackTop = vm->stack;
     vm->frameCount = 0;
     vm->openUpvalues = NULL;
-    // HACK: Zeroing the stack ensures NaN tagging doesn't see garbage 
-    // as object pointers during debug traces.
     for (int i = 0; i < STACK_MAX; i++) {
         vm->stack[i] = NIL_VAL;
     }
@@ -40,6 +40,8 @@ static void runtimeError(VM* vm, const char* format, ...) {
     resetStack(vm);
 }
 
+// --- IO & Natives ---
+
 static char* readFile(const char* path) {
     FILE* file = fopen(path, "rb");
     if (!file) return NULL;
@@ -47,18 +49,20 @@ static char* readFile(const char* path) {
     size_t fileSize = ftell(file);
     rewind(file);
     char* buffer = (char*) malloc(fileSize + 1);
+    if (!buffer) {
+        fclose(file); return NULL;
+    }
     size_t bytesRead = fread(buffer, 1, fileSize, file);
     buffer[bytesRead] = '\0';
     fclose(file);
     return buffer;
 }
 
-static struct ObjString* findGlobalName(ObjModule* module, uint8_t index) {
+static struct ObjString* findGlobalName(ObjModule* module, int index) {
     for (int i = 0; i < module->globalNames.capacity; i++) {
         Entry* entry = &module->globalNames.entries[i];
-        // Check if slot is not empty, is a string, and matches the index
         if (!IS_EMPTY(entry->key) && IS_STRING(entry->key) &&
-            (int) AS_NUMBER(entry->value) == (int) index) {
+            (int) AS_NUMBER(entry->value) == index) {
             return AS_STRING(entry->key);
         }
     }
@@ -89,6 +93,8 @@ static void defineNative(VM* vm, const char* name, NativeFn function) {
     pop(vm);
 }
 
+// --- VM Lifecycle ---
+
 void initVM(VM* vm) {
     resetStack(vm);
     vm->objects = NULL;
@@ -113,15 +119,44 @@ void freeVM(VM* vm) {
     freeObjects(vm);
 }
 
+// --- Stack Operations ---
+
 void push(VM* vm, Value value) {
     *vm->stackTop = value; vm->stackTop++;
 }
+
 Value pop(VM* vm) {
     vm->stackTop--; return *vm->stackTop;
 }
+
 static Value peek(VM* vm, int distance) {
     return vm->stackTop[-1 - distance];
 }
+
+// --- Logic Helpers ---
+
+static bool isFalsey(Value value) {
+    return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
+}
+
+static ObjUpvalue* captureUpvalue(VM* vm, Value* local) {
+    ObjUpvalue* prev = NULL; ObjUpvalue* u = vm->openUpvalues;
+    while (u != NULL && u->location > local) {
+        prev = u; u = u->next;
+    }
+    if (u != NULL && u->location == local) return u;
+    ObjUpvalue* created = newUpvalue(vm, local); created->next = u;
+    if (prev == NULL) vm->openUpvalues = created; else prev->next = created;
+    return created;
+}
+
+static void closeUpvalues(VM* vm, Value* last) {
+    while (vm->openUpvalues != NULL && vm->openUpvalues->location >= last) {
+        ObjUpvalue* u = vm->openUpvalues; u->closed = *u->location; u->location = &u->closed; vm->openUpvalues = u->next;
+    }
+}
+
+// --- Call Logic ---
 
 static bool call(VM* vm, ObjClosure* closure, int argCount) {
     if (argCount != closure->function->arity) {
@@ -173,31 +208,66 @@ static bool callValue(VM* vm, Value callee, int argCount) {
 static bool invokeFromClass(VM* vm, ObjClass* klass, struct ObjString* name, int argCount) {
     Value method;
     if (!tableGet(&klass->methods, OBJ_VAL(name), &method)) return false;
-    return call(vm, AS_CLOSURE(method), argCount);
+
+    ObjClosure* closure = AS_CLOSURE(method);
+    if (vm->frameCount == FRAMES_MAX) {
+        runtimeError(vm, "Stack overflow."); return false;
+    }
+    CallFrame* frame = &vm->frames[vm->frameCount++];
+    frame->closure = closure;
+    frame->ip = closure->function->chunk.code;
+    frame->slots = vm->stackTop - argCount - 1;
+    return true;
 }
 
 static bool invoke(VM* vm, struct ObjString* name, int argCount) {
     Value receiver = peek(vm, argCount);
-    if (!IS_OBJ(receiver)) return false;
-
-    Value nameVal = OBJ_VAL(name);
+    if (!IS_OBJ(receiver)) {
+        runtimeError(vm, "Only instances have methods."); return false;
+    }
 
     if (IS_INSTANCE(receiver)) {
-        ObjInstance* i = AS_INSTANCE(receiver);
-        Value v;
-        if (tableGet(&i->fields, nameVal, &v)) {
-            vm->stackTop[-argCount - 1] = v; return callValue(vm, v, argCount);
+        ObjInstance* instance = AS_INSTANCE(receiver);
+        Value value;
+        if (tableGet(&instance->fields, OBJ_VAL(name), &value)) {
+            vm->stackTop[-argCount - 1] = value;
+            return callValue(vm, value, argCount);
         }
-        return invokeFromClass(vm, i->klass, name, argCount);
-    } else if (IS_MODULE(receiver)) {
-        ObjModule* m = AS_MODULE(receiver);
-        Value idx;
-        if (tableGet(&m->globalNames, nameVal, &idx)) {
-            int i = (int) AS_NUMBER(idx);
-            vm->stackTop[-argCount - 1] = m->globalValues.values[i];
-            return callValue(vm, m->globalValues.values[i], argCount);
+        if (invokeFromClass(vm, instance->klass, name, argCount)) return true;
+    }
+
+    if (name->length > 0) {
+        ObjString* rawName = copyString(vm, name->chars, name->length - 1);
+        push(vm, OBJ_VAL(rawName));
+
+        bool found = false;
+        Value methodVal = NIL_VAL;
+
+        if (IS_MODULE(receiver)) {
+            ObjModule* m = AS_MODULE(receiver);
+            Value idx;
+            if (tableGet(&m->globalNames, OBJ_VAL(rawName), &idx)) {
+                methodVal = m->globalValues.values[(int) AS_NUMBER(idx)];
+                found = true;
+            }
+        } else if (IS_INSTANCE(receiver)) {
+            ObjInstance* i = AS_INSTANCE(receiver);
+            if (tableGet(&i->fields, OBJ_VAL(rawName), &methodVal)) {
+                found = true;
+            } else if (tableGet(&i->klass->methods, OBJ_VAL(rawName), &methodVal)) {
+                found = true;
+            }
+        }
+
+        pop(vm); // Pop rawName
+
+        if (found) {
+            vm->stackTop[-argCount - 1] = methodVal;
+            return callValue(vm, methodVal, argCount);
         }
     }
+
+    runtimeError(vm, "Undefined property '%s'.", name->chars);
     return false;
 }
 
@@ -209,109 +279,61 @@ static bool bindMethod(VM* vm, ObjClass* klass, struct ObjString* name) {
     return true;
 }
 
-static ObjUpvalue* captureUpvalue(VM* vm, Value* local) {
-    ObjUpvalue* prev = NULL; ObjUpvalue* u = vm->openUpvalues;
-    while (u != NULL && u->location > local) {
-        prev = u; u = u->next;
-    }
-    if (u != NULL && u->location == local) return u;
-    ObjUpvalue* created = newUpvalue(vm, local); created->next = u;
-    if (prev == NULL) vm->openUpvalues = created; else prev->next = created;
-    return created;
-}
-
-static void closeUpvalues(VM* vm, Value* last) {
-    while (vm->openUpvalues != NULL && vm->openUpvalues->location >= last) {
-        ObjUpvalue* u = vm->openUpvalues; u->closed = *u->location; u->location = &u->closed; vm->openUpvalues = u->next;
+static void defineMethod(VM* vm, ObjClass* klass, ObjString* name, Value method) {
+    tableSet(vm, &klass->methods, OBJ_VAL(name), method);
+    if (name->length > 0) {
+        ObjString* rawName = copyString(vm, name->chars, name->length - 1);
+        push(vm, OBJ_VAL(rawName));
+        tableSet(vm, &klass->methods, OBJ_VAL(rawName), method);
+        pop(vm);
     }
 }
 
 static ObjString* valueToString(struct VM* vm, Value value) {
-    if (IS_STRING(value)) {
-        return AS_STRING(value);
-    } else if (IS_NUMBER(value)) {
-        char buf[32];
-        // Use %g to match the expected output format of numbers
+    if (IS_STRING(value)) return AS_STRING(value);
+    char buf[32];
+    if (IS_NUMBER(value)) {
         int len = snprintf(buf, 32, "%g", AS_NUMBER(value));
         return copyString(vm, buf, len);
-    } else if (IS_BOOL(value)) {
-        const char* str = AS_BOOL(value) ? "true" : "false";
-        return copyString(vm, str, AS_BOOL(value) ? 4 : 5);
-    } else if (IS_NIL(value)) {
-        return copyString(vm, "nil", 3);
-    } else {
-        // Fallback for objects (Lists, Classes, etc.)
-        return copyString(vm, "<object>", 8);
     }
+    if (IS_BOOL(value)) return copyString(vm, AS_BOOL(value) ? "true" : "false", AS_BOOL(value) ? 4 : 5);
+    if (IS_NIL(value)) return copyString(vm, "nil", 3);
+    return copyString(vm, "<object>", 8);
 }
 
 static void concatenate(struct VM* vm) {
-    // 1. PEEK the values instead of popping. 
-    // This keeps them as "Roots" so the GC won't kill them.
-    Value bVal = peek(vm, 0);
-    Value aVal = peek(vm, 1);
-
-    // 2. Convert to strings. If these allocate, the originals are safe on stack.
-    ObjString* a = valueToString(vm, aVal);
-    push(vm, OBJ_VAL(a)); // Temporarily push a to protect it
-
-    ObjString* b = valueToString(vm, bVal);
-    push(vm, OBJ_VAL(b)); // Temporarily push b to protect it
-
-    // 3. Now we have a, b on stack. Allocate the buffer.
+    Value bVal = peek(vm, 0); Value aVal = peek(vm, 1);
+    ObjString* a = valueToString(vm, aVal); push(vm, OBJ_VAL(a));
+    ObjString* b = valueToString(vm, bVal); push(vm, OBJ_VAL(b));
     int length = a->length + b->length;
     char* chars = ALLOCATE(vm, char, length + 1);
-
     memcpy(chars, a->chars, a->length);
     memcpy(chars + a->length, b->chars, b->length);
     chars[length] = '\0';
-
     ObjString* result = takeString(vm, chars, length);
-
-    // 4. Clean up the stack: pop b_obj, a_obj, and the original bVal, aVal
-    pop(vm); // pop b_obj
-    pop(vm); // pop a_obj
-    pop(vm); // pop original bVal
-    pop(vm); // pop original aVal
-
+    pop(vm); pop(vm); pop(vm); pop(vm);
     push(vm, OBJ_VAL(result));
 }
 
 #ifdef DEBUG_TRACE_EXECUTION
 static void traceExecution(VM* vm) {
-    // Always grab the freshest frame pointer directly from the VM
     CallFrame* frame = &vm->frames[vm->frameCount - 1];
-
-    // Safety check: Don't trace if the frame is being torn down
-    if (frame->closure == NULL || frame->closure->function == NULL) return;
-
     fprintf(stderr, "          ");
     for (Value* slot = vm->stack; slot < vm->stackTop; slot++) {
-        fprintf(stderr, "[ ");
-        // If this crashes, your NaN Tagging IS_OBJ check is too aggressive
-        // and is seeing a non-pointer as a pointer.
-        printValueStderr(*slot);
-        fprintf(stderr, " ]");
+        fprintf(stderr, "[ "); printValueStderr(*slot); fprintf(stderr, " ]");
     }
     fprintf(stderr, "\n");
-
-    // Use the IP we just synced in the DISPATCH macro
     int offset = (int) (frame->ip - frame->closure->function->chunk.code);
-
-    // Final safety: don't disassemble if offset is out of bounds
-    if (offset < 0 || offset >= frame->closure->function->chunk.count) {
-        fprintf(stderr, "Invalid IP offset: %d\n", offset);
-        return;
-    }
-
     disassembleInstruction(&frame->closure->function->chunk, offset);
 }
 #endif
 
+// --- Interpreter ---
+
 static InterpretResult run(VM* vm) {
-    CallFrame* frame = &vm->frames[vm->frameCount - 1];
-    // Use 'register' as a hint to the compiler
+    register CallFrame* frame = &vm->frames[vm->frameCount - 1];
     register uint8_t* ip = frame->ip;
+    int argCount;
 
 #define STORE_FRAME() (frame->ip = ip)
 #define REFRESH_FRAME() (frame = &vm->frames[vm->frameCount - 1], ip = frame->ip)
@@ -321,710 +343,545 @@ static InterpretResult run(VM* vm) {
 #define READ_CONSTANT_LONG() (frame->closure->function->chunk.constants.values[READ_SHORT()])
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 #define READ_STRING_LONG() AS_STRING(READ_CONSTANT_LONG())
+
 #define BINARY_OP(vType, op) do { \
-    if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) { \
-            STORE_FRAME(); \
-            runtimeError(vm, "Operands must be numbers."); \
-            return INTERPRET_RUNTIME_ERROR; \
-        } \
-        double b = AS_NUMBER(pop(vm)); \
-        double a = AS_NUMBER(pop(vm)); \
+    if (IS_NUMBER(peek(vm, 0)) && IS_NUMBER(peek(vm, 1))) { \
+        double b = AS_NUMBER(pop(vm)); double a = AS_NUMBER(pop(vm)); \
         push(vm, vType(a op b)); \
+    } else { \
+        STORE_FRAME(); runtimeError(vm, "Operands must be numbers."); return INTERPRET_RUNTIME_ERROR; \
+    } \
   } while (false)
+
+#ifdef DEBUG_TRACE_EXECUTION
+#define TRACE_IF_ENABLED() traceExecution(vm)
+#else
+#define TRACE_IF_ENABLED() do { } while (0)
+#endif
 
 #ifdef HAS_COMPUTED_GOTOS
     static void* dispatchTable [] = {
-      && L_OP_CONSTANT,&& L_OP_CONSTANT_LONG,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_POP,&& L_OP_POP_N,
-      && L_OP_GET_LOCAL,&& L_OP_SET_LOCAL,&& L_OP_GET_GLOBAL,&& L_OP_GET_GLOBAL_LONG,
-      && L_OP_DEFINE_GLOBAL,&& L_OP_DEFINE_GLOBAL_LONG,&& L_OP_SET_GLOBAL,&& L_OP_SET_GLOBAL_LONG,
-      && L_OP_GET_UPVALUE,&& L_OP_SET_UPVALUE,&& L_OP_GET_PROPERTY,&& L_OP_GET_PROPERTY_LONG,
-      && L_OP_SET_PROPERTY,&& L_OP_SET_PROPERTY_LONG,&& L_OP_GET_SUPER,&& L_OP_GET_SUPER_LONG,
-      && L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,&& L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,
-      && L_OP_DIVIDE,&& L_OP_MODULO,&& L_OP_NOT,&& L_OP_NEGATE,&& L_OP_PRINT,&& L_OP_JUMP,
-      && L_OP_JUMP_IF_FALSE,&& L_OP_LOOP,&& L_OP_CALL,&& L_OP_TAIL_CALL,&& L_OP_INVOKE,
-      && L_OP_INVOKE_LONG,&& L_OP_TAIL_INVOKE,&& L_OP_TAIL_INVOKE_LONG,&& L_OP_SUPER_INVOKE,
-      && L_OP_SUPER_INVOKE_LONG,&& L_OP_TAIL_SUPER_INVOKE,&& L_OP_TAIL_SUPER_INVOKE_LONG,
-      && L_OP_CLOSURE,&& L_OP_CLOSURE_LONG,&& L_OP_CLOSE_UPVALUE,&& L_OP_RETURN,
-      && L_OP_CLASS,&& L_OP_CLASS_LONG,&& L_OP_INHERIT,&& L_OP_METHOD,&& L_OP_METHOD_LONG,
-      && L_OP_BUILD_LIST,&& L_OP_INDEX_GET,&& L_OP_INDEX_SET,&& L_OP_IMPORT,&& L_OP_IMPORT_LONG
+        && L_OP_CONSTANT,&& L_OP_CONSTANT_LONG,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_POP,&& L_OP_POP_N,
+        && L_OP_GET_LOCAL,&& L_OP_SET_LOCAL,&& L_OP_GET_GLOBAL,&& L_OP_GET_GLOBAL_LONG,
+        && L_OP_DEFINE_GLOBAL,&& L_OP_DEFINE_GLOBAL_LONG,&& L_OP_SET_GLOBAL,&& L_OP_SET_GLOBAL_LONG,
+        && L_OP_GET_UPVALUE,&& L_OP_SET_UPVALUE,&& L_OP_GET_PROPERTY,&& L_OP_GET_PROPERTY_LONG,
+        && L_OP_SET_PROPERTY,&& L_OP_SET_PROPERTY_LONG,&& L_OP_GET_SUPER,&& L_OP_GET_SUPER_LONG,
+        && L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,&& L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,
+        && L_OP_DIVIDE,&& L_OP_MODULO,&& L_OP_NOT,&& L_OP_NEGATE,&& L_OP_PRINT,&& L_OP_JUMP,
+        && L_OP_JUMP_IF_FALSE,&& L_OP_LOOP,
+        && L_OP_CALL_0,&& L_OP_CALL_1,&& L_OP_CALL_2,&& L_OP_CALL_3,&& L_OP_CALL_4,&& L_OP_CALL,
+        && L_OP_TAIL_CALL_0,&& L_OP_TAIL_CALL_1,&& L_OP_TAIL_CALL_2,&& L_OP_TAIL_CALL_3,&& L_OP_TAIL_CALL_4,&& L_OP_TAIL_CALL,
+        && L_OP_INVOKE_0,&& L_OP_INVOKE_1,&& L_OP_INVOKE_2,&& L_OP_INVOKE_3,&& L_OP_INVOKE_4,
+        && L_OP_TAIL_INVOKE_0,&& L_OP_TAIL_INVOKE_1,&& L_OP_TAIL_INVOKE_2,&& L_OP_TAIL_INVOKE_3,&& L_OP_TAIL_INVOKE_4,
+        && L_OP_INVOKE,&& L_OP_INVOKE_LONG,&& L_OP_TAIL_INVOKE,&& L_OP_TAIL_INVOKE_LONG,
+        && L_OP_SUPER_INVOKE_0,&& L_OP_SUPER_INVOKE_1,&& L_OP_SUPER_INVOKE_2,&& L_OP_SUPER_INVOKE_3,&& L_OP_SUPER_INVOKE_4,
+        && L_OP_TAIL_SUPER_INVOKE_0,&& L_OP_TAIL_SUPER_INVOKE_1,&& L_OP_TAIL_SUPER_INVOKE_2,&& L_OP_TAIL_SUPER_INVOKE_3,&& L_OP_TAIL_SUPER_INVOKE_4,
+        && L_OP_SUPER_INVOKE,&& L_OP_SUPER_INVOKE_LONG,&& L_OP_TAIL_SUPER_INVOKE,&& L_OP_TAIL_SUPER_INVOKE_LONG,
+        && L_OP_CLOSURE,&& L_OP_CLOSURE_LONG,&& L_OP_CLOSE_UPVALUE,&& L_OP_RETURN,
+        && L_OP_CLASS,&& L_OP_CLASS_LONG,&& L_OP_INHERIT,&& L_OP_METHOD,&& L_OP_METHOD_LONG,
+        && L_OP_BUILD_LIST,&& L_OP_INDEX_GET,&& L_OP_INDEX_SET,&& L_OP_IMPORT,&& L_OP_IMPORT_LONG
     };
-
-#ifdef DEBUG_TRACE_EXECUTION
-#define DISPATCH() do { \
-        frame->ip = ip; /* 1. Tell the VM exactly where we are RIGHT NOW */ \
-        traceExecution(vm); /* 2. Trace based on that synced IP */ \
-        uint8_t next_op = *ip++; /* 3. Fetch and move to next instruction */ \
-        goto *dispatchTable[next_op]; /* 4. Jump */ \
-    } while (0)
-#else
-#define DISPATCH() goto *dispatchTable[READ_BYTE()]
-#endif
-
+#define DISPATCH() do { TRACE_IF_ENABLED(); goto *dispatchTable[*ip++]; } while (0)
 #define OPCODE(name) L_##name
     DISPATCH();
 #else
 #define DISPATCH() break
 #define OPCODE(name) case name
     while (true) {
+        TRACE_IF_ENABLED();
         switch (READ_BYTE()) {
 #endif
 
+            /* --- STACK --- */
             OPCODE(OP_CONSTANT) : push(vm, READ_CONSTANT()); DISPATCH();
             OPCODE(OP_CONSTANT_LONG) : push(vm, READ_CONSTANT_LONG()); DISPATCH();
             OPCODE(OP_NIL) : push(vm, NIL_VAL); DISPATCH();
             OPCODE(OP_TRUE) : push(vm, BOOL_VAL(true)); DISPATCH();
             OPCODE(OP_FALSE) : push(vm, BOOL_VAL(false)); DISPATCH();
             OPCODE(OP_POP) : pop(vm); DISPATCH();
-            OPCODE(OP_POP_N) : {
-                uint8_t n = READ_BYTE();
-                vm->stackTop -= n;
-                DISPATCH(); }
+            OPCODE(OP_POP_N) : vm->stackTop -= READ_BYTE(); DISPATCH();
             OPCODE(OP_GET_LOCAL) : push(vm, frame->slots[READ_BYTE()]); DISPATCH();
             OPCODE(OP_SET_LOCAL) : frame->slots[READ_BYTE()] = peek(vm, 0); DISPATCH();
+
+            /* --- GLOBALS --- */
             OPCODE(OP_GET_GLOBAL) : {
                 uint8_t index = READ_BYTE();
-                ObjModule* module = frame->closure->function->module;
-                Value value = module->globalValues.values[index];
-                if (IS_EMPTY(value)) {
+                Value val = frame->closure->function->module->globalValues.values[index];
+                if (IS_EMPTY(val)) {
                     STORE_FRAME();
-                    // Use that function you already defined!
-                    struct ObjString* name = findGlobalName(module, index);
-                    runtimeError(vm, "Undefined variable '%s'.", name ? name->chars : "unknown");
+                    struct ObjString* n = findGlobalName(frame->closure->function->module, (int) index);
+                    runtimeError(vm, "Undefined variable '%s'.", n ? n->chars : "unknown");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                push(vm, value);
-                DISPATCH(); }
+                push(vm, val); DISPATCH();
+            }
             OPCODE(OP_GET_GLOBAL_LONG) : {
                 uint16_t index = READ_SHORT();
-                ObjModule* module = frame->closure->function->module;
-                Value value = module->globalValues.values[index];
-                if (IS_EMPTY(value)) {
+                Value val = frame->closure->function->module->globalValues.values[index];
+                if (IS_EMPTY(val)) {
                     STORE_FRAME();
-                    // Use that function you already defined!
-                    struct ObjString* name = findGlobalName(module, index);
-                    runtimeError(vm, "Undefined variable '%s'.", name ? name->chars : "unknown");
+                    struct ObjString* n = findGlobalName(frame->closure->function->module, (int) index);
+                    runtimeError(vm, "Undefined variable '%s'.", n ? n->chars : "unknown");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                push(vm, value);
-                DISPATCH();}
-            OPCODE(OP_DEFINE_GLOBAL) : {
-                uint8_t index = READ_BYTE();
-                // Use the current frame's module, not vm.globals
-                ObjModule* module = frame->closure->function->module;
-                module->globalValues.values[index] = pop(vm);
-                DISPATCH(); }
-            OPCODE(OP_DEFINE_GLOBAL_LONG) : {
-                uint16_t index = READ_SHORT();
-                // Use the current frame's module, not vm.globals
-                ObjModule* module = frame->closure->function->module;
-                module->globalValues.values[index] = pop(vm);
-                DISPATCH(); }
+                push(vm, val); DISPATCH();
+            }
+
+            OPCODE(OP_DEFINE_GLOBAL) : frame->closure->function->module->globalValues.values[READ_BYTE()] = pop(vm); DISPATCH();
+            OPCODE(OP_DEFINE_GLOBAL_LONG) : frame->closure->function->module->globalValues.values[READ_SHORT()] = pop(vm); DISPATCH();
+
             OPCODE(OP_SET_GLOBAL) : {
                 uint8_t index = READ_BYTE();
-                ObjModule* module = frame->closure->function->module;
-                if (IS_EMPTY(module->globalValues.values[index])) {
+                if (IS_EMPTY(frame->closure->function->module->globalValues.values[index])) {
                     STORE_FRAME();
-                    struct ObjString* name = findGlobalName(module, index);
-                    runtimeError(vm, "Undefined variable '%s'.", name ? name->chars : "unknown");
+                    struct ObjString* n = findGlobalName(frame->closure->function->module, (int) index);
+                    runtimeError(vm, "Undefined variable '%s'.", n ? n->chars : "unknown");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                module->globalValues.values[index] = peek(vm, 0);
-                DISPATCH();}
+                frame->closure->function->module->globalValues.values[index] = peek(vm, 0);
+                DISPATCH();
+            }
             OPCODE(OP_SET_GLOBAL_LONG) : {
                 uint16_t index = READ_SHORT();
-                ObjModule* module = frame->closure->function->module;
-                if (IS_EMPTY(module->globalValues.values[index])) {
+                if (IS_EMPTY(frame->closure->function->module->globalValues.values[index])) {
                     STORE_FRAME();
-                    struct ObjString* name = findGlobalName(module, index);
-                    runtimeError(vm, "Undefined variable '%s'.", name ? name->chars : "unknown");
+                    struct ObjString* n = findGlobalName(frame->closure->function->module, (int) index);
+                    runtimeError(vm, "Undefined variable '%s'.", n ? n->chars : "unknown");
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                module->globalValues.values[index] = peek(vm, 0);
-                DISPATCH();}
-            OPCODE(OP_GET_UPVALUE) : {
-                push(vm, *frame->closure->upvalues[READ_BYTE()]->location);
-                DISPATCH(); }
-            OPCODE(OP_SET_UPVALUE) : {
-                *frame->closure->upvalues[READ_BYTE()]->location = peek(vm, 0);
-                DISPATCH(); }
-            OPCODE(OP_IMPORT) : {
-                struct ObjString* filename = READ_STRING();
-                Value mVal;
-                if (tableGet(&vm->modules, OBJ_VAL(filename), &mVal)) {
-                    push(vm, mVal);
-                    DISPATCH();
-                }
-                char* src = readFile(filename->chars);
-                if (!src) {
-                    runtimeError(vm, "Could not open file \"%s\".", filename->chars);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                STORE_FRAME();
-                ObjModule* m = newModule(vm, filename);
-                ObjFunction* f = compile(vm, m, src);
-                free(src);
-                if (!f)
-                    return INTERPRET_RUNTIME_ERROR;
-                ObjClosure* c = newClosure(vm, f);
-                // 1. Push the closure to the stack
-                push(vm, OBJ_VAL(c));
-                // 2. Call the closure (sets up the new frame)
-                if (!call(vm, c, 0))
-                    return INTERPRET_RUNTIME_ERROR;
-                // 3. FIX: Replace slot 0 of the NEW frame with the Module object.
-                // Because we updated endCompiler, the module will now return 'm' when it finishes.
-                vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
-                // 4. Cache the module
-                tableSet(vm, &vm->modules, OBJ_VAL(filename), OBJ_VAL(m));
-                REFRESH_FRAME();
-                DISPATCH();}
-            OPCODE(OP_IMPORT_LONG) : {
-                struct ObjString* filename = READ_STRING_LONG();
-                Value mVal;
-                if (tableGet(&vm->modules, OBJ_VAL(filename), &mVal)) {
-                    push(vm, mVal);
-                    DISPATCH();
-                }
-                char* src = readFile(filename->chars);
-                if (!src) {
-                    runtimeError(vm, "Could not open file \"%s\".", filename->chars);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                STORE_FRAME();
-                ObjModule* m = newModule(vm, filename);
-                ObjFunction* f = compile(vm, m, src);
-                free(src);
-                if (!f)
-                    return INTERPRET_RUNTIME_ERROR;
-                ObjClosure* c = newClosure(vm, f);
-                // 1. Push the closure to the stack
-                push(vm, OBJ_VAL(c));
-                // 2. Call the closure (sets up the new frame)
-                if (!call(vm, c, 0))
-                    return INTERPRET_RUNTIME_ERROR;
-                // 3. FIX: Replace slot 0 of the NEW frame with the Module object.
-                // Because we updated endCompiler, the module will now return 'm' when it finishes.
-                vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
-                // 4. Cache the module
-                tableSet(vm, &vm->modules, OBJ_VAL(filename), OBJ_VAL(m));
-                REFRESH_FRAME();
-                DISPATCH();}
+                frame->closure->function->module->globalValues.values[index] = peek(vm, 0);
+                DISPATCH();
+            }
+
+            OPCODE(OP_GET_UPVALUE) : push(vm, *frame->closure->upvalues[READ_BYTE()]->location); DISPATCH();
+            OPCODE(OP_SET_UPVALUE) : *frame->closure->upvalues[READ_BYTE()]->location = peek(vm, 0); DISPATCH();
+
+            /* --- ACCESS --- */
             OPCODE(OP_GET_PROPERTY) : {
                 ObjString* name = READ_STRING();
                 Value receiver = peek(vm, 0);
                 if (IS_INSTANCE(receiver)) {
-                    ObjInstance* instance = AS_INSTANCE(receiver);
-                    Value value;
-                    if (tableGet(&instance->fields, OBJ_VAL(name), &value)) {
-                        pop(vm); // instance
-                        push(vm, value);
-                        DISPATCH();
+                    ObjInstance* i = AS_INSTANCE(receiver); Value v;
+                    if (tableGet(&i->fields, OBJ_VAL(name), &v)) {
+                        pop(vm); push(vm, v); DISPATCH();
                     }
-                    if (bindMethod(vm, instance->klass, name)) {
-                        DISPATCH();
+                    if (bindMethod(vm, i->klass, name)) DISPATCH();
+                } else if (IS_MODULE(receiver)) {
+                    ObjModule* m = AS_MODULE(receiver); Value idx;
+                    if (tableGet(&m->globalNames, OBJ_VAL(name), &idx)) {
+                        pop(vm); push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]); DISPATCH();
                     }
-                    STORE_FRAME();
-                    runtimeError(vm, "Undefined property '%s'.", name->chars);
-                    return INTERPRET_RUNTIME_ERROR;
+                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", name->chars); return INTERPRET_RUNTIME_ERROR;
                 }
-                if (IS_MODULE(receiver)) {
-                    ObjModule* module = AS_MODULE(receiver);
-                    Value indexValue;
-                    if (tableGet(&module->globalNames, OBJ_VAL(name), &indexValue)) {
-                        int index = (int) AS_NUMBER(indexValue);
-                        pop(vm); // module
-                        push(vm, module->globalValues.values[index]);
-                        DISPATCH();
-                    }
-                    STORE_FRAME();
-                    runtimeError(vm, "Undefined property '%s'.", name->chars);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                STORE_FRAME();
-                runtimeError(vm, "Only instances and modules have properties.");
-                return INTERPRET_RUNTIME_ERROR;}
+                STORE_FRAME(); runtimeError(vm, "Only instances and modules have properties."); return INTERPRET_RUNTIME_ERROR;
+            }
             OPCODE(OP_GET_PROPERTY_LONG) : {
                 ObjString* name = READ_STRING_LONG();
                 Value receiver = peek(vm, 0);
                 if (IS_INSTANCE(receiver)) {
-                    ObjInstance* instance = AS_INSTANCE(receiver);
-                    Value value;
-                    if (tableGet(&instance->fields, OBJ_VAL(name), &value)) {
-                        pop(vm); // instance
-                        push(vm, value);
-                        DISPATCH();
+                    ObjInstance* i = AS_INSTANCE(receiver); Value v;
+                    if (tableGet(&i->fields, OBJ_VAL(name), &v)) {
+                        pop(vm); push(vm, v); DISPATCH();
                     }
-                    if (bindMethod(vm, instance->klass, name)) {
-                        DISPATCH();
+                    if (bindMethod(vm, i->klass, name)) DISPATCH();
+                } else if (IS_MODULE(receiver)) {
+                    ObjModule* m = AS_MODULE(receiver); Value idx;
+                    if (tableGet(&m->globalNames, OBJ_VAL(name), &idx)) {
+                        pop(vm); push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]); DISPATCH();
                     }
-                    STORE_FRAME();
-                    runtimeError(vm, "Undefined property '%s'.", name->chars);
-                    return INTERPRET_RUNTIME_ERROR;
+                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", name->chars); return INTERPRET_RUNTIME_ERROR;
                 }
-                if (IS_MODULE(receiver)) {
-                    ObjModule* module = AS_MODULE(receiver);
-                    Value indexValue;
-                    if (tableGet(&module->globalNames, OBJ_VAL(name), &indexValue)) {
-                        int index = (int) AS_NUMBER(indexValue);
-                        pop(vm); // module
-                        push(vm, module->globalValues.values[index]);
-                        DISPATCH();
-                    }
-                    STORE_FRAME();
-                    runtimeError(vm, "Undefined property '%s'.", name->chars);
-                    return INTERPRET_RUNTIME_ERROR;
+                STORE_FRAME(); runtimeError(vm, "Only instances and modules have properties."); return INTERPRET_RUNTIME_ERROR;
+            }
+
+            OPCODE(OP_SET_PROPERTY) : {
+                ObjString* name = READ_STRING();
+                Value val = pop(vm);
+                if (IS_INSTANCE(peek(vm, 0))) {
+                    ObjInstance* i = AS_INSTANCE(pop(vm));
+                    tableSet(vm, &i->fields, OBJ_VAL(name), val);
+                    push(vm, val);
+                    DISPATCH();
                 }
+                STORE_FRAME(); runtimeError(vm, "Only instances have fields."); return INTERPRET_RUNTIME_ERROR;
+            }
+            OPCODE(OP_SET_PROPERTY_LONG) : {
+                ObjString* name = READ_STRING_LONG();
+                Value val = pop(vm);
+                if (IS_INSTANCE(peek(vm, 0))) {
+                    ObjInstance* i = AS_INSTANCE(pop(vm));
+                    tableSet(vm, &i->fields, OBJ_VAL(name), val);
+                    push(vm, val);
+                    DISPATCH();
+                }
+                STORE_FRAME(); runtimeError(vm, "Only instances have fields."); return INTERPRET_RUNTIME_ERROR;
+            }
+
+            OPCODE(OP_GET_SUPER) : {
+                ObjString* name = READ_STRING();
+                ObjClass* superclass = AS_CLASS(pop(vm));
                 STORE_FRAME();
-                runtimeError(vm, "Only instances and modules have properties.");
-                return INTERPRET_RUNTIME_ERROR;}
-            OPCODE(OP_BUILD_LIST) : {
-                uint8_t count = READ_BYTE();
-                ObjList* list = newList(vm);
-                // 1. Push list to stack immediately so the GC sees it!
-                push(vm, OBJ_VAL(list));
-                // 2. Fill it
-                for (int i = 0; i < count; i++) {
-                    // Peek past the list object we just pushed
-                    Value item = peek(vm, count - i);
-                    writeValueArray(vm, &list->items, item);
-                }
-                // 3. Pop the items and the temporary list object
-                vm->stackTop -= (count + 1);
-                // 4. Push the final list back
-                push(vm, OBJ_VAL(list));
-                DISPATCH();}
-            OPCODE(OP_INDEX_GET) : {
-                Value indexValue = pop(vm);
-                Value listValue = pop(vm);
-                if (!IS_LIST(listValue)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Only lists can be indexed.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                ObjList* list = AS_LIST(listValue);
-                int index = (int) AS_NUMBER(indexValue);
-                if (index < 0 || index >= list->items.count) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Index out of bounds.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                push(vm, list->items.values[index]);
-                DISPATCH();}
-            OPCODE(OP_INDEX_SET) : {
-                Value value = pop(vm);
-                Value indexValue = pop(vm);
-                Value listValue = pop(vm);
-                if (!IS_LIST(listValue)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Only lists can be indexed.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                ObjList* list = AS_LIST(listValue);
-                if (!IS_NUMBER(indexValue)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "List index must be a number.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                int index = (int) AS_NUMBER(indexValue);
-                if (index < 0 || index > list->items.count) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Index out of bounds.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                if (index == list->items.count) {
-                    // Appending to the end of the list: res[length] = val
-                    writeValueArray(vm, &list->items, value);
+                if (!bindMethod(vm, superclass, name)) return INTERPRET_RUNTIME_ERROR;
+                DISPATCH();
+            }
+            OPCODE(OP_GET_SUPER_LONG) : {
+                ObjString* name = READ_STRING_LONG();
+                ObjClass* superclass = AS_CLASS(pop(vm));
+                STORE_FRAME();
+                if (!bindMethod(vm, superclass, name)) return INTERPRET_RUNTIME_ERROR;
+                DISPATCH();
+            }
+
+            /* --- MATH --- */
+            OPCODE(OP_EQUAL) : { Value b = pop(vm); Value a = pop(vm); push(vm, BOOL_VAL(valuesEqual(a, b))); DISPATCH(); }
+            OPCODE(OP_GREATER) : { BINARY_OP(BOOL_VAL, > ); DISPATCH(); }
+            OPCODE(OP_LESS) : { BINARY_OP(BOOL_VAL, < ); DISPATCH(); }
+            OPCODE(OP_ADD) : {
+                if (IS_STRING(peek(vm, 0)) || IS_STRING(peek(vm, 1))) {
+                    if ((IS_STRING(peek(vm, 0)) || IS_NUMBER(peek(vm, 0))) &&
+                        (IS_STRING(peek(vm, 1)) || IS_NUMBER(peek(vm, 1)))) {
+                        STORE_FRAME(); concatenate(vm);
+                    } else {
+                        STORE_FRAME(); runtimeError(vm, "Operands must be two numbers or two strings."); return INTERPRET_RUNTIME_ERROR;
+                    }
+                } else if (IS_NUMBER(peek(vm, 0)) && IS_NUMBER(peek(vm, 1))) {
+                    double b = AS_NUMBER(pop(vm)); double a = AS_NUMBER(pop(vm)); push(vm, NUMBER_VAL(a + b));
                 } else {
-                    // Overwriting an existing element
-                    list->items.values[index] = value;
+                    STORE_FRAME(); runtimeError(vm, "Operands must be two numbers or two strings."); return INTERPRET_RUNTIME_ERROR;
                 }
-                // Assignment expressions evaluate to the value assigned
-                push(vm, value);
-                DISPATCH();}
+                DISPATCH();
+            }
+            OPCODE(OP_SUBTRACT) : { BINARY_OP(NUMBER_VAL, -); DISPATCH(); }
+            OPCODE(OP_MULTIPLY) : { BINARY_OP(NUMBER_VAL, *); DISPATCH(); }
+            OPCODE(OP_DIVIDE) : { BINARY_OP(NUMBER_VAL, / ); DISPATCH(); }
+            OPCODE(OP_MODULO) : {
+                if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) {
+                    STORE_FRAME(); runtimeError(vm, "Operands must be numbers."); return INTERPRET_RUNTIME_ERROR;
+                }
+                double b = AS_NUMBER(pop(vm)); double a = AS_NUMBER(pop(vm));
+                push(vm, NUMBER_VAL(fmod(a, b))); DISPATCH();
+            }
+            OPCODE(OP_NOT) : { push(vm, BOOL_VAL(isFalsey(pop(vm)))); DISPATCH(); }
+            OPCODE(OP_NEGATE) : {
+                if (!IS_NUMBER(peek(vm, 0))) {
+                    STORE_FRAME(); runtimeError(vm, "Must be number."); return INTERPRET_RUNTIME_ERROR;
+                }
+                push(vm, NUMBER_VAL(-AS_NUMBER(pop(vm)))); DISPATCH();
+            }
+
+            /* --- FLOW --- */
+            OPCODE(OP_PRINT) : { printValue(pop(vm)); printf("\n"); DISPATCH(); }
+            OPCODE(OP_JUMP) : { uint16_t offset = READ_SHORT(); ip += offset; DISPATCH(); }
+            OPCODE(OP_JUMP_IF_FALSE) : { uint16_t offset = READ_SHORT(); if (isFalsey(peek(vm, 0))) ip += offset; DISPATCH(); }
+            OPCODE(OP_LOOP) : { uint16_t offset = READ_SHORT(); ip -= offset; DISPATCH(); }
             OPCODE(OP_RETURN) : {
-                Value res = pop(vm);
+                Value result = pop(vm);
                 closeUpvalues(vm, frame->slots);
                 vm->frameCount--;
                 if (vm->frameCount == 0) {
-                    push(vm, res); // leave the result on the stack for the host
-                    pop(vm); // remove the initial function/closure below it
-                    return INTERPRET_OK;
+                    pop(vm); return INTERPRET_OK;
                 }
                 vm->stackTop = frame->slots;
-                push(vm, res);
+                push(vm, result);
                 REFRESH_FRAME();
-                DISPATCH();}
-            OPCODE(OP_ADD) : {
-                if (IS_STRING(peek(vm, 0)) || IS_STRING(peek(vm, 1))) {
-                    // Concatenation: Allow String + String, String + Number, or Number + String
-                    if ((IS_STRING(peek(vm, 0)) || IS_NUMBER(peek(vm, 0))) &&
-                        (IS_STRING(peek(vm, 1)) || IS_NUMBER(peek(vm, 1)))) {
-                        STORE_FRAME();
-                        concatenate(vm);
-                    } else {
-                        STORE_FRAME();
-                        runtimeError(vm, "Operands must be two numbers or two strings.");
-                        return INTERPRET_RUNTIME_ERROR;
-                    }
-                } else if (IS_NUMBER(peek(vm, 0)) && IS_NUMBER(peek(vm, 1))) {
-                    // Standard Addition
-                    double b = AS_NUMBER(pop(vm));
-                    double a = AS_NUMBER(pop(vm));
-                    push(vm, NUMBER_VAL(a + b));
-                } else {
-                    STORE_FRAME();
-                    runtimeError(vm, "Operands must be two numbers or two strings.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                DISPATCH(); }
-            OPCODE(OP_EQUAL) : { Value b = pop(vm); Value a = pop(vm); push(vm, BOOL_VAL(valuesEqual(a, b))); DISPATCH(); }
-            OPCODE(OP_GREATER) : {
-                BINARY_OP(BOOL_VAL, > ); DISPATCH(); }
-            OPCODE(OP_LESS) : {
-                BINARY_OP(BOOL_VAL, < ); DISPATCH(); }
-            OPCODE(OP_SUBTRACT) : {
-                BINARY_OP(NUMBER_VAL, -); DISPATCH(); }
-            OPCODE(OP_MULTIPLY) : {
-                BINARY_OP(NUMBER_VAL, *); DISPATCH(); }
-            OPCODE(OP_DIVIDE) : {
-                BINARY_OP(NUMBER_VAL, / ); DISPATCH(); }
-            OPCODE(OP_MODULO) : {
-                double b = AS_NUMBER(pop(vm));
-                double a = AS_NUMBER(pop(vm));
-                push(vm, NUMBER_VAL(fmod(a, b)));
-                DISPATCH();}
-            OPCODE(OP_NOT) : {
-                Value v = pop(vm); push(vm, BOOL_VAL(IS_NIL(v) || (IS_BOOL(v) && !AS_BOOL(v)))); DISPATCH(); }
-            OPCODE(OP_NEGATE) : {
-                if (!IS_NUMBER(peek(vm, 0))) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Must be number.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                push(vm, NUMBER_VAL(-AS_NUMBER(pop(vm))));
-                DISPATCH(); }
-            OPCODE(OP_PRINT) : {
-                printValue(pop(vm));
-                printf("\n");
-                DISPATCH(); }
-            OPCODE(OP_JUMP) : {
-                uint16_t offset = READ_SHORT();
-                ip += offset;
-                DISPATCH();}
-            OPCODE(OP_JUMP_IF_FALSE) : {
-                uint16_t offset = READ_SHORT();
-                Value v = peek(vm, 0);
-                if (IS_NIL(v) || (IS_BOOL(v) && !AS_BOOL(v)))
-                    ip += offset;
-                DISPATCH(); }
-            OPCODE(OP_LOOP) : {
-                uint16_t offset = READ_SHORT();
-                ip -= offset;
-                DISPATCH();}
-            OPCODE(OP_CALL) : {
-                int a = READ_BYTE();
-                STORE_FRAME();
-                if (!callValue(vm, peek(vm, a), a)) {
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                REFRESH_FRAME();
-                DISPATCH(); }
-            OPCODE(OP_TAIL_CALL) : {
-                int argCount = READ_BYTE();
-                Value callee = peek(vm, argCount);
-                // We can only tail-call closures
-                // Natives don't have a bytecode frame to recycle.
-                if (!IS_CLOSURE(callee)) {
-                    STORE_FRAME();
-                    // Fallback to a normal call logic or error
-                    if (!callValue(vm, callee, argCount)) {
-                        return INTERPRET_RUNTIME_ERROR;
-                    }
-                    REFRESH_FRAME();
-                    DISPATCH();
-                }
-                ObjClosure* closure = AS_CLOSURE(callee);
-                if (argCount != closure->function->arity) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Expected %d arguments but got %d.",
-                        closure->function->arity, argCount);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                // --- RECYCLE THE FRAME ---
-                frame = &vm->frames[vm->frameCount - 1];
-                // 1. VERY IMPORTANT: Close any upvalues in the current frame.
-                // If we overwrite these slots without closing, we break closures.
-                closeUpvalues(vm, frame->slots);
-                // 2. Shift the new function and its arguments down the stack
-                // into the slots used by the current function.
-                // Use memmove because the memory regions overlap.
-                int totalSlotsToMove = argCount + 1; // callee + args
-                memmove(frame->slots, vm->stackTop - totalSlotsToMove, sizeof(Value)* totalSlotsToMove);
-                // 3. Reset the stack top to just after our new shifted arguments.
-                vm->stackTop = frame->slots + totalSlotsToMove;
-                // 4. Update the frame pointers to the new closure.
-                frame->closure = closure;
-                frame->ip = closure->function->chunk.code;
-                ip = frame->ip; // Load the new IP for the next instruction
-                // Notice: We DO NOT increment vm->frameCount.
-                DISPATCH();}
-            OPCODE(OP_INVOKE) : {
-                struct ObjString* m = READ_STRING();
-                int a = READ_BYTE();
-                STORE_FRAME();
-                if (!invoke(vm, m, a)) {
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                REFRESH_FRAME();
-                DISPATCH(); }
-            OPCODE(OP_INVOKE_LONG) : {
-                struct ObjString* m = READ_STRING_LONG();
-                int a = READ_BYTE();
-                STORE_FRAME();
-                if (!invoke(vm, m, a)) {
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                REFRESH_FRAME();
-                DISPATCH(); }
-            OPCODE(OP_TAIL_INVOKE) : {
-                ObjString* method = READ_STRING();
-                int argCount = READ_BYTE();
-                // 1. Find the receiver
-                Value receiver = peek(vm, argCount);
-                if (!IS_INSTANCE(receiver)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Only instances have methods.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                ObjInstance* instance = AS_INSTANCE(receiver);
-                // 2. Look up the method
-                Value methodVal;
-                if (!tableGet(&instance->klass->methods, OBJ_VAL(method), &methodVal)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Undefined property '%s'.", method->chars);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                // We can only tail-call closures/methods
-                ObjClosure* closure = AS_CLOSURE(methodVal);
-                // 3. Check Arity
-                if (argCount != closure->function->arity) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Expected %d arguments but got %d.", closure->function->arity, argCount);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                // 4. --- RECYCLE THE FRAME (Same as OP_TAIL_CALL) ---
-                frame = &vm->frames[vm->frameCount - 1]; // Use existing frame variable
-                closeUpvalues(vm, frame->slots);
-                int totalSlotsToMove = argCount + 1;
-                memmove(frame->slots, vm->stackTop - totalSlotsToMove, sizeof(Value)* totalSlotsToMove);
-                vm->stackTop = frame->slots + totalSlotsToMove;
-                frame->closure = closure;
-                frame->ip = closure->function->chunk.code;
-                ip = frame->ip;
-                DISPATCH();}
-            OPCODE(OP_TAIL_INVOKE_LONG) : {
-                ObjString* method = READ_STRING_LONG();
-                int argCount = READ_BYTE();
-                // 1. Find the receiver
-                Value receiver = peek(vm, argCount);
-                if (!IS_INSTANCE(receiver)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Only instances have methods.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                ObjInstance* instance = AS_INSTANCE(receiver);
-                // 2. Look up the method
-                Value methodVal;
-                if (!tableGet(&instance->klass->methods, OBJ_VAL(method), &methodVal)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Undefined property '%s'.", method->chars);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                // We can only tail-call closures/methods
-                ObjClosure* closure = AS_CLOSURE(methodVal);
-                // 3. Check Arity
-                if (argCount != closure->function->arity) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Expected %d arguments but got %d.", closure->function->arity, argCount);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                // 4. --- RECYCLE THE FRAME (Same as OP_TAIL_CALL) ---
-                frame = &vm->frames[vm->frameCount - 1]; // Use existing frame variable
-                closeUpvalues(vm, frame->slots);
-                int totalSlotsToMove = argCount + 1;
-                memmove(frame->slots, vm->stackTop - totalSlotsToMove, sizeof(Value)* totalSlotsToMove);
-                vm->stackTop = frame->slots + totalSlotsToMove;
-                frame->closure = closure;
-                frame->ip = closure->function->chunk.code;
-                ip = frame->ip;
-                DISPATCH();}
-            OPCODE(OP_CLOSURE) : {
-                ObjFunction* f = AS_FUNCTION(READ_CONSTANT());
-                ObjClosure* c = newClosure(vm, f);
-                push(vm, OBJ_VAL(c));
-                for (int i = 0; i < f->upvalueCount; i++) {
-                    uint8_t isL = READ_BYTE();
-                    uint8_t idx = READ_BYTE();
-                    if (isL)
-                        c->upvalues[i] = captureUpvalue(vm, frame->slots + idx);
-                    else
-                        c->upvalues[i] = frame->closure->upvalues[idx];
-                }
-                DISPATCH(); }
-            OPCODE(OP_CLOSURE_LONG) : {
-                ObjFunction* f = AS_FUNCTION(READ_CONSTANT_LONG());
-                ObjClosure* c = newClosure(vm, f);
-                push(vm, OBJ_VAL(c));
-                for (int i = 0; i < f->upvalueCount; i++) {
-                    uint8_t isL = READ_BYTE();
-                    uint8_t idx = READ_BYTE();
-                    if (isL)
-                        c->upvalues[i] = captureUpvalue(vm, frame->slots + idx);
-                    else
-                        c->upvalues[i] = frame->closure->upvalues[idx];
-                }
-                DISPATCH(); }
-            OPCODE(OP_CLOSE_UPVALUE) : {
-                closeUpvalues(vm, vm->stackTop - 1);
-                pop(vm);
-                DISPATCH(); }
-            OPCODE(OP_CLASS) : {
-                push(vm, OBJ_VAL(newClass(vm, READ_STRING())));
-                DISPATCH(); }
-            OPCODE(OP_CLASS_LONG) : {
-                push(vm, OBJ_VAL(newClass(vm, READ_STRING_LONG())));
-                DISPATCH(); }
-            OPCODE(OP_INHERIT) : {
-                Value superclass = peek(vm, 1);
-                ObjClass* subclass = AS_CLASS(peek(vm, 0));
-                if (!IS_CLASS(superclass)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Superclass must be a class.");
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                tableAddAll(vm, &AS_CLASS(superclass)->methods, &subclass->methods);
-                pop(vm);
-                DISPATCH();}
-            OPCODE(OP_METHOD) : {
-                ObjString* name = READ_STRING(); // Get method name from constants
-                Value method = peek(vm, 0);          // Get closure from stack top
-                ObjClass* klass = AS_CLASS(peek(vm, 1)); // Get class from below closure
-                tableSet(vm, &klass->methods, OBJ_VAL(name), method);
-                pop(vm); // Pop the closure
-                DISPATCH(); }
-            OPCODE(OP_METHOD_LONG) : {
-                ObjString* name = READ_STRING_LONG(); // Get method name from constants
-                Value method = peek(vm, 0);          // Get closure from stack top
-                ObjClass* klass = AS_CLASS(peek(vm, 1)); // Get class from below closure
-                tableSet(vm, &klass->methods, OBJ_VAL(name), method);
-                pop(vm); // Pop the closure
-                DISPATCH(); }
-            OPCODE(OP_SET_PROPERTY) : {
-                Value val = pop(vm);
-                if (!IS_INSTANCE(peek(vm, 0))) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Only instances have fields."); return INTERPRET_RUNTIME_ERROR;
-                }
-                ObjInstance* i = AS_INSTANCE(pop(vm));
-                ObjString* name = READ_STRING();
-                tableSet(vm, &i->fields, OBJ_VAL(name), val);
-                push(vm, val);
-                DISPATCH();}
-            OPCODE(OP_SET_PROPERTY_LONG) : {
-                Value val = pop(vm);
-                if (!IS_INSTANCE(peek(vm, 0))) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Only instances have fields."); return INTERPRET_RUNTIME_ERROR;
-                }
-                ObjInstance* i = AS_INSTANCE(pop(vm));
-                ObjString* name = READ_STRING_LONG();
-                tableSet(vm, &i->fields, OBJ_VAL(name), val);
-                push(vm, val);
-                DISPATCH();}
-            OPCODE(OP_GET_SUPER) : {
-                struct ObjString* n = READ_STRING();
-                ObjClass* s = AS_CLASS(pop(vm));
-                STORE_FRAME();
-                if (!bindMethod(vm, s, n))
-                    return INTERPRET_RUNTIME_ERROR;
-                DISPATCH();}
-            OPCODE(OP_GET_SUPER_LONG) : {
-                struct ObjString* n = READ_STRING_LONG();
-                ObjClass* s = AS_CLASS(pop(vm));
-                STORE_FRAME();
-                if (!bindMethod(vm, s, n))
-                    return INTERPRET_RUNTIME_ERROR;
-                DISPATCH();}
-            OPCODE(OP_SUPER_INVOKE) : {
-                struct ObjString* m = READ_STRING();
-                int a = READ_BYTE();
-                ObjClass* s = AS_CLASS(pop(vm));
-                STORE_FRAME();
-                if (!invokeFromClass(vm, s, m, a))
-                    return INTERPRET_RUNTIME_ERROR;
-                REFRESH_FRAME();
-                DISPATCH();}
-            OPCODE(OP_SUPER_INVOKE_LONG) : {
-                struct ObjString* m = READ_STRING_LONG();
-                int a = READ_BYTE();
-                ObjClass* s = AS_CLASS(pop(vm));
-                STORE_FRAME();
-                if (!invokeFromClass(vm, s, m, a))
-                    return INTERPRET_RUNTIME_ERROR;
-                REFRESH_FRAME();
-                DISPATCH();}
-            OPCODE(OP_TAIL_SUPER_INVOKE) : {
-                ObjString* method = READ_STRING();
-                int argCount = READ_BYTE();
-                ObjClass* superclass = AS_CLASS(pop(vm)); // Superclass is pushed by the compiler
-                Value methodVal;
-                if (!tableGet(&superclass->methods, OBJ_VAL(method), &methodVal)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Undefined property '%s'.", method->chars);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                ObjClosure* closure = AS_CLOSURE(methodVal);
-                if (argCount != closure->function->arity) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Expected %d arguments but got %d.", closure->function->arity, argCount);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                // --- RECYCLE THE FRAME ---
-                frame = &vm->frames[vm->frameCount - 1];
-                closeUpvalues(vm, frame->slots);
-                int totalSlotsToMove = argCount + 1;
-                memmove(frame->slots, vm->stackTop - totalSlotsToMove, sizeof(Value)* totalSlotsToMove);
-                vm->stackTop = frame->slots + totalSlotsToMove;
-                frame->closure = closure;
-                frame->ip = closure->function->chunk.code;
-                ip = frame->ip;
-                DISPATCH();}
-            OPCODE(OP_TAIL_SUPER_INVOKE_LONG) : {
-                ObjString* method = READ_STRING_LONG();
-                int argCount = READ_BYTE();
-                ObjClass* superclass = AS_CLASS(pop(vm)); // Superclass is pushed by the compiler
-                Value methodVal;
-                if (!tableGet(&superclass->methods, OBJ_VAL(method), &methodVal)) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Undefined property '%s'.", method->chars);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                ObjClosure* closure = AS_CLOSURE(methodVal);
-                if (argCount != closure->function->arity) {
-                    STORE_FRAME();
-                    runtimeError(vm, "Expected %d arguments but got %d.", closure->function->arity, argCount);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                // --- RECYCLE THE FRAME ---
-                frame = &vm->frames[vm->frameCount - 1];
-                closeUpvalues(vm, frame->slots);
-                int totalSlotsToMove = argCount + 1;
-                memmove(frame->slots, vm->stackTop - totalSlotsToMove, sizeof(Value)* totalSlotsToMove);
-                vm->stackTop = frame->slots + totalSlotsToMove;
-                frame->closure = closure;
-                frame->ip = closure->function->chunk.code;
-                ip = frame->ip;
-                DISPATCH();}
+                DISPATCH();
+            }
+
+            /* --- CALLS --- */
+            OPCODE(OP_CALL_0) : argCount = 0; goto do_call;
+            OPCODE(OP_CALL_1) : argCount = 1; goto do_call;
+            OPCODE(OP_CALL_2) : argCount = 2; goto do_call;
+            OPCODE(OP_CALL_3) : argCount = 3; goto do_call;
+            OPCODE(OP_CALL_4) : argCount = 4; goto do_call;
+            OPCODE(OP_CALL) : argCount = READ_BYTE();
+        do_call:
+            STORE_FRAME();
+            if (!callValue(vm, peek(vm, argCount), argCount)) return INTERPRET_RUNTIME_ERROR;
+            REFRESH_FRAME();
+            DISPATCH();
+
+            OPCODE(OP_TAIL_CALL_0) : argCount = 0; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL_1) : argCount = 1; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL_2) : argCount = 2; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL_3) : argCount = 3; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL_4) : argCount = 4; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL) : argCount = READ_BYTE();
+        do_tail_call: {
+            Value callee = peek(vm, argCount);
+            if (!IS_CLOSURE(callee)) {
+                STORE_FRAME(); if (!callValue(vm, callee, argCount)) return INTERPRET_RUNTIME_ERROR; REFRESH_FRAME(); DISPATCH();
+            }
+            ObjClosure* c = AS_CLOSURE(callee);
+            if (argCount != c->function->arity) {
+                STORE_FRAME(); runtimeError(vm, "Expected %d arguments but got %d.", c->function->arity, argCount); return INTERPRET_RUNTIME_ERROR;
+            }
+            closeUpvalues(vm, frame->slots);
+            memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
+            vm->stackTop = frame->slots + (argCount + 1);
+            frame->closure = c;
+            frame->ip = c->function->chunk.code;
+            ip = frame->ip;
+            DISPATCH();
+            }
+
+        /* --- INVOKES --- */
+        OPCODE(OP_INVOKE_0) : argCount = 0; goto do_invoke;
+        OPCODE(OP_INVOKE_1) : argCount = 1; goto do_invoke;
+        OPCODE(OP_INVOKE_2) : argCount = 2; goto do_invoke;
+        OPCODE(OP_INVOKE_3) : argCount = 3; goto do_invoke;
+        OPCODE(OP_INVOKE_4) : argCount = 4; goto do_invoke;
+        OPCODE(OP_INVOKE) : argCount = READ_BYTE(); goto do_invoke;
+    do_invoke: {
+        ObjString* method = READ_STRING();
+        STORE_FRAME();
+        if (!invoke(vm, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+        REFRESH_FRAME();
+        DISPATCH();
+        }
+    OPCODE(OP_INVOKE_LONG) : {
+        ObjString* method = READ_STRING_LONG();
+        argCount = READ_BYTE();
+        STORE_FRAME();
+        if (!invoke(vm, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+        REFRESH_FRAME();
+        DISPATCH();
+    }
+
+    OPCODE(OP_TAIL_INVOKE_0) : argCount = 0; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE_1) : argCount = 1; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE_2) : argCount = 2; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE_3) : argCount = 3; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE_4) : argCount = 4; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE) : argCount = READ_BYTE(); goto do_tail_invoke;
+do_tail_invoke: {
+    ObjString* method = READ_STRING();
+    Value rec = peek(vm, argCount);
+    if (!IS_INSTANCE(rec)) {
+        STORE_FRAME(); runtimeError(vm, "Only instances have methods."); return INTERPRET_RUNTIME_ERROR;
+    }
+    ObjInstance* i = AS_INSTANCE(rec);
+    Value meth;
+    if (!tableGet(&i->klass->methods, OBJ_VAL(method), &meth)) {
+        STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+    }
+    ObjClosure* c = AS_CLOSURE(meth);
+    closeUpvalues(vm, frame->slots);
+    memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
+    vm->stackTop = frame->slots + (argCount + 1);
+    frame->closure = c;
+    frame->ip = c->function->chunk.code;
+    ip = frame->ip;
+    DISPATCH();
+    }
+OPCODE(OP_TAIL_INVOKE_LONG) : {
+    ObjString* method = READ_STRING_LONG();
+    argCount = READ_BYTE();
+    Value rec = peek(vm, argCount);
+    if (!IS_INSTANCE(rec)) {
+        STORE_FRAME(); runtimeError(vm, "Only instances have methods."); return INTERPRET_RUNTIME_ERROR;
+    }
+    ObjInstance* i = AS_INSTANCE(rec);
+    Value meth;
+    if (!tableGet(&i->klass->methods, OBJ_VAL(method), &meth)) {
+        STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+    }
+    ObjClosure* c = AS_CLOSURE(meth);
+    closeUpvalues(vm, frame->slots);
+    memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value)* (argCount + 1));
+    vm->stackTop = frame->slots + (argCount + 1);
+    frame->closure = c;
+    frame->ip = c->function->chunk.code;
+    ip = frame->ip;
+    DISPATCH();
+}
+
+/* --- SUPER --- */
+OPCODE(OP_SUPER_INVOKE_0) : argCount = 0; goto do_super;
+OPCODE(OP_SUPER_INVOKE_1) : argCount = 1; goto do_super;
+OPCODE(OP_SUPER_INVOKE_2) : argCount = 2; goto do_super;
+OPCODE(OP_SUPER_INVOKE_3) : argCount = 3; goto do_super;
+OPCODE(OP_SUPER_INVOKE_4) : argCount = 4; goto do_super;
+OPCODE(OP_SUPER_INVOKE) : argCount = READ_BYTE(); goto do_super;
+do_super: {
+ObjString* method = READ_STRING();
+ObjClass* superclass = AS_CLASS(pop(vm));
+STORE_FRAME();
+if (!invokeFromClass(vm, superclass, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+REFRESH_FRAME();
+DISPATCH();
+}
+OPCODE(OP_SUPER_INVOKE_LONG) : {
+    ObjString* method = READ_STRING_LONG();
+    argCount = READ_BYTE();
+    ObjClass* superclass = AS_CLASS(pop(vm));
+    STORE_FRAME();
+    if (!invokeFromClass(vm, superclass, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+    REFRESH_FRAME();
+    DISPATCH();
+}
+
+/* --- TAIL SUPER --- */
+OPCODE(OP_TAIL_SUPER_INVOKE_0) : argCount = 0; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE_1) : argCount = 1; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE_2) : argCount = 2; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE_3) : argCount = 3; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE_4) : argCount = 4; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE) : argCount = READ_BYTE(); goto do_tail_super;
+do_tail_super: {
+ObjString* m = READ_STRING();
+ObjClass* s = AS_CLASS(pop(vm));
+Value meth;
+if (!tableGet(&s->methods, OBJ_VAL(m), &meth)) {
+    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", m->chars); return INTERPRET_RUNTIME_ERROR;
+}
+ObjClosure* c = AS_CLOSURE(meth);
+closeUpvalues(vm, frame->slots);
+memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
+vm->stackTop = frame->slots + (argCount + 1);
+frame->closure = c;
+frame->ip = c->function->chunk.code;
+ip = frame->ip;
+DISPATCH();
+}
+OPCODE(OP_TAIL_SUPER_INVOKE_LONG) : {
+    ObjString* m = READ_STRING_LONG();
+    argCount = READ_BYTE();
+    ObjClass* s = AS_CLASS(pop(vm));
+    Value meth;
+    if (!tableGet(&s->methods, OBJ_VAL(m), &meth)) {
+        STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", m->chars); return INTERPRET_RUNTIME_ERROR;
+    }
+    ObjClosure* c = AS_CLOSURE(meth);
+    closeUpvalues(vm, frame->slots);
+    memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value)* (argCount + 1));
+    vm->stackTop = frame->slots + (argCount + 1);
+    frame->closure = c;
+    frame->ip = c->function->chunk.code;
+    ip = frame->ip;
+    DISPATCH();
+}
+
+/* --- OBJECTS --- */
+OPCODE(OP_CLOSURE) : {
+    ObjFunction* f = AS_FUNCTION(READ_CONSTANT());
+    ObjClosure* c = newClosure(vm, f);
+    push(vm, OBJ_VAL(c));
+    for (int i = 0; i < f->upvalueCount; i++) {
+        uint8_t isLocal = READ_BYTE();
+        uint8_t index = READ_BYTE();
+        c->upvalues[i] = isLocal ? captureUpvalue(vm, frame->slots + index)
+            : frame->closure->upvalues[index];
+    }
+    DISPATCH();
+}
+OPCODE(OP_CLOSURE_LONG) : {
+    ObjFunction* f = AS_FUNCTION(READ_CONSTANT_LONG());
+    ObjClosure* c = newClosure(vm, f);
+    push(vm, OBJ_VAL(c));
+    for (int i = 0; i < f->upvalueCount; i++) {
+        uint8_t isLocal = READ_BYTE();
+        uint8_t index = READ_BYTE();
+        c->upvalues[i] = isLocal ? captureUpvalue(vm, frame->slots + index)
+            : frame->closure->upvalues[index];
+    }
+    DISPATCH();
+}
+
+OPCODE(OP_CLOSE_UPVALUE) : closeUpvalues(vm, vm->stackTop - 1); pop(vm); DISPATCH();
+
+OPCODE(OP_CLASS) : push(vm, OBJ_VAL(newClass(vm, READ_STRING()))); DISPATCH();
+OPCODE(OP_CLASS_LONG) : push(vm, OBJ_VAL(newClass(vm, READ_STRING_LONG()))); DISPATCH();
+
+OPCODE(OP_INHERIT) : {
+    Value sVal = peek(vm, 1);
+    if (!IS_CLASS(sVal)) {
+        STORE_FRAME(); runtimeError(vm, "Superclass must be a class."); return INTERPRET_RUNTIME_ERROR;
+    }
+    tableAddAll(vm, &AS_CLASS(sVal)->methods, &AS_CLASS(peek(vm, 0))->methods);
+    pop(vm);
+    DISPATCH();
+}
+
+OPCODE(OP_METHOD) : { ObjString* n = READ_STRING(); defineMethod(vm, AS_CLASS(peek(vm, 1)), n, peek(vm, 0)); pop(vm); DISPATCH(); }
+OPCODE(OP_METHOD_LONG) : { ObjString* n = READ_STRING_LONG(); defineMethod(vm, AS_CLASS(peek(vm, 1)), n, peek(vm, 0)); pop(vm); DISPATCH(); }
+
+OPCODE(OP_BUILD_LIST) : {
+    uint8_t count = READ_BYTE(); ObjList* l = newList(vm); push(vm, OBJ_VAL(l));
+    for (int i = 0; i < count; i++) writeValueArray(vm, &l->items, peek(vm, count - i));
+    vm->stackTop -= (count + 1); push(vm, OBJ_VAL(l)); DISPATCH();
+}
+OPCODE(OP_INDEX_GET) : {
+    Value iVal = pop(vm); Value lVal = pop(vm);
+    if (!IS_LIST(lVal)) {
+        STORE_FRAME(); runtimeError(vm, "Only lists indexed."); return INTERPRET_RUNTIME_ERROR;
+    }
+    ObjList* l = AS_LIST(lVal); int idx = (int) AS_NUMBER(iVal);
+    if (idx < 0 || idx >= l->items.count) {
+        STORE_FRAME(); runtimeError(vm, "Index out of bounds."); return INTERPRET_RUNTIME_ERROR;
+    }
+    push(vm, l->items.values[idx]); DISPATCH();
+}
+OPCODE(OP_INDEX_SET) : {
+    Value v = pop(vm); Value iVal = pop(vm); Value lVal = pop(vm);
+    if (!IS_LIST(lVal)) {
+        STORE_FRAME(); runtimeError(vm, "Only lists indexed."); return INTERPRET_RUNTIME_ERROR;
+    }
+    ObjList* l = AS_LIST(lVal); int idx = (int) AS_NUMBER(iVal);
+    if (idx < 0 || idx > l->items.count) {
+        STORE_FRAME(); runtimeError(vm, "Index out of bounds."); return INTERPRET_RUNTIME_ERROR;
+    }
+    if (idx == l->items.count) writeValueArray(vm, &l->items, v); else l->items.values[idx] = v;
+    push(vm, v); DISPATCH();
+}
+
+OPCODE(OP_IMPORT) : {
+    ObjString* fName = READ_STRING();
+    Value mVal;
+    if (tableGet(&vm->modules, OBJ_VAL(fName), &mVal)) {
+        push(vm, mVal); DISPATCH();
+    }
+    char* src = readFile(fName->chars);
+    if (!src) {
+        runtimeError(vm, "Could not open file \"%s\".", fName->chars);
+        return INTERPRET_RUNTIME_ERROR;
+    }
+    STORE_FRAME();
+    ObjModule* m = newModule(vm, fName);
+    ObjFunction* f = compile(vm, m, src);
+    free(src);
+    if (!f) return INTERPRET_RUNTIME_ERROR;
+    ObjClosure* c = newClosure(vm, f);
+    push(vm, OBJ_VAL(c));
+    if (!call(vm, c, 0)) return INTERPRET_RUNTIME_ERROR;
+    vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
+    tableSet(vm, &vm->modules, OBJ_VAL(fName), OBJ_VAL(m));
+    REFRESH_FRAME();
+    DISPATCH();
+}
+OPCODE(OP_IMPORT_LONG) : {
+    ObjString* fName = READ_STRING_LONG();
+    Value mVal;
+    if (tableGet(&vm->modules, OBJ_VAL(fName), &mVal)) {
+        push(vm, mVal); DISPATCH();
+    }
+    char* src = readFile(fName->chars);
+    if (!src) {
+        runtimeError(vm, "Could not open file \"%s\".", fName->chars);
+        return INTERPRET_RUNTIME_ERROR;
+    }
+    STORE_FRAME();
+    ObjModule* m = newModule(vm, fName);
+    ObjFunction* f = compile(vm, m, src);
+    free(src);
+    if (!f) return INTERPRET_RUNTIME_ERROR;
+    ObjClosure* c = newClosure(vm, f);
+    push(vm, OBJ_VAL(c));
+    if (!call(vm, c, 0)) return INTERPRET_RUNTIME_ERROR;
+    vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
+    tableSet(vm, &vm->modules, OBJ_VAL(fName), OBJ_VAL(m));
+    REFRESH_FRAME();
+    DISPATCH();
+}
 
 #ifndef HAS_COMPUTED_GOTOS
         }
@@ -1033,13 +890,7 @@ static InterpretResult run(VM* vm) {
 }
 
 InterpretResult interpret(VM* vm, ObjModule* m, const char* src) {
-    ObjFunction* f = compile(vm, m, src);
-    if (f == NULL)
-        return INTERPRET_COMPILE_ERROR;
-    push(vm, OBJ_VAL(f));
-    ObjClosure* c = newClosure(vm, f);
-    pop(vm);
-    push(vm, OBJ_VAL(c));
-    call(vm, c, 0);
-    return run(vm);
+    ObjFunction* f = compile(vm, m, src); if (f == NULL) return INTERPRET_COMPILE_ERROR;
+    push(vm, OBJ_VAL(f)); ObjClosure* c = newClosure(vm, f); pop(vm); push(vm, OBJ_VAL(c));
+    call(vm, c, 0); return run(vm);
 }

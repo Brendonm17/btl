@@ -79,6 +79,5 @@ void initValueArray(ValueArray* array);
 void writeValueArray(struct VM* vm, ValueArray* array, Value value);
 void freeValueArray(struct VM* vm, ValueArray* array);
 void printValue(Value value);
-void printValueStderr(Value value);
 
 #endif
