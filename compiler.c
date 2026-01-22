@@ -58,7 +58,6 @@ static void defineVariable(Parser* p, Compiler* c, int global);
 static ParseRule* getRule(TokenType type);
 static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Precedence precedence);
 static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index);
-static void emitLongInvoke(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index, uint8_t argCount);
 static int makeConstant(Parser* p, Compiler* c, Value value);
 static void emitConstant(Parser* p, Compiler* c, Value value);
 
@@ -109,70 +108,50 @@ static bool match(Parser* p, Scanner* s, TokenType type) {
     return true;
 }
 
-// emitByte is the only one that updates markers
 static void emitByte(Parser* p, Compiler* c, uint8_t byte) {
     c->previousInstruction = c->lastInstruction;
     c->lastInstruction = currentChunk(c)->count;
     writeChunk(c->vm, currentChunk(c), byte, p->previous.line);
 }
 
-// emitBytes writes the second byte directly so the marker points to opcode
 static void emitBytes(Parser* p, Compiler* c, uint8_t byte1, uint8_t byte2) {
     Chunk* chunk = currentChunk(c);
-    // optimize
-    if ((byte1 == OP_GET_LOCAL || byte1 == OP_GET_UPVALUE) && c->lastInstruction >= 0 && c->lastInstruction + 2 == chunk->count) {
-        // previous opcode byte
+    // Optimization: fold consecutive OP_SET_LOCAL, OP_GET_LOCAL
+    if ((byte1 == OP_GET_LOCAL || byte1 == OP_GET_UPVALUE) &&
+        c->lastInstruction >= 0 && c->lastInstruction + 2 == chunk->count) {
         uint8_t prevOp = chunk->code[c->lastInstruction];
         uint8_t prevOperand = chunk->code[c->lastInstruction + 1];
-        if (byte1 == OP_GET_LOCAL && prevOp == OP_SET_LOCAL && prevOperand == byte2) {
-            return;
-        }
-        if (byte1 == OP_GET_UPVALUE && prevOp == OP_SET_UPVALUE && prevOperand == byte2) {
-            return;
-        }
+        if (byte1 == OP_GET_LOCAL && prevOp == OP_SET_LOCAL && prevOperand == byte2) return;
+        if (byte1 == OP_GET_UPVALUE && prevOp == OP_SET_UPVALUE && prevOperand == byte2) return;
     }
 
     emitByte(p, c, byte1);
     writeChunk(c->vm, currentChunk(c), byte2, p->previous.line);
 }
 
-// Helpers for reading/writing 2-byte big-endian jump operands
 static uint16_t readJump(const Chunk* chunk, int opndIndex) {
     if (opndIndex + 1 >= chunk->count) return 0;
     return (uint16_t) ((chunk->code[opndIndex] << 8) | chunk->code[opndIndex + 1]);
 }
+
 static void writeJump(Chunk* chunk, int opndIndex, uint16_t value) {
     if (opndIndex + 1 >= chunk->count) return;
     chunk->code[opndIndex] = (uint8_t) ((value >> 8) & 0xFF);
     chunk->code[opndIndex + 1] = (uint8_t) (value & 0xFF);
 }
 
-// Remove `n` bytes from the end of the chunk and implicitly trim lines[]
-// We rely on chunk->count as the authoritative length for both code and lines
 static void removeChunkTail(Chunk* chunk, int n) {
     if (n <= 0) return;
     if (n > chunk->count) n = chunk->count;
     chunk->count -= n;
 }
 
-/* Compute the size (in bytes) of the instruction whose opcode is at index `i`.
- * This must match your bytecode encoding exactly. Adjust as needed.
- *
- * Conservative assumptions made here:
- * - Short constant/opcodes use 1-byte operand.
- * - *_LONG variants use 3-byte operand (opcode + 3 bytes).
- * - JUMP / JUMP_IF_FALSE / LOOP use 2-byte operands (big-endian).
- * - POP_N uses 1-byte operand.
- * - Many opcodes are single-byte.
- *
- * If you have variable-length opcodes (e.g., OP_CLOSURE with a following
- * upvalue spec), update this function to compute the full size.
- */
+// Compute instruction size for jump optimization
 static int instructionSize(const Chunk* chunk, int i) {
     if (i < 0 || i >= chunk->count) return 1;
     uint8_t op = chunk->code[i];
     switch (op) {
-        /* 1-byte opcodes (no operand) */
+        // 1-byte opcodes
     case OP_NIL: case OP_TRUE: case OP_FALSE:
     case OP_POP: case OP_PRINT:
     case OP_EQUAL: case OP_GREATER: case OP_LESS:
@@ -182,9 +161,13 @@ static int instructionSize(const Chunk* chunk, int i) {
     case OP_CLOSE_UPVALUE: case OP_RETURN:
     case OP_INHERIT: case OP_METHOD:
     case OP_INDEX_GET: case OP_INDEX_SET:
+
+        // Specialized calls (0-4)
+    case OP_CALL_0: case OP_CALL_1: case OP_CALL_2: case OP_CALL_3: case OP_CALL_4:
+    case OP_TAIL_CALL_0: case OP_TAIL_CALL_1: case OP_TAIL_CALL_2: case OP_TAIL_CALL_3: case OP_TAIL_CALL_4:
         return 1;
 
-        /* 1-byte operand opcodes (opcode + 1 byte) */
+        // 2-byte opcodes (opcode + 1 byte operand)
     case OP_CONSTANT:
     case OP_GET_LOCAL: case OP_SET_LOCAL:
     case OP_GET_UPVALUE: case OP_SET_UPVALUE:
@@ -195,9 +178,24 @@ static int instructionSize(const Chunk* chunk, int i) {
     case OP_GET_GLOBAL:
     case OP_BUILD_LIST:
     case OP_IMPORT:
+
+        // Specialized Invokes (opcode + index)
+    case OP_INVOKE_0: case OP_INVOKE_1: case OP_INVOKE_2: case OP_INVOKE_3: case OP_INVOKE_4:
+    case OP_TAIL_INVOKE_0: case OP_TAIL_INVOKE_1: case OP_TAIL_INVOKE_2: case OP_TAIL_INVOKE_3: case OP_TAIL_INVOKE_4:
+    case OP_SUPER_INVOKE_0: case OP_SUPER_INVOKE_1: case OP_SUPER_INVOKE_2: case OP_SUPER_INVOKE_3: case OP_SUPER_INVOKE_4:
+    case OP_TAIL_SUPER_INVOKE_0: case OP_TAIL_SUPER_INVOKE_1: case OP_TAIL_SUPER_INVOKE_2:
+    case OP_TAIL_SUPER_INVOKE_3: case OP_TAIL_SUPER_INVOKE_4:
+
+    case OP_CLOSURE:
         return 2;
 
-        /* 3-byte operand opcodes (opcode + 3 bytes) - LONG variants */
+        // 3-byte opcodes
+    case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_LOOP:
+    case OP_INVOKE: case OP_TAIL_INVOKE:
+    case OP_SUPER_INVOKE: case OP_TAIL_SUPER_INVOKE:
+        return 3;
+
+        // 4-byte opcodes
     case OP_CONSTANT_LONG:
     case OP_GET_GLOBAL_LONG: case OP_DEFINE_GLOBAL_LONG:
     case OP_SET_GLOBAL_LONG:
@@ -207,49 +205,23 @@ static int instructionSize(const Chunk* chunk, int i) {
     case OP_INVOKE_LONG: case OP_TAIL_INVOKE_LONG:
     case OP_SUPER_INVOKE_LONG: case OP_TAIL_SUPER_INVOKE_LONG:
     case OP_IMPORT_LONG:
-        return 4; /* opcode + 3 bytes */
+    case OP_CLOSURE_LONG:
+        return 4;
 
-        /* POP_N has a 1-byte operand (count) */
     case OP_POP_N:
         return 2;
 
-        /* Jumps and loops: opcode + 2-byte offset */
-    case OP_JUMP: case OP_JUMP_IF_FALSE: case OP_LOOP:
-        return 3;
-
-        /* INVOKE / INVOKE_LONG / TAIL variants - assume 1 or 3 bytes respectively */
-    case OP_INVOKE: case OP_TAIL_INVOKE:
-    case OP_SUPER_INVOKE: case OP_TAIL_SUPER_INVOKE:
-        return 2;
-
-        /* CLOSURE variants: conservative handling
-         * OP_CLOSURE: opcode + 1-byte constant index, followed by upvalue spec bytes.
-         * We cannot reliably compute the full size without parsing the upvalue spec.
-         * To be safe, treat OP_CLOSURE as 2 bytes here; if you need full correctness,
-         * replace this with code that reads the constant index and then reads the
-         * upvalue count from the constant and computes the exact size.
-         */
-    case OP_CLOSURE:
-        return 2; /* conservative; adjust if you parse upvalue spec */
-    case OP_CLOSURE_LONG:
-        return 4; /* conservative; adjust if needed */
-
-        /* CALL/INVOKE variants already handled above; other opcodes default to 1 */
     default:
         return 1;
     }
 }
 
-// Given the opcode index of an OP_JUMP (i.e., index points at the opcode),
-// compute the absolute byte index of its target, or -1 on error
 static int jumpTarget(const Chunk* chunk, int opcodeIndex) {
     if (opcodeIndex + 2 >= chunk->count) return -1;
     uint16_t offset = readJump(chunk, opcodeIndex + 1);
     return opcodeIndex + 3 + (int) offset;
 }
 
-// Resolve a chain of unconditional jumps to the final non-jump target
-// If the opcode at `jumpOpcodeIndex` is not OP_JUMP, returns -1
 static int resolveJumpTarget(Chunk* chunk, int jumpOpcodeIndex) {
     if (jumpOpcodeIndex < 0 || jumpOpcodeIndex >= chunk->count) return -1;
     if (chunk->code[jumpOpcodeIndex] != OP_JUMP) return -1;
@@ -261,13 +233,11 @@ static int resolveJumpTarget(Chunk* chunk, int jumpOpcodeIndex) {
         if (tgt < 0 || tgt >= chunk->count) return -1;
         uint8_t opAtTarget = chunk->code[tgt];
         if (opAtTarget != OP_JUMP) return tgt;
-        /* follow the chain */
         cur = tgt;
     }
     return -1;
 }
 
-// Compact `chunk->code` and `chunk->lines` by removing `removeBytes` at index `i`
 static void removeBytesAt(Chunk* chunk, int i, int removeBytes) {
     if (removeBytes <= 0) return;
     if (i < 0 || i >= chunk->count) return;
@@ -279,13 +249,11 @@ static void removeBytesAt(Chunk* chunk, int i, int removeBytes) {
     chunk->count -= removeBytes;
 }
 
-// Main optimizer pass for jumps. Call after codegen for a function is complete
 void optimizeJumps(Chunk* chunk) {
     int i = 0;
     while (i < chunk->count) {
         uint8_t op = chunk->code[i];
         if (op == OP_JUMP) {
-            // opcode + 2-byte operand
             if (i + 2 >= chunk->count) {
                 i += 1; continue;
             }
@@ -293,13 +261,10 @@ void optimizeJumps(Chunk* chunk) {
             if (target < 0) {
                 i += 3; continue;
             }
-            // Remove jump-to-next (no-op)
             if (target == i + 3) {
                 removeBytesAt(chunk, i, 3);
-                // re-examine at same index
                 continue;
             }
-            // Thread jump chains: if target is an OP_JUMP, redirect to final target
             if (target < chunk->count && chunk->code[target] == OP_JUMP) {
                 int finalTarget = resolveJumpTarget(chunk, target);
                 if (finalTarget >= 0 && finalTarget != target) {
@@ -320,12 +285,10 @@ void optimizeJumps(Chunk* chunk) {
             if (target < 0) {
                 i += 3; continue;
             }
-            // If conditional jump targets the next instruction, it's redundant. Remove it
             if (target == i + 3) {
                 removeBytesAt(chunk, i, 3);
                 continue;
             }
-            // Thread conditional -> unconditional jump
             if (target < chunk->count && chunk->code[target] == OP_JUMP) {
                 int finalTarget = resolveJumpTarget(chunk, target);
                 if (finalTarget >= 0 && finalTarget != target) {
@@ -335,11 +298,9 @@ void optimizeJumps(Chunk* chunk) {
                     }
                 }
             }
-
             i += 3;
             continue;
         }
-        // For other opcodes, advance by their instruction size
         int size = instructionSize(chunk, i);
         if (size <= 0) size = 1;
         i += size;
@@ -348,47 +309,28 @@ void optimizeJumps(Chunk* chunk) {
 
 static void emitPopOrRemoveLoad(Parser* p, Compiler* c) {
     Chunk* chunk = currentChunk(c);
-    // If the previous instruction is a return, do nothing. returns clean themselves up
     if (c->lastInstruction >= 0 && c->lastInstruction < chunk->count) {
         uint8_t prevOp = chunk->code[c->lastInstruction];
-        if (prevOp == OP_RETURN) {
-            return;
+        if (prevOp == OP_RETURN) return;
+    }
+    if (chunk->count >= 2) {
+        int lastIndex = chunk->count - 1;
+        int opcodeIndex = lastIndex - 1;
+        if (opcodeIndex >= 0) {
+            uint8_t possibleOp = chunk->code[opcodeIndex];
+            if (possibleOp == OP_GET_LOCAL || possibleOp == OP_GET_UPVALUE) {
+                removeChunkTail(chunk, 2);
+                c->lastInstruction = (chunk->count > 0) ? chunk->count - 1 : -1;
+                c->previousInstruction = -1;
+                return;
+            }
         }
     }
-    // nothing to clean up
-    if (chunk->count < 2) {
-        emitByte(p, c, OP_POP);
-        return;
-    }
-    int lastIndex = chunk->count - 1;
-    int opcodeIndex = lastIndex - 1;
-    if (opcodeIndex < 0) {
-        emitByte(p, c, OP_POP);
-        return;
-    }
-    // try to optimize
-    uint8_t possibleOp = chunk->code[opcodeIndex];
-    if (possibleOp == OP_GET_LOCAL || possibleOp == OP_GET_UPVALUE) {
-        // Remove opcode + operand (2 bytes).
-        removeChunkTail(chunk, 2);
-        // Update compiler bookkeeping for last/previous instruction.
-        // We set lastInstruction to a safe value
-        if (chunk->count == 0) {
-            c->lastInstruction = -1;
-            c->previousInstruction = -1;
-        } else {
-            c->lastInstruction = chunk->count - 1;
-            c->previousInstruction = -1;
-        }
-        return;
-    }
-    // normal pop
     emitByte(p, c, OP_POP);
 }
 
 static void emitPopN(Parser* p, Compiler* c, unsigned int count) {
-    if (count == 0)
-        return;
+    if (count == 0) return;
     if (count == 1) {
         emitPopOrRemoveLoad(p, c);
         return;
@@ -462,7 +404,26 @@ static int makeConstant(Parser* p, Compiler* c, Value value) {
     return constant;
 }
 
-// Fixed: operands written via writeChunk to keep marker on the Opcode
+// --- Signature Mangling Helper ---
+// Creates a constant string of "name" + (char)arity
+static int signatureConstant(Parser* p, Compiler* c, Token* name, int arity) {
+    if (arity > 255) {
+        errorAt(p, name, "Too many arguments.");
+        return 0;
+    }
+    int nameLen = name->length;
+    char* buffer = ALLOCATE(c->vm, char, nameLen + 2);
+    memcpy(buffer, name->start, nameLen);
+
+    // Append arity as a byte
+    buffer[nameLen] = (char) arity;
+    buffer[nameLen + 1] = '\0';
+
+    ObjString* string = copyString(c->vm, buffer, nameLen + 1);
+    FREE_ARRAY(c->vm, char, buffer, nameLen + 2);
+    return makeConstant(p, c, OBJ_VAL(string));
+}
+
 static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index) {
     if (index < 256) {
         emitByte(p, c, shortOp);
@@ -474,16 +435,33 @@ static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint
     }
 }
 
-static void emitLongInvoke(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index, uint8_t argCount) {
-    if (index < 256) {
-        emitByte(p, c, shortOp);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) index, p->previous.line);
-        writeChunk(c->vm, currentChunk(c), argCount, p->previous.line);
+static void emitInvoke(Parser* p, Compiler* c, int nameIdx, int args) {
+    if (args <= 4 && nameIdx < 256) {
+        emitBytes(p, c, (uint8_t) (OP_INVOKE_0 + args), (uint8_t) nameIdx);
+    } else if (nameIdx < 256) {
+        emitByte(p, c, OP_INVOKE);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
     } else {
-        emitByte(p, c, longOp);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) (index & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) ((index >> 8) & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), argCount, p->previous.line);
+        emitByte(p, c, OP_INVOKE_LONG);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) (nameIdx & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) ((nameIdx >> 8) & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
+    }
+}
+
+static void emitSuperInvoke(Parser* p, Compiler* c, int nameIdx, int args) {
+    if (args <= 4 && nameIdx < 256) {
+        emitBytes(p, c, (uint8_t) (OP_SUPER_INVOKE_0 + args), (uint8_t) nameIdx);
+    } else if (nameIdx < 256) {
+        emitByte(p, c, OP_SUPER_INVOKE);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
+    } else {
+        emitByte(p, c, OP_SUPER_INVOKE_LONG);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) (nameIdx & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) ((nameIdx >> 8) & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
     }
 }
 
@@ -556,7 +534,6 @@ static void endScope(Parser* p, Compiler* c) {
     int popCount = 0;
     while (c->localCount > 0 && c->locals[c->localCount - 1].depth > c->scopeDepth) {
         if (c->locals[c->localCount - 1].isCaptured) {
-            // flush any pending pops before close-upvalue
             if (popCount) {
                 emitPopN(p, c, popCount);
                 popCount = 0;
@@ -567,18 +544,15 @@ static void endScope(Parser* p, Compiler* c) {
         }
         c->localCount--;
     }
-    if (popCount)
-        emitPopN(p, c, popCount);
+    if (popCount) emitPopN(p, c, popCount);
 }
-
 
 static bool identifiersEqual(Token* a, Token* b) {
     if (a->length != b->length) return false;
     return memcmp(a->start, b->start, a->length) == 0;
 }
 
-static int identifierConstant(Parser* p, Compiler* c, Token* name) {
-    (void) p;
+static int identifierConstant(Compiler* c, Token* name) {
     ObjString* nameString = copyString(c->vm, name->start, name->length);
     push(c->vm, OBJ_VAL(nameString));
     Value indexValue;
@@ -648,17 +622,15 @@ static void func(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool can
 }
 
 static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    (void) canAssign; // Suppress unused parameter warning
+    (void) canAssign;
     TokenType opType = p->previous.type;
     ParseRule* rule = getRule(opType);
-    // Capture LHS before parsing RHS
     int lhsOffset = c->lastInstruction;
     LastInstruction lhs = getInstructionAt(c, lhsOffset);
     parsePrecedence(p, s, c, cc, (Precedence) (rule->precedence + 1));
-    // Capture RHS
     int rhsOffset = c->lastInstruction;
     LastInstruction rhs = getInstructionAt(c, rhsOffset);
-    // Constant Folding Logic
+
     if (lhs.isConstant && rhs.isConstant && (lhsOffset + lhs.length == rhsOffset)) {
         if (IS_NUMBER(lhs.value) && IS_NUMBER(rhs.value)) {
             double a = AS_NUMBER(lhs.value);
@@ -678,14 +650,14 @@ static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
             default: folded = false;
             }
             if (folded) {
-                currentChunk(c)->count = lhsOffset; // Roll back
-                c->lastInstruction = c->previousInstruction; // Step back marker
+                currentChunk(c)->count = lhsOffset;
+                c->lastInstruction = c->previousInstruction;
                 emitConstant(p, c, NUMBER_VAL(res));
                 return;
             }
         }
     }
-    // Standard Binary Opcodes
+
     switch (opType) {
     case TOKEN_BANG_EQUAL:    emitBytes(p, c, OP_EQUAL, OP_NOT); break;
     case TOKEN_EQUAL_EQUAL:   emitByte(p, c, OP_EQUAL); break;
@@ -730,7 +702,7 @@ static void string(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
 
 static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Token name, bool canAssign) {
     uint8_t getOp, setOp;
-    uint8_t getOp16 = 0, setOp16 = 0; // 0 means not supported for this type
+    uint8_t getOp16 = 0, setOp16 = 0;
     int arg = resolveLocal(p, c, &name);
     bool isGlobal = false;
 
@@ -739,7 +711,7 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
     } else if ((arg = resolveUpvalue(p, c, &name)) != -1) {
         getOp = OP_GET_UPVALUE; setOp = OP_SET_UPVALUE;
     } else {
-        arg = identifierConstant(p, c, &name);
+        arg = identifierConstant(c, &name);
         getOp = OP_GET_GLOBAL; setOp = OP_SET_GLOBAL;
         getOp16 = OP_GET_GLOBAL_LONG; setOp16 = OP_SET_GLOBAL_LONG;
         isGlobal = true;
@@ -784,12 +756,15 @@ static void subscript(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, boo
 
 static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect property name after '.'.");
-    int name = makeConstant(p, c, OBJ_VAL(copyString(c->vm, p->previous.start, p->previous.length)));
+    Token name = p->previous;
 
     if (canAssign && match(p, s, TOKEN_EQUAL)) {
+        // SET PROPERTY: Use raw name
+        int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, name.start, name.length)));
         expression(p, s, c, cc);
-        emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, name);
+        emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
     } else if (match(p, s, TOKEN_LEFT_PAREN)) {
+        // INVOKE: Use Mangled Name
         uint8_t args = 0;
         if (!check(p, TOKEN_RIGHT_PAREN)) {
             do {
@@ -797,41 +772,38 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
             } while (match(p, s, TOKEN_COMMA));
         }
         consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        emitLongInvoke(p, c, OP_INVOKE, OP_INVOKE_LONG, name, args);
+
+        // Mangle: name + arity
+        int nameIdx = signatureConstant(p, c, &name, args);
+        emitInvoke(p, c, nameIdx, args);
     } else {
-        emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, name);
+        // GET PROPERTY: Use raw name
+        int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, name.start, name.length)));
+        emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
     }
 }
 
 static void unary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    (void) canAssign; // Suppress unused parameter warning
+    (void) canAssign;
     TokenType opType = p->previous.type;
-    // Compile the operand. Unary operators are right-associative, 
-    // so we call parsePrecedence with the same PREC_UNARY level.
     parsePrecedence(p, s, c, cc, PREC_UNARY);
-    // Look at what we just compiled to see if we can fold it
     int operandOffset = c->lastInstruction;
     LastInstruction operand = getInstructionAt(c, operandOffset);
     if (operand.isConstant) {
-        // Case 1: Numerical Negation (e.g., -5)
         if (opType == TOKEN_MINUS && IS_NUMBER(operand.value)) {
-            currentChunk(c)->count = operandOffset; // Roll back the operand
-            c->lastInstruction = c->previousInstruction; // Restore the compiler marker
+            currentChunk(c)->count = operandOffset;
+            c->lastInstruction = c->previousInstruction;
             emitConstant(p, c, NUMBER_VAL(-AS_NUMBER(operand.value)));
             return;
         }
-        // Case 2: Logical Inversion (e.g., !true, !5, !nil)
-        // Note: You can fold this too! !nil is true, !false is true, others are false.
         if (opType == TOKEN_BANG) {
             currentChunk(c)->count = operandOffset;
             c->lastInstruction = c->previousInstruction;
             bool isFalsey = IS_NIL(operand.value) || (IS_BOOL(operand.value) && !AS_BOOL(operand.value));
-            // We use standard literal emitters for booleans to save constant pool space
             emitByte(p, c, isFalsey ? OP_TRUE : OP_FALSE);
             return;
         }
     }
-    // If we couldn't fold, emit the standard operator
     switch (opType) {
     case TOKEN_BANG:  emitByte(p, c, OP_NOT); break;
     case TOKEN_MINUS: emitByte(p, c, OP_NEGATE); break;
@@ -866,7 +838,14 @@ static void call(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool can
         } while (match(p, s, TOKEN_COMMA));
     }
     consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-    emitBytes(p, c, OP_CALL, args);
+    switch (args) {
+    case 0: emitByte(p, c, OP_CALL_0); break;
+    case 1: emitByte(p, c, OP_CALL_1); break;
+    case 2: emitByte(p, c, OP_CALL_2); break;
+    case 3: emitByte(p, c, OP_CALL_3); break;
+    case 4: emitByte(p, c, OP_CALL_4); break;
+    default: emitBytes(p, c, OP_CALL, args); break;
+    }
 }
 
 static void this_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
@@ -884,7 +863,7 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
 
     consume(p, s, TOKEN_DOT, "Expect '.'.");
     consume(p, s, TOKEN_IDENTIFIER, "Expect superclass method name.");
-    int name = makeConstant(p, c, OBJ_VAL(copyString(c->vm, p->previous.start, p->previous.length)));
+    Token name = p->previous;
 
     Token thisT = { .start = "this", .length = 4 };
     namedVariable(p, s, c, cc, thisT, false);
@@ -892,6 +871,7 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
     namedVariable(p, s, c, cc, superT, false);
 
     if (match(p, s, TOKEN_LEFT_PAREN)) {
+        // SUPER INVOKE: Use Mangled Name
         uint8_t args = 0;
         if (!check(p, TOKEN_RIGHT_PAREN)) {
             do {
@@ -899,9 +879,13 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
             } while (match(p, s, TOKEN_COMMA));
         }
         consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        emitLongInvoke(p, c, OP_SUPER_INVOKE, OP_SUPER_INVOKE_LONG, name, args);
+
+        int nameIdx = signatureConstant(p, c, &name, args);
+        emitSuperInvoke(p, c, nameIdx, args);
     } else {
-        emitLong(p, c, OP_GET_SUPER, OP_GET_SUPER_LONG, name);
+        // SUPER GET: Use Raw Name
+        int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, name.start, name.length)));
+        emitLong(p, c, OP_GET_SUPER, OP_GET_SUPER_LONG, nameIdx);
     }
 }
 
@@ -940,10 +924,8 @@ static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
     if (!prefix) {
         errorAt(p, &p->previous, "Expect expression."); return;
     }
-
     bool canAssign = prec <= PREC_ASSIGNMENT;
     prefix(p, s, c, cc, canAssign);
-
     while (prec <= getRule(p->current.type)->precedence) {
         advance(p, s);
         ParseFn infix = getRule(p->previous.type)->infix;
@@ -979,13 +961,12 @@ static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Func
     consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
     consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
     block(p, s, &sub, cc);
-    if (!p->hadError)
-        optimizeJumps(currentChunk(c));
+    if (!p->hadError) optimizeJumps(currentChunk(c));
     ObjFunction* f = endCompiler(p, &sub);
-    push(c->vm, OBJ_VAL(f)); // Protect from GC
+    push(c->vm, OBJ_VAL(f));
     int index = makeConstant(p, c, OBJ_VAL(f));
     emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, index);
-    pop(c->vm); // Release protection
+    pop(c->vm);
     for (int i = 0; i < f->upvalueCount; i++) {
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
@@ -994,18 +975,51 @@ static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Func
 
 static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect method name.");
-    int name = makeConstant(p, c, OBJ_VAL(copyString(c->vm, p->previous.start, p->previous.length)));
+    Token nameToken = p->previous;
+
     FunctionType type = TYPE_METHOD;
     if (p->previous.length == 4 && memcmp(p->previous.start, "init", 4) == 0) type = TYPE_INITIALIZER;
-    function(p, s, c, cc, type);
-    emitLong(p, c, OP_METHOD, OP_METHOD_LONG, name);
+
+    Compiler sub;
+    initCompiler(p, &sub, c, type, c->module);
+    beginScope(&sub);
+    consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
+    if (!check(p, TOKEN_RIGHT_PAREN)) {
+        do {
+            sub.function->arity++;
+            int constant = parseVariable(p, s, &sub, "Expect parameter name.");
+            defineVariable(p, &sub, constant);
+        } while (match(p, s, TOKEN_COMMA));
+    }
+    consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
+    block(p, s, &sub, cc);
+    if (!p->hadError) optimizeJumps(currentChunk(c));
+    ObjFunction* f = endCompiler(p, &sub);
+
+    // Compile Closure first
+    push(c->vm, OBJ_VAL(f));
+    int fnIdx = makeConstant(p, c, OBJ_VAL(f));
+    emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, fnIdx);
+    pop(c->vm);
+    for (int i = 0; i < f->upvalueCount; i++) {
+        writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
+        writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
+    }
+
+    // Mangle: name + arity
+    // The VM will receive this mangled name and store the method under TWO keys:
+    // 1. "name|arity" -> for optimized INVOKE calls
+    // 2. "name"       -> for dynamic PROPERTY access
+    int nameIdx = signatureConstant(p, c, &nameToken, f->arity);
+    emitLong(p, c, OP_METHOD, OP_METHOD_LONG, nameIdx);
 }
 
 static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect class name.");
     Token nameToken = p->previous;
     int nameStringConst = makeConstant(p, c, OBJ_VAL(copyString(c->vm, nameToken.start, nameToken.length)));
-    int nameGlobalIdx = identifierConstant(p, c, &nameToken);
+    int nameGlobalIdx = identifierConstant(c, &nameToken);
 
     declareVariable(p, c);
     emitLong(p, c, OP_CLASS, OP_CLASS_LONG, nameStringConst);
@@ -1042,7 +1056,6 @@ static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc
 static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     beginScope(c);
     consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
-
     if (match(p, s, TOKEN_SEMICOLON)) {
     } else if (match(p, s, TOKEN_VAR)) {
         int global = parseVariable(p, s, c, "Expect name.");
@@ -1078,80 +1091,77 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
 
     Loop loop = { .enclosing = c->currentLoop, .start = loopStart, .scopeDepth = c->scopeDepth, .breakCount = 0 };
     c->currentLoop = &loop;
-
     int loopVar = -1;
     for (int i = c->localCount - 1; i >= 0; i--) {
         if (c->locals[i].depth != -1 && c->locals[i].depth == c->scopeDepth) {
             loopVar = i; break;
         }
     }
-
     beginScope(c);
     if (loopVar != -1) {
         emitBytes(p, c, OP_GET_LOCAL, (uint8_t) loopVar);
         Local* shadow = &c->locals[c->localCount++];
-        shadow->name = c->locals[loopVar].name;
-        shadow->depth = c->scopeDepth;
-        shadow->isCaptured = false;
+        shadow->name = c->locals[loopVar].name; shadow->depth = c->scopeDepth; shadow->isCaptured = false;
     }
-
     statement(p, s, c, cc);
-
     if (loopVar != -1) {
         emitBytes(p, c, OP_GET_LOCAL, (uint8_t) c->localCount - 1);
         emitBytes(p, c, OP_SET_LOCAL, (uint8_t) loopVar);
         emitPopOrRemoveLoad(p, c);
     }
-
     endScope(p, c);
     emitLoop(p, c, loopStart);
     if (exitJump != -1) {
         patchJump(p, c, exitJump);
         emitPopOrRemoveLoad(p, c);
     }
-    for (int i = 0; i < loop.breakCount; i++)
-        patchJump(p, c, loop.breakJumps[i]);
+    for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
     c->currentLoop = loop.enclosing;
     endScope(p, c);
 }
 
 static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (c->type == TYPE_SCRIPT) {
-        errorAt(p, &p->previous, "Can't return from top-level code.");
-        return;
+        errorAt(p, &p->previous, "Can't return from top-level code."); return;
     }
     if (match(p, s, TOKEN_SEMICOLON)) {
-        emitByte(p, c, OP_NIL);
-        emitByte(p, c, OP_RETURN);
+        emitByte(p, c, OP_NIL); emitByte(p, c, OP_RETURN);
     } else {
-        if (c->type == TYPE_INITIALIZER) {
-            errorAt(p, &p->previous, "Can't return a value from an initializer.");
-        }
+        if (c->type == TYPE_INITIALIZER) errorAt(p, &p->previous, "Can't return a value from an initializer.");
         expression(p, s, c, cc);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        // 1. Check if the last instruction emitted was a call or invoke
+
+        // Tail Call Optimization
         if (c->lastInstruction != -1) {
             Chunk* chunk = currentChunk(c);
             uint8_t* opcode = &chunk->code[c->lastInstruction];
             switch (*opcode) {
-            case OP_CALL:
-                *opcode = OP_TAIL_CALL;
-                return;
-            case OP_INVOKE:
-                *opcode = OP_TAIL_INVOKE;
-                return;
-            case OP_INVOKE_LONG:
-                *opcode = OP_TAIL_INVOKE_LONG;
-                return;
-            case OP_SUPER_INVOKE:
-                *opcode = OP_TAIL_SUPER_INVOKE;
-                return;
-            case OP_SUPER_INVOKE_LONG:
-                *opcode = OP_TAIL_SUPER_INVOKE_LONG;
-                return;
-            default:
-                // Not a tail-call candidate, proceed to emit normal return
-                break;
+            case OP_CALL: *opcode = OP_TAIL_CALL; break;
+            case OP_CALL_0: *opcode = OP_TAIL_CALL_0; break;
+            case OP_CALL_1: *opcode = OP_TAIL_CALL_1; break;
+            case OP_CALL_2: *opcode = OP_TAIL_CALL_2; break;
+            case OP_CALL_3: *opcode = OP_TAIL_CALL_3; break;
+            case OP_CALL_4: *opcode = OP_TAIL_CALL_4; break;
+
+            case OP_INVOKE: *opcode = OP_TAIL_INVOKE; break;
+            case OP_INVOKE_LONG: *opcode = OP_TAIL_INVOKE_LONG; break;
+
+            case OP_INVOKE_0: *opcode = OP_TAIL_INVOKE_0; break;
+            case OP_INVOKE_1: *opcode = OP_TAIL_INVOKE_1; break;
+            case OP_INVOKE_2: *opcode = OP_TAIL_INVOKE_2; break;
+            case OP_INVOKE_3: *opcode = OP_TAIL_INVOKE_3; break;
+            case OP_INVOKE_4: *opcode = OP_TAIL_INVOKE_4; break;
+
+            case OP_SUPER_INVOKE: *opcode = OP_TAIL_SUPER_INVOKE; break;
+            case OP_SUPER_INVOKE_LONG: *opcode = OP_TAIL_SUPER_INVOKE_LONG; break;
+
+            case OP_SUPER_INVOKE_0: *opcode = OP_TAIL_SUPER_INVOKE_0; break;
+            case OP_SUPER_INVOKE_1: *opcode = OP_TAIL_SUPER_INVOKE_1; break;
+            case OP_SUPER_INVOKE_2: *opcode = OP_TAIL_SUPER_INVOKE_2; break;
+            case OP_SUPER_INVOKE_3: *opcode = OP_TAIL_SUPER_INVOKE_3; break;
+            case OP_SUPER_INVOKE_4: *opcode = OP_TAIL_SUPER_INVOKE_4; break;
+
+            default: break;
             }
         }
         emitByte(p, c, OP_RETURN);
@@ -1175,19 +1185,13 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         int elseJ = emitJump(p, c, OP_JUMP);
         patchJump(p, c, thenJ);
         emitPopOrRemoveLoad(p, c);
-        if (match(p, s, TOKEN_ELSE))
-            statement(p, s, c, cc);
+        if (match(p, s, TOKEN_ELSE)) statement(p, s, c, cc);
         patchJump(p, c, elseJ);
     } else if (match(p, s, TOKEN_RETURN)) {
         returnStatement(p, s, c, cc);
     } else if (match(p, s, TOKEN_WHILE)) {
         int start = currentChunk(c)->count;
-        Loop loop = {
-            .enclosing = c->currentLoop,
-            .start = start,
-            .scopeDepth = c->scopeDepth,
-            .breakCount = 0
-        };
+        Loop loop = { .enclosing = c->currentLoop, .start = start, .scopeDepth = c->scopeDepth, .breakCount = 0 };
         c->currentLoop = &loop;
         consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
         expression(p, s, c, cc);
@@ -1198,34 +1202,23 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         emitLoop(p, c, start);
         patchJump(p, c, exitJ);
         emitPopOrRemoveLoad(p, c);
-        for (int i = 0; i < loop.breakCount; i++)
-            patchJump(p, c, loop.breakJumps[i]);
+        for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
         c->currentLoop = loop.enclosing;
     } else if (match(p, s, TOKEN_BREAK)) {
-        if (c->currentLoop == NULL)
-            errorAt(p, &p->previous, "Lonely break.");
+        if (c->currentLoop == NULL) errorAt(p, &p->previous, "Lonely break.");
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        //Unwind locals that are deeper than the loop scope.
-        //Coalesce non-captured locals into emitPopN and emit
-        //OP_CLOSE_UPVALUE immediately for captured locals.
         int i = c->localCount - 1;
         int popCount = 0;
         while (i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth) {
             if (c->locals[i].isCaptured) {
                 if (popCount > 0) {
-                    emitPopN(p, c, (unsigned int) popCount);
-                    popCount = 0;
+                    emitPopN(p, c, (unsigned int) popCount); popCount = 0;
                 }
                 emitByte(p, c, OP_CLOSE_UPVALUE);
-            } else {
-                popCount++;
-            }
-            i--;
-            c->localCount--; /* keep localCount in sync as we unwind */
+            } else popCount++;
+            i--; c->localCount--;
         }
-        if (popCount > 0) {
-            emitPopN(p, c, (unsigned int) popCount);
-        }
+        if (popCount > 0) emitPopN(p, c, (unsigned int) popCount);
         int jump = emitJump(p, c, OP_JUMP);
         c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
     } else if (match(p, s, TOKEN_LEFT_BRACE)) {
@@ -1239,7 +1232,6 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     }
 }
 
-
 static void defineVariable(Parser* p, Compiler* c, int global) {
     if (c->scopeDepth > 0) {
         markInitialized(c); return;
@@ -1251,7 +1243,7 @@ static int parseVariable(Parser* p, Scanner* s, Compiler* c, const char* msg) {
     consume(p, s, TOKEN_IDENTIFIER, msg);
     declareVariable(p, c);
     if (c->scopeDepth > 0) return 0;
-    return identifierConstant(p, c, &p->previous);
+    return identifierConstant(c, &p->previous);
 }
 
 static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
@@ -1278,7 +1270,7 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
                 nameLength = i; break;
             }
             Token nameToken = { .start = filename, .length = nameLength };
-            declareVariable(p, c); alias = identifierConstant(p, c, &nameToken);
+            declareVariable(p, c); alias = identifierConstant(c, &nameToken);
         }
         emitLong(p, c, OP_IMPORT, OP_IMPORT_LONG, file); defineVariable(p, c, alias);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';' after import.");
@@ -1306,10 +1298,8 @@ ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source) {
     Compiler c;
     initCompiler(&p, &c, NULL, TYPE_SCRIPT, module);
     advance(&p, &s);
-    while (!match(&p, &s, TOKEN_EOF))
-        declaration(&p, &s, &c, NULL);
-    if (!p.hadError)
-        optimizeJumps(currentChunk(&c));
+    while (!match(&p, &s, TOKEN_EOF)) declaration(&p, &s, &c, NULL);
+    if (!p.hadError) optimizeJumps(currentChunk(&c));
     ObjFunction* function = endCompiler(&p, &c);
     return p.hadError ? NULL : function;
 }

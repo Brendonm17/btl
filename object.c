@@ -98,27 +98,6 @@ ObjUpvalue* newUpvalue(struct VM* vm, Value* slot) {
     return upvalue;
 }
 
-void printObjectStderr(Value value) {
-    switch (OBJ_TYPE(value)) {
-    case OBJ_BOUND_METHOD: fprintf(stderr, "<fn %s>", AS_BOUND_METHOD(value)->method->function->name->chars); break;
-    case OBJ_CLASS: fprintf(stderr, "%s", AS_CLASS(value)->name->chars); break;
-    case OBJ_CLOSURE: fprintf(stderr, "<fn %s>", AS_CLOSURE(value)->function->name->chars); break;
-    case OBJ_FUNCTION: fprintf(stderr, "<fn %s>", AS_FUNCTION(value)->name->chars); break;
-    case OBJ_INSTANCE: fprintf(stderr, "%s instance", AS_INSTANCE(value)->klass->name->chars); break;
-    case OBJ_LIST: {
-        ObjList* list = AS_LIST(value); fprintf(stderr, "[");
-        for (int i = 0; i < list->items.count; i++) {
-            printValueStderr(list->items.values[i]); if (i < list->items.count - 1) fprintf(stderr, ", ");
-        }
-        fprintf(stderr, "]"); break;
-    }
-    case OBJ_MODULE: fprintf(stderr, "<module %s>", AS_MODULE(value)->name->chars); break;
-    case OBJ_NATIVE: fprintf(stderr, "<native fn>"); break;
-    case OBJ_STRING: fprintf(stderr, "%s", AS_CSTRING(value)); break;
-    case OBJ_UPVALUE: fprintf(stderr, "upvalue"); break;
-    }
-}
-
 void printObject(Value value) {
     switch (OBJ_TYPE(value)) {
     case OBJ_BOUND_METHOD: printf("<fn %s>", AS_BOUND_METHOD(value)->method->function->name->chars); break;
