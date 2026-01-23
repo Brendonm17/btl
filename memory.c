@@ -168,9 +168,8 @@ void collectGarbage(struct VM* vm) {
         markObject(vm, (struct Obj*) vm->frames[i].closure);
     }
 
-    // Mark open upvalues
-    for (ObjUpvalue* upvalue = vm->openUpvalues; upvalue != NULL; upvalue = upvalue->next) {
-        markObject(vm, (struct Obj*) upvalue);
+    for (int i = 0; i < vm->openUpvalueCount; i++) {
+        markObject(vm, (Obj*) vm->openUpvalues[i]);
     }
 
     // Mark module registry
@@ -224,6 +223,6 @@ void freeObjects(struct VM* vm) {
         freeObject(vm, object);
         object = next;
     }
-
+    FREE_ARRAY(vm, ObjUpvalue*, vm->openUpvalues, vm->openUpvalueCapacity);
     free(vm->grayStack);
 }

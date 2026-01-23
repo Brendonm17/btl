@@ -8,8 +8,8 @@
 struct Obj;
 struct ObjClosure;
 struct ObjString;
-struct ObjUpvalue;
 struct ObjModule;
+typedef struct ObjUpvalue ObjUpvalue;
 
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
@@ -31,7 +31,9 @@ typedef struct VM {
     struct ObjModule* rootModule;
 
     struct ObjString* initString;
-    struct ObjUpvalue* openUpvalues;
+    ObjUpvalue** openUpvalues;
+    int openUpvalueCount;
+    int openUpvalueCapacity;
 
     size_t bytesAllocated;
     size_t nextGC;

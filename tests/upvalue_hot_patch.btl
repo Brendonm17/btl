@@ -1,0 +1,18 @@
+// This will run millions of upvalue lookups.
+// The VM will patch OP_GET_UPVALUE to OP_GET_UPVALUE_OPEN immediately,
+// and eventually to OP_GET_UPVALUE_CLOSED.
+fun test() {
+  var count = 0;
+  
+  fun increment() {
+    count = count + 1;
+  }
+
+  for (var i = 0; i < 1000000; i = i + 1) {
+    increment();
+  }
+
+  print count; // expect: 1e+06
+}
+
+test();
