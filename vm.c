@@ -102,6 +102,9 @@ void initVM(VM* vm) {
     vm->nextGC = 1024 * 1024;
     vm->grayCount = 0;
     vm->grayCapacity = 0;
+    vm->openUpvalues = NULL;
+    vm->openUpvalueCount = 0;
+    vm->openUpvalueCapacity = 0;
     vm->grayStack = NULL;
     vm->compiler = NULL;
 
@@ -140,19 +143,41 @@ static bool isFalsey(Value value) {
 }
 
 static ObjUpvalue* captureUpvalue(VM* vm, Value* local) {
-    ObjUpvalue* prev = NULL; ObjUpvalue* u = vm->openUpvalues;
-    while (u != NULL && u->location > local) {
-        prev = u; u = u->next;
+    // Binary search for existing upvalue
+    int low = 0;
+    int high = vm->openUpvalueCount - 1;
+    while (low <= high) {
+        int mid = (low + high) / 2;
+        ObjUpvalue* upvalue = vm->openUpvalues[mid];
+        if (upvalue->location == local) return upvalue;
+        if (upvalue->location < local) low = mid + 1;
+        else high = mid - 1;
     }
-    if (u != NULL && u->location == local) return u;
-    ObjUpvalue* created = newUpvalue(vm, local); created->next = u;
-    if (prev == NULL) vm->openUpvalues = created; else prev->next = created;
-    return created;
+
+    // Not found: insert at 'low'
+    if (vm->openUpvalueCount >= vm->openUpvalueCapacity) {
+        int oldCap = vm->openUpvalueCapacity;
+        vm->openUpvalueCapacity = GROW_CAPACITY(oldCap);
+        vm->openUpvalues = GROW_ARRAY(vm, ObjUpvalue*, vm->openUpvalues, oldCap, vm->openUpvalueCapacity);
+    }
+
+    ObjUpvalue* createdUpvalue = newUpvalue(vm, local);
+    for (int i = vm->openUpvalueCount; i > low; i--) {
+        vm->openUpvalues[i] = vm->openUpvalues[i - 1];
+    }
+    vm->openUpvalues[low] = createdUpvalue;
+    vm->openUpvalueCount++;
+    return createdUpvalue;
 }
 
 static void closeUpvalues(VM* vm, Value* last) {
-    while (vm->openUpvalues != NULL && vm->openUpvalues->location >= last) {
-        ObjUpvalue* u = vm->openUpvalues; u->closed = *u->location; u->location = &u->closed; vm->openUpvalues = u->next;
+    // Array is sorted by stack address; we only need to check the tail
+    while (vm->openUpvalueCount > 0 &&
+        vm->openUpvalues[vm->openUpvalueCount - 1]->location >= last) {
+        ObjUpvalue* upvalue = vm->openUpvalues[vm->openUpvalueCount - 1];
+        upvalue->closed = *upvalue->location;
+        upvalue->location = &upvalue->closed; // Now points to its own field
+        vm->openUpvalueCount--;
     }
 }
 
@@ -343,6 +368,7 @@ static InterpretResult run(VM* vm) {
 #define READ_CONSTANT_LONG() (frame->closure->function->chunk.constants.values[READ_SHORT()])
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 #define READ_STRING_LONG() AS_STRING(READ_CONSTANT_LONG())
+#define PATCH_OP(newOp) (frame->closure->function->chunk.code[ip - frame->closure->function->chunk.code - 2] = (newOp))
 
 #define BINARY_OP(vType, op) do { \
     if (IS_NUMBER(peek(vm, 0)) && IS_NUMBER(peek(vm, 1))) { \
@@ -364,7 +390,8 @@ static InterpretResult run(VM* vm) {
         && L_OP_CONSTANT,&& L_OP_CONSTANT_LONG,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_POP,&& L_OP_POP_N,
         && L_OP_GET_LOCAL,&& L_OP_SET_LOCAL,&& L_OP_GET_GLOBAL,&& L_OP_GET_GLOBAL_LONG,
         && L_OP_DEFINE_GLOBAL,&& L_OP_DEFINE_GLOBAL_LONG,&& L_OP_SET_GLOBAL,&& L_OP_SET_GLOBAL_LONG,
-        && L_OP_GET_UPVALUE,&& L_OP_SET_UPVALUE,&& L_OP_GET_PROPERTY,&& L_OP_GET_PROPERTY_LONG,
+        && L_OP_GET_UPVALUE,&& L_OP_GET_UPVALUE_OPEN,&& L_OP_GET_UPVALUE_CLOSED,
+        && L_OP_SET_UPVALUE,&& L_OP_GET_PROPERTY,&& L_OP_GET_PROPERTY_LONG,
         && L_OP_SET_PROPERTY,&& L_OP_SET_PROPERTY_LONG,&& L_OP_GET_SUPER,&& L_OP_GET_SUPER_LONG,
         && L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,&& L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,
         && L_OP_DIVIDE,&& L_OP_MODULO,&& L_OP_NOT,&& L_OP_NEGATE,&& L_OP_PRINT,&& L_OP_JUMP,
@@ -459,7 +486,30 @@ static InterpretResult run(VM* vm) {
                 DISPATCH();
             }
 
-            OPCODE(OP_GET_UPVALUE) : push(vm, *frame->closure->upvalues[READ_BYTE()]->location); DISPATCH();
+            OPCODE(OP_GET_UPVALUE) : {
+                uint8_t slot = READ_BYTE();
+                ObjUpvalue* uv = frame->closure->upvalues[slot];
+                push(vm, *uv->location);
+                // Patching Logic:
+                if (uv->location == &uv->closed) PATCH_OP(OP_GET_UPVALUE_CLOSED);
+                else PATCH_OP(OP_GET_UPVALUE_OPEN);
+                DISPATCH();}
+            OPCODE(OP_GET_UPVALUE_OPEN) : {
+                uint8_t slot = READ_BYTE();
+                ObjUpvalue* uv = frame->closure->upvalues[slot];
+                // Edge Case: If it was closed since the last time this ran
+                if (uv->location == &uv->closed) {
+                    PATCH_OP(OP_GET_UPVALUE_CLOSED);
+                    push(vm, uv->closed);
+                } else {
+                    push(vm, *uv->location);
+                }
+                DISPATCH();}
+            OPCODE(OP_GET_UPVALUE_CLOSED) : {
+                uint8_t slot = READ_BYTE();
+                // Pure optimization: No branching, no pointer indirection
+                push(vm, frame->closure->upvalues[slot]->closed);
+                DISPATCH();}
             OPCODE(OP_SET_UPVALUE) : *frame->closure->upvalues[READ_BYTE()]->location = peek(vm, 0); DISPATCH();
 
             /* --- ACCESS --- */

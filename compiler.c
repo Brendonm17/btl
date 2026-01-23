@@ -596,13 +596,22 @@ static int addUpvalue(Compiler* c, uint8_t index, bool isLocal) {
 
 static int resolveUpvalue(Parser* p, Compiler* c, Token* name) {
     if (c->enclosing == NULL) return -1;
+
+    // Check immediate local scope of parent
     int local = resolveLocal(p, c->enclosing, name);
     if (local != -1) {
         c->enclosing->locals[local].isCaptured = true;
         return addUpvalue(c, (uint8_t) local, true);
     }
+
+    // Static Link Elimination: Recursively check parent's upvalues.
+    // This creates a "pass-through" in the parent so that the current
+    // closure only has to look at its direct upvalue array.
     int upvalue = resolveUpvalue(p, c->enclosing, name);
-    if (upvalue != -1) return addUpvalue(c, (uint8_t) upvalue, false);
+    if (upvalue != -1) {
+        return addUpvalue(c, (uint8_t) upvalue, false);
+    }
+
     return -1;
 }
 

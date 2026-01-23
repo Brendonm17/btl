@@ -1,0 +1,16 @@
+// Test Static Link Elimination (Flattening)
+// Even though 'a' is 3 levels up, the innermost function 
+// should access it via a direct index in its own closure.
+fun outer() {
+  var a = "outer-value";
+  fun middle() {
+    fun inner() {
+      return a;
+    }
+    return inner;
+  }
+  return middle;
+}
+
+var closure = outer()();
+print closure(); // expect: outer-value

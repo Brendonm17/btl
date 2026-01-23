@@ -94,7 +94,7 @@ struct ObjString* copyString(struct VM* vm, const char* chars, int length) {
 
 ObjUpvalue* newUpvalue(struct VM* vm, Value* slot) {
     ObjUpvalue* upvalue = ALLOCATE_OBJ(vm, ObjUpvalue, OBJ_UPVALUE);
-    upvalue->closed = NIL_VAL; upvalue->location = slot; upvalue->next = NULL;
+    upvalue->closed = NIL_VAL; upvalue->location = slot;// upvalue->next = NULL;
     return upvalue;
 }
 

@@ -55,7 +55,7 @@ typedef struct ObjString {
     Obj obj; int length; char* chars; uint32_t hash;
 } ObjString;
 typedef struct ObjUpvalue {
-    Obj obj; Value* location; Value closed; struct ObjUpvalue* next;
+    Obj obj; Value* location; Value closed; //struct ObjUpvalue* next;
 } ObjUpvalue;
 typedef struct ObjClosure {
     Obj obj; ObjFunction* function; ObjUpvalue** upvalues; int upvalueCount;
