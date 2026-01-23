@@ -369,13 +369,19 @@ static InterpretResult run(VM* vm) {
         && L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,&& L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,
         && L_OP_DIVIDE,&& L_OP_MODULO,&& L_OP_NOT,&& L_OP_NEGATE,&& L_OP_PRINT,&& L_OP_JUMP,
         && L_OP_JUMP_IF_FALSE,&& L_OP_LOOP,
-        && L_OP_CALL_0,&& L_OP_CALL_1,&& L_OP_CALL_2,&& L_OP_CALL_3,&& L_OP_CALL_4,&& L_OP_CALL,
-        && L_OP_TAIL_CALL_0,&& L_OP_TAIL_CALL_1,&& L_OP_TAIL_CALL_2,&& L_OP_TAIL_CALL_3,&& L_OP_TAIL_CALL_4,&& L_OP_TAIL_CALL,
+        && L_OP_CALL_0,&& L_OP_CALL_1,&& L_OP_CALL_2,&& L_OP_CALL_3,&& L_OP_CALL_4,
+        && L_OP_CALL_5,&& L_OP_CALL_6,&& L_OP_CALL_7,&& L_OP_CALL_8,&& L_OP_CALL,
+        && L_OP_TAIL_CALL_0,&& L_OP_TAIL_CALL_1,&& L_OP_TAIL_CALL_2,&& L_OP_TAIL_CALL_3,&& L_OP_TAIL_CALL_4,
+        && L_OP_TAIL_CALL_5,&& L_OP_TAIL_CALL_6,&& L_OP_TAIL_CALL_7,&& L_OP_TAIL_CALL_8,&& L_OP_TAIL_CALL,
         && L_OP_INVOKE_0,&& L_OP_INVOKE_1,&& L_OP_INVOKE_2,&& L_OP_INVOKE_3,&& L_OP_INVOKE_4,
+        && L_OP_INVOKE_5,&& L_OP_INVOKE_6,&& L_OP_INVOKE_7,&& L_OP_INVOKE_8,
         && L_OP_TAIL_INVOKE_0,&& L_OP_TAIL_INVOKE_1,&& L_OP_TAIL_INVOKE_2,&& L_OP_TAIL_INVOKE_3,&& L_OP_TAIL_INVOKE_4,
+        && L_OP_TAIL_INVOKE_5,&& L_OP_TAIL_INVOKE_6,&& L_OP_TAIL_INVOKE_7,&& L_OP_TAIL_INVOKE_8,
         && L_OP_INVOKE,&& L_OP_INVOKE_LONG,&& L_OP_TAIL_INVOKE,&& L_OP_TAIL_INVOKE_LONG,
         && L_OP_SUPER_INVOKE_0,&& L_OP_SUPER_INVOKE_1,&& L_OP_SUPER_INVOKE_2,&& L_OP_SUPER_INVOKE_3,&& L_OP_SUPER_INVOKE_4,
+        && L_OP_SUPER_INVOKE_5,&& L_OP_SUPER_INVOKE_6,&& L_OP_SUPER_INVOKE_7,&& L_OP_SUPER_INVOKE_8,
         && L_OP_TAIL_SUPER_INVOKE_0,&& L_OP_TAIL_SUPER_INVOKE_1,&& L_OP_TAIL_SUPER_INVOKE_2,&& L_OP_TAIL_SUPER_INVOKE_3,&& L_OP_TAIL_SUPER_INVOKE_4,
+        && L_OP_TAIL_SUPER_INVOKE_5,&& L_OP_TAIL_SUPER_INVOKE_6,&& L_OP_TAIL_SUPER_INVOKE_7,&& L_OP_TAIL_SUPER_INVOKE_8,
         && L_OP_SUPER_INVOKE,&& L_OP_SUPER_INVOKE_LONG,&& L_OP_TAIL_SUPER_INVOKE,&& L_OP_TAIL_SUPER_INVOKE_LONG,
         && L_OP_CLOSURE,&& L_OP_CLOSURE_LONG,&& L_OP_CLOSE_UPVALUE,&& L_OP_RETURN,
         && L_OP_CLASS,&& L_OP_CLASS_LONG,&& L_OP_INHERIT,&& L_OP_METHOD,&& L_OP_METHOD_LONG,
@@ -593,6 +599,10 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_CALL_2) : argCount = 2; goto do_call;
             OPCODE(OP_CALL_3) : argCount = 3; goto do_call;
             OPCODE(OP_CALL_4) : argCount = 4; goto do_call;
+            OPCODE(OP_CALL_5) : argCount = 5; goto do_call;
+            OPCODE(OP_CALL_6) : argCount = 6; goto do_call;
+            OPCODE(OP_CALL_7) : argCount = 7; goto do_call;
+            OPCODE(OP_CALL_8) : argCount = 8; goto do_call;
             OPCODE(OP_CALL) : argCount = READ_BYTE();
         do_call:
             STORE_FRAME();
@@ -605,6 +615,10 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_TAIL_CALL_2) : argCount = 2; goto do_tail_call;
             OPCODE(OP_TAIL_CALL_3) : argCount = 3; goto do_tail_call;
             OPCODE(OP_TAIL_CALL_4) : argCount = 4; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL_5) : argCount = 5; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL_6) : argCount = 6; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL_7) : argCount = 7; goto do_tail_call;
+            OPCODE(OP_TAIL_CALL_8) : argCount = 8; goto do_tail_call;
             OPCODE(OP_TAIL_CALL) : argCount = READ_BYTE();
         do_tail_call: {
             Value callee = peek(vm, argCount);
@@ -630,6 +644,10 @@ static InterpretResult run(VM* vm) {
         OPCODE(OP_INVOKE_2) : argCount = 2; goto do_invoke;
         OPCODE(OP_INVOKE_3) : argCount = 3; goto do_invoke;
         OPCODE(OP_INVOKE_4) : argCount = 4; goto do_invoke;
+        OPCODE(OP_INVOKE_5) : argCount = 5; goto do_invoke;
+        OPCODE(OP_INVOKE_6) : argCount = 6; goto do_invoke;
+        OPCODE(OP_INVOKE_7) : argCount = 7; goto do_invoke;
+        OPCODE(OP_INVOKE_8) : argCount = 8; goto do_invoke;
         OPCODE(OP_INVOKE) : argCount = READ_BYTE(); goto do_invoke;
     do_invoke: {
         ObjString* method = READ_STRING();
@@ -652,6 +670,10 @@ static InterpretResult run(VM* vm) {
     OPCODE(OP_TAIL_INVOKE_2) : argCount = 2; goto do_tail_invoke;
     OPCODE(OP_TAIL_INVOKE_3) : argCount = 3; goto do_tail_invoke;
     OPCODE(OP_TAIL_INVOKE_4) : argCount = 4; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE_5) : argCount = 5; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE_6) : argCount = 6; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE_7) : argCount = 7; goto do_tail_invoke;
+    OPCODE(OP_TAIL_INVOKE_8) : argCount = 8; goto do_tail_invoke;
     OPCODE(OP_TAIL_INVOKE) : argCount = READ_BYTE(); goto do_tail_invoke;
 do_tail_invoke: {
     ObjString* method = READ_STRING();
@@ -701,6 +723,10 @@ OPCODE(OP_SUPER_INVOKE_1) : argCount = 1; goto do_super;
 OPCODE(OP_SUPER_INVOKE_2) : argCount = 2; goto do_super;
 OPCODE(OP_SUPER_INVOKE_3) : argCount = 3; goto do_super;
 OPCODE(OP_SUPER_INVOKE_4) : argCount = 4; goto do_super;
+OPCODE(OP_SUPER_INVOKE_5) : argCount = 5; goto do_super;
+OPCODE(OP_SUPER_INVOKE_6) : argCount = 6; goto do_super;
+OPCODE(OP_SUPER_INVOKE_7) : argCount = 7; goto do_super;
+OPCODE(OP_SUPER_INVOKE_8) : argCount = 8; goto do_super;
 OPCODE(OP_SUPER_INVOKE) : argCount = READ_BYTE(); goto do_super;
 do_super: {
 ObjString* method = READ_STRING();
@@ -726,6 +752,10 @@ OPCODE(OP_TAIL_SUPER_INVOKE_1) : argCount = 1; goto do_tail_super;
 OPCODE(OP_TAIL_SUPER_INVOKE_2) : argCount = 2; goto do_tail_super;
 OPCODE(OP_TAIL_SUPER_INVOKE_3) : argCount = 3; goto do_tail_super;
 OPCODE(OP_TAIL_SUPER_INVOKE_4) : argCount = 4; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE_5) : argCount = 5; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE_6) : argCount = 6; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE_7) : argCount = 7; goto do_tail_super;
+OPCODE(OP_TAIL_SUPER_INVOKE_8) : argCount = 8; goto do_tail_super;
 OPCODE(OP_TAIL_SUPER_INVOKE) : argCount = READ_BYTE(); goto do_tail_super;
 do_tail_super: {
 ObjString* m = READ_STRING();
