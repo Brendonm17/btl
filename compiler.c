@@ -162,9 +162,11 @@ static int instructionSize(const Chunk* chunk, int i) {
     case OP_INHERIT: case OP_METHOD:
     case OP_INDEX_GET: case OP_INDEX_SET:
 
-        // Specialized calls (0-4)
+        // Specialized calls
     case OP_CALL_0: case OP_CALL_1: case OP_CALL_2: case OP_CALL_3: case OP_CALL_4:
+    case OP_CALL_5: case OP_CALL_6: case OP_CALL_7: case OP_CALL_8:
     case OP_TAIL_CALL_0: case OP_TAIL_CALL_1: case OP_TAIL_CALL_2: case OP_TAIL_CALL_3: case OP_TAIL_CALL_4:
+    case OP_TAIL_CALL_5: case OP_TAIL_CALL_6: case OP_TAIL_CALL_7: case OP_TAIL_CALL_8:
         return 1;
 
         // 2-byte opcodes (opcode + 1 byte operand)
@@ -181,10 +183,15 @@ static int instructionSize(const Chunk* chunk, int i) {
 
         // Specialized Invokes (opcode + index)
     case OP_INVOKE_0: case OP_INVOKE_1: case OP_INVOKE_2: case OP_INVOKE_3: case OP_INVOKE_4:
+    case OP_INVOKE_5: case OP_INVOKE_6: case OP_INVOKE_7: case OP_INVOKE_8:
     case OP_TAIL_INVOKE_0: case OP_TAIL_INVOKE_1: case OP_TAIL_INVOKE_2: case OP_TAIL_INVOKE_3: case OP_TAIL_INVOKE_4:
+    case OP_TAIL_INVOKE_5: case OP_TAIL_INVOKE_6: case OP_TAIL_INVOKE_7: case OP_TAIL_INVOKE_8:
     case OP_SUPER_INVOKE_0: case OP_SUPER_INVOKE_1: case OP_SUPER_INVOKE_2: case OP_SUPER_INVOKE_3: case OP_SUPER_INVOKE_4:
+    case OP_SUPER_INVOKE_5: case OP_SUPER_INVOKE_6: case OP_SUPER_INVOKE_7: case OP_SUPER_INVOKE_8:
     case OP_TAIL_SUPER_INVOKE_0: case OP_TAIL_SUPER_INVOKE_1: case OP_TAIL_SUPER_INVOKE_2:
     case OP_TAIL_SUPER_INVOKE_3: case OP_TAIL_SUPER_INVOKE_4:
+    case OP_TAIL_SUPER_INVOKE_5: case OP_TAIL_SUPER_INVOKE_6:
+    case OP_TAIL_SUPER_INVOKE_7: case OP_TAIL_SUPER_INVOKE_8:
 
     case OP_CLOSURE:
         return 2;
@@ -436,7 +443,7 @@ static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint
 }
 
 static void emitInvoke(Parser* p, Compiler* c, int nameIdx, int args) {
-    if (args <= 4 && nameIdx < 256) {
+    if (args <= 8 && nameIdx < 256) {
         emitBytes(p, c, (uint8_t) (OP_INVOKE_0 + args), (uint8_t) nameIdx);
     } else if (nameIdx < 256) {
         emitByte(p, c, OP_INVOKE);
@@ -451,7 +458,7 @@ static void emitInvoke(Parser* p, Compiler* c, int nameIdx, int args) {
 }
 
 static void emitSuperInvoke(Parser* p, Compiler* c, int nameIdx, int args) {
-    if (args <= 4 && nameIdx < 256) {
+    if (args <= 8 && nameIdx < 256) {
         emitBytes(p, c, (uint8_t) (OP_SUPER_INVOKE_0 + args), (uint8_t) nameIdx);
     } else if (nameIdx < 256) {
         emitByte(p, c, OP_SUPER_INVOKE);
@@ -844,6 +851,10 @@ static void call(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool can
     case 2: emitByte(p, c, OP_CALL_2); break;
     case 3: emitByte(p, c, OP_CALL_3); break;
     case 4: emitByte(p, c, OP_CALL_4); break;
+    case 5: emitByte(p, c, OP_CALL_5); break;
+    case 6: emitByte(p, c, OP_CALL_6); break;
+    case 7: emitByte(p, c, OP_CALL_7); break;
+    case 8: emitByte(p, c, OP_CALL_8); break;
     default: emitBytes(p, c, OP_CALL, args); break;
     }
 }
@@ -1142,6 +1153,10 @@ static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
             case OP_CALL_2: *opcode = OP_TAIL_CALL_2; break;
             case OP_CALL_3: *opcode = OP_TAIL_CALL_3; break;
             case OP_CALL_4: *opcode = OP_TAIL_CALL_4; break;
+            case OP_CALL_5: *opcode = OP_TAIL_CALL_5; break;
+            case OP_CALL_6: *opcode = OP_TAIL_CALL_6; break;
+            case OP_CALL_7: *opcode = OP_TAIL_CALL_7; break;
+            case OP_CALL_8: *opcode = OP_TAIL_CALL_8; break;
 
             case OP_INVOKE: *opcode = OP_TAIL_INVOKE; break;
             case OP_INVOKE_LONG: *opcode = OP_TAIL_INVOKE_LONG; break;
@@ -1151,6 +1166,10 @@ static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
             case OP_INVOKE_2: *opcode = OP_TAIL_INVOKE_2; break;
             case OP_INVOKE_3: *opcode = OP_TAIL_INVOKE_3; break;
             case OP_INVOKE_4: *opcode = OP_TAIL_INVOKE_4; break;
+            case OP_INVOKE_5: *opcode = OP_TAIL_INVOKE_5; break;
+            case OP_INVOKE_6: *opcode = OP_TAIL_INVOKE_6; break;
+            case OP_INVOKE_7: *opcode = OP_TAIL_INVOKE_7; break;
+            case OP_INVOKE_8: *opcode = OP_TAIL_INVOKE_8; break;
 
             case OP_SUPER_INVOKE: *opcode = OP_TAIL_SUPER_INVOKE; break;
             case OP_SUPER_INVOKE_LONG: *opcode = OP_TAIL_SUPER_INVOKE_LONG; break;
@@ -1160,6 +1179,10 @@ static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
             case OP_SUPER_INVOKE_2: *opcode = OP_TAIL_SUPER_INVOKE_2; break;
             case OP_SUPER_INVOKE_3: *opcode = OP_TAIL_SUPER_INVOKE_3; break;
             case OP_SUPER_INVOKE_4: *opcode = OP_TAIL_SUPER_INVOKE_4; break;
+            case OP_SUPER_INVOKE_5: *opcode = OP_TAIL_SUPER_INVOKE_5; break;
+            case OP_SUPER_INVOKE_6: *opcode = OP_TAIL_SUPER_INVOKE_6; break;
+            case OP_SUPER_INVOKE_7: *opcode = OP_TAIL_SUPER_INVOKE_7; break;
+            case OP_SUPER_INVOKE_8: *opcode = OP_TAIL_SUPER_INVOKE_8; break;
 
             default: break;
             }
