@@ -24,11 +24,16 @@ ObjClass* newClass(struct VM* vm, struct ObjString* name) {
     klass->name = name; initTable(&klass->methods); return klass;
 }
 
-ObjClosure* newClosure(struct VM* vm, ObjFunction* function) {
-    ObjUpvalue** upvalues = ALLOCATE(vm, ObjUpvalue*, function->upvalueCount);
-    for (int i = 0; i < function->upvalueCount; i++) upvalues[i] = NULL;
-    ObjClosure* closure = ALLOCATE_OBJ(vm, ObjClosure, OBJ_CLOSURE);
-    closure->function = function; closure->upvalues = upvalues; closure->upvalueCount = function->upvalueCount;
+ObjClosure* newClosure(VM* vm, ObjFunction* function) {
+    size_t size = sizeof(ObjClosure) + sizeof(RuntimeUpvalue) * function->upvalueCount;
+    ObjClosure* closure = (ObjClosure*) allocateObject(vm, size, OBJ_CLOSURE);
+    closure->function = function;
+    closure->upvalueCount = function->upvalueCount;
+
+    for (int i = 0; i < function->upvalueCount; i++) {
+        closure->upvalues[i].isOpen = true;
+        closure->upvalues[i].next = NULL;
+    }
     return closure;
 }
 
@@ -92,10 +97,10 @@ struct ObjString* copyString(struct VM* vm, const char* chars, int length) {
     return allocateString(vm, heapChars, length, hash);
 }
 
-ObjUpvalue* newUpvalue(struct VM* vm, Value* slot) {
-    ObjUpvalue* upvalue = ALLOCATE_OBJ(vm, ObjUpvalue, OBJ_UPVALUE);
-    upvalue->closed = NIL_VAL; upvalue->location = slot;// upvalue->next = NULL;
-    return upvalue;
+ObjUpvalue* newUpvalueBox(VM* vm, Value value) {
+    ObjUpvalue* box = ALLOCATE_OBJ(vm, ObjUpvalue, OBJ_UPVALUE);
+    box->closed = value;
+    return box;
 }
 
 void printObject(Value value) {

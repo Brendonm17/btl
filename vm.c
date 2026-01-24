@@ -18,7 +18,6 @@
 static void resetStack(VM* vm) {
     vm->stackTop = vm->stack;
     vm->frameCount = 0;
-    vm->openUpvalues = NULL;
     for (int i = 0; i < STACK_MAX; i++) {
         vm->stack[i] = NIL_VAL;
     }
@@ -102,9 +101,6 @@ void initVM(VM* vm) {
     vm->nextGC = 1024 * 1024;
     vm->grayCount = 0;
     vm->grayCapacity = 0;
-    vm->openUpvalues = NULL;
-    vm->openUpvalueCount = 0;
-    vm->openUpvalueCapacity = 0;
     vm->grayStack = NULL;
     vm->compiler = NULL;
 
@@ -142,43 +138,36 @@ static bool isFalsey(Value value) {
     return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
 }
 
-static ObjUpvalue* captureUpvalue(VM* vm, Value* local) {
-    // Binary search for existing upvalue
-    int low = 0;
-    int high = vm->openUpvalueCount - 1;
-    while (low <= high) {
-        int mid = (low + high) / 2;
-        ObjUpvalue* upvalue = vm->openUpvalues[mid];
-        if (upvalue->location == local) return upvalue;
-        if (upvalue->location < local) low = mid + 1;
-        else high = mid - 1;
-    }
+// Logic: Close upvalues associated with a specific frame
+static void closeUpvalues(VM* vm, CallFrame* frame) {
+    RuntimeUpvalue* uv = frame->openUpvalues;
 
-    // Not found: insert at 'low'
-    if (vm->openUpvalueCount >= vm->openUpvalueCapacity) {
-        int oldCap = vm->openUpvalueCapacity;
-        vm->openUpvalueCapacity = GROW_CAPACITY(oldCap);
-        vm->openUpvalues = GROW_ARRAY(vm, ObjUpvalue*, vm->openUpvalues, oldCap, vm->openUpvalueCapacity);
-    }
+    while (uv != NULL) {
+        RuntimeUpvalue* next = uv->next;
 
-    ObjUpvalue* createdUpvalue = newUpvalue(vm, local);
-    for (int i = vm->openUpvalueCount; i > low; i--) {
-        vm->openUpvalues[i] = vm->openUpvalues[i - 1];
-    }
-    vm->openUpvalues[low] = createdUpvalue;
-    vm->openUpvalueCount++;
-    return createdUpvalue;
-}
+        if (uv->isOpen) {
+            Value val = *uv->loc.stack;
+            Value* slotPtr = uv->loc.stack;
 
-static void closeUpvalues(VM* vm, Value* last) {
-    // Array is sorted by stack address; we only need to check the tail
-    while (vm->openUpvalueCount > 0 &&
-        vm->openUpvalues[vm->openUpvalueCount - 1]->location >= last) {
-        ObjUpvalue* upvalue = vm->openUpvalues[vm->openUpvalueCount - 1];
-        upvalue->closed = *upvalue->location;
-        upvalue->location = &upvalue->closed; // Now points to its own field
-        vm->openUpvalueCount--;
+            // Create Box via object.c helper
+            ObjUpvalue* box = newUpvalueBox(vm, val);
+
+            uv->isOpen = false;
+            uv->loc.box = box;
+
+            // Fix siblings
+            RuntimeUpvalue* search = next;
+            while (search != NULL) {
+                if (search->isOpen && search->loc.stack == slotPtr) {
+                    search->isOpen = false;
+                    search->loc.box = box;
+                }
+                search = search->next;
+            }
+        }
+        uv = next;
     }
+    frame->openUpvalues = NULL;
 }
 
 // --- Call Logic ---
@@ -195,6 +184,7 @@ static bool call(VM* vm, ObjClosure* closure, int argCount) {
     frame->closure = closure;
     frame->ip = closure->function->chunk.code;
     frame->slots = vm->stackTop - argCount - 1;
+    frame->openUpvalues = NULL; // Init list
     return true;
 }
 
@@ -242,6 +232,7 @@ static bool invokeFromClass(VM* vm, ObjClass* klass, struct ObjString* name, int
     frame->closure = closure;
     frame->ip = closure->function->chunk.code;
     frame->slots = vm->stackTop - argCount - 1;
+    frame->openUpvalues = NULL; // Init list
     return true;
 }
 
@@ -391,7 +382,8 @@ static InterpretResult run(VM* vm) {
         && L_OP_GET_LOCAL,&& L_OP_SET_LOCAL,&& L_OP_GET_GLOBAL,&& L_OP_GET_GLOBAL_LONG,
         && L_OP_DEFINE_GLOBAL,&& L_OP_DEFINE_GLOBAL_LONG,&& L_OP_SET_GLOBAL,&& L_OP_SET_GLOBAL_LONG,
         && L_OP_GET_UPVALUE,&& L_OP_GET_UPVALUE_OPEN,&& L_OP_GET_UPVALUE_CLOSED,
-        && L_OP_SET_UPVALUE,&& L_OP_GET_PROPERTY,&& L_OP_GET_PROPERTY_LONG,
+        && L_OP_SET_UPVALUE,&& L_OP_SET_UPVALUE_OPEN,&& L_OP_SET_UPVALUE_CLOSED,
+        && L_OP_GET_PROPERTY,&& L_OP_GET_PROPERTY_LONG,
         && L_OP_SET_PROPERTY,&& L_OP_SET_PROPERTY_LONG,&& L_OP_GET_SUPER,&& L_OP_GET_SUPER_LONG,
         && L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,&& L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,
         && L_OP_DIVIDE,&& L_OP_MODULO,&& L_OP_NOT,&& L_OP_NEGATE,&& L_OP_PRINT,&& L_OP_JUMP,
@@ -486,31 +478,65 @@ static InterpretResult run(VM* vm) {
                 DISPATCH();
             }
 
+            /* --- UPVALUES --- */
             OPCODE(OP_GET_UPVALUE) : {
                 uint8_t slot = READ_BYTE();
-                ObjUpvalue* uv = frame->closure->upvalues[slot];
-                push(vm, *uv->location);
-                // Patching Logic:
-                if (uv->location == &uv->closed) PATCH_OP(OP_GET_UPVALUE_CLOSED);
-                else PATCH_OP(OP_GET_UPVALUE_OPEN);
+                RuntimeUpvalue* uv = &frame->closure->upvalues[slot];
+                if (uv->isOpen) {
+                    push(vm, *uv->loc.stack);
+                    PATCH_OP(OP_GET_UPVALUE_OPEN);
+                } else {
+                    push(vm, uv->loc.box->closed);
+                    PATCH_OP(OP_GET_UPVALUE_CLOSED);
+                }
                 DISPATCH();}
             OPCODE(OP_GET_UPVALUE_OPEN) : {
                 uint8_t slot = READ_BYTE();
-                ObjUpvalue* uv = frame->closure->upvalues[slot];
-                // Edge Case: If it was closed since the last time this ran
-                if (uv->location == &uv->closed) {
-                    PATCH_OP(OP_GET_UPVALUE_CLOSED);
-                    push(vm, uv->closed);
+                RuntimeUpvalue* uv = &frame->closure->upvalues[slot];
+                if (uv->isOpen) {
+                    push(vm, *uv->loc.stack);
                 } else {
-                    push(vm, *uv->location);
+                    push(vm, uv->loc.box->closed);
+                    PATCH_OP(OP_GET_UPVALUE_CLOSED);
                 }
                 DISPATCH();}
             OPCODE(OP_GET_UPVALUE_CLOSED) : {
                 uint8_t slot = READ_BYTE();
-                // Pure optimization: No branching, no pointer indirection
-                push(vm, frame->closure->upvalues[slot]->closed);
+                push(vm, frame->closure->upvalues[slot].loc.box->closed);
                 DISPATCH();}
-            OPCODE(OP_SET_UPVALUE) : *frame->closure->upvalues[READ_BYTE()]->location = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_UPVALUE) : {
+                uint8_t slot = READ_BYTE();
+                RuntimeUpvalue* uv = &frame->closure->upvalues[slot];
+
+                if (uv->isOpen) {
+                    *uv->loc.stack = peek(vm, 0);
+                    // Patch to Open version for next time
+                    PATCH_OP(OP_SET_UPVALUE_OPEN);
+                } else {
+                    uv->loc.box->closed = peek(vm, 0);
+                    // Patch to Closed version (Permanent)
+                    PATCH_OP(OP_SET_UPVALUE_CLOSED);
+                }
+                DISPATCH();}
+            OPCODE(OP_SET_UPVALUE_OPEN) : {
+                uint8_t slot = READ_BYTE();
+                RuntimeUpvalue* uv = &frame->closure->upvalues[slot];
+
+                if (uv->isOpen) {
+                    *uv->loc.stack = peek(vm, 0);
+                } else {
+                    // The variable went out of scope (closed) since we last ran this.
+                    // Write to the box and upgrade the instruction to Closed.
+                    uv->loc.box->closed = peek(vm, 0);
+                    PATCH_OP(OP_SET_UPVALUE_CLOSED);
+                }
+                DISPATCH();}
+            OPCODE(OP_SET_UPVALUE_CLOSED) : {
+                uint8_t slot = READ_BYTE();
+                // No 'isOpen' check needed. Upvalues never reopen.
+                // We go straight to the heap box.
+                frame->closure->upvalues[slot].loc.box->closed = peek(vm, 0);
+                DISPATCH(); }
 
             /* --- ACCESS --- */
             OPCODE(OP_GET_PROPERTY) : {
@@ -632,7 +658,7 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_LOOP) : { uint16_t offset = READ_SHORT(); ip -= offset; DISPATCH(); }
             OPCODE(OP_RETURN) : {
                 Value result = pop(vm);
-                closeUpvalues(vm, frame->slots);
+                closeUpvalues(vm, frame); // Pass current frame
                 vm->frameCount--;
                 if (vm->frameCount == 0) {
                     pop(vm); return INTERPRET_OK;
@@ -679,11 +705,12 @@ static InterpretResult run(VM* vm) {
             if (argCount != c->function->arity) {
                 STORE_FRAME(); runtimeError(vm, "Expected %d arguments but got %d.", c->function->arity, argCount); return INTERPRET_RUNTIME_ERROR;
             }
-            closeUpvalues(vm, frame->slots);
+            closeUpvalues(vm, frame);
             memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
             vm->stackTop = frame->slots + (argCount + 1);
             frame->closure = c;
             frame->ip = c->function->chunk.code;
+            frame->openUpvalues = NULL; // New function, new list
             ip = frame->ip;
             DISPATCH();
             }
@@ -737,11 +764,12 @@ do_tail_invoke: {
         STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
     }
     ObjClosure* c = AS_CLOSURE(meth);
-    closeUpvalues(vm, frame->slots);
+    closeUpvalues(vm, frame);
     memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
     vm->stackTop = frame->slots + (argCount + 1);
     frame->closure = c;
     frame->ip = c->function->chunk.code;
+    frame->openUpvalues = NULL;
     ip = frame->ip;
     DISPATCH();
     }
@@ -758,11 +786,12 @@ OPCODE(OP_TAIL_INVOKE_LONG) : {
         STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
     }
     ObjClosure* c = AS_CLOSURE(meth);
-    closeUpvalues(vm, frame->slots);
+    closeUpvalues(vm, frame);
     memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value)* (argCount + 1));
     vm->stackTop = frame->slots + (argCount + 1);
     frame->closure = c;
     frame->ip = c->function->chunk.code;
+    frame->openUpvalues = NULL;
     ip = frame->ip;
     DISPATCH();
 }
@@ -815,11 +844,12 @@ if (!tableGet(&s->methods, OBJ_VAL(m), &meth)) {
     STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", m->chars); return INTERPRET_RUNTIME_ERROR;
 }
 ObjClosure* c = AS_CLOSURE(meth);
-closeUpvalues(vm, frame->slots);
+closeUpvalues(vm, frame);
 memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
 vm->stackTop = frame->slots + (argCount + 1);
 frame->closure = c;
 frame->ip = c->function->chunk.code;
+frame->openUpvalues = NULL;
 ip = frame->ip;
 DISPATCH();
 }
@@ -832,11 +862,12 @@ OPCODE(OP_TAIL_SUPER_INVOKE_LONG) : {
         STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", m->chars); return INTERPRET_RUNTIME_ERROR;
     }
     ObjClosure* c = AS_CLOSURE(meth);
-    closeUpvalues(vm, frame->slots);
+    closeUpvalues(vm, frame);
     memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value)* (argCount + 1));
     vm->stackTop = frame->slots + (argCount + 1);
     frame->closure = c;
     frame->ip = c->function->chunk.code;
+    frame->openUpvalues = NULL;
     ip = frame->ip;
     DISPATCH();
 }
@@ -844,13 +875,40 @@ OPCODE(OP_TAIL_SUPER_INVOKE_LONG) : {
 /* --- OBJECTS --- */
 OPCODE(OP_CLOSURE) : {
     ObjFunction* f = AS_FUNCTION(READ_CONSTANT());
+
+    // Allocate closure with EXTRA space for inline Upvalues
     ObjClosure* c = newClosure(vm, f);
-    push(vm, OBJ_VAL(c));
+    push(vm, OBJ_VAL(c)); // Guard GC
+
     for (int i = 0; i < f->upvalueCount; i++) {
         uint8_t isLocal = READ_BYTE();
         uint8_t index = READ_BYTE();
-        c->upvalues[i] = isLocal ? captureUpvalue(vm, frame->slots + index)
-            : frame->closure->upvalues[index];
+        RuntimeUpvalue* dest = &c->upvalues[i];
+
+        if (isLocal) {
+            // Case 1: Capture local from CURRENT frame
+            dest->isOpen = true;
+            dest->loc.stack = frame->slots + index;
+
+            // Add to current frame's tracking list so we can close it later
+            dest->next = frame->openUpvalues;
+            frame->openUpvalues = dest;
+        } else {
+            // Case 2: Capture from PARENT closure
+            RuntimeUpvalue* parentUV = &frame->closure->upvalues[index];
+
+            // Copy state directly
+            dest->isOpen = parentUV->isOpen;
+            dest->loc = parentUV->loc;
+
+            if (parentUV->isOpen) {
+                // Link into the existing list via parent
+                dest->next = parentUV->next;
+                parentUV->next = dest;
+            } else {
+                dest->next = NULL;
+            }
+        }
     }
     DISPATCH();
 }
@@ -858,16 +916,37 @@ OPCODE(OP_CLOSURE_LONG) : {
     ObjFunction* f = AS_FUNCTION(READ_CONSTANT_LONG());
     ObjClosure* c = newClosure(vm, f);
     push(vm, OBJ_VAL(c));
+
     for (int i = 0; i < f->upvalueCount; i++) {
         uint8_t isLocal = READ_BYTE();
         uint8_t index = READ_BYTE();
-        c->upvalues[i] = isLocal ? captureUpvalue(vm, frame->slots + index)
-            : frame->closure->upvalues[index];
+        RuntimeUpvalue* dest = &c->upvalues[i];
+
+        if (isLocal) {
+            dest->isOpen = true;
+            dest->loc.stack = frame->slots + index;
+            dest->next = frame->openUpvalues;
+            frame->openUpvalues = dest;
+        } else {
+            RuntimeUpvalue* parentUV = &frame->closure->upvalues[index];
+            dest->isOpen = parentUV->isOpen;
+            dest->loc = parentUV->loc;
+            if (parentUV->isOpen) {
+                dest->next = parentUV->next;
+                parentUV->next = dest;
+            } else {
+                dest->next = NULL;
+            }
+        }
     }
     DISPATCH();
 }
 
-OPCODE(OP_CLOSE_UPVALUE) : closeUpvalues(vm, vm->stackTop - 1); pop(vm); DISPATCH();
+OPCODE(OP_CLOSE_UPVALUE) : {
+    closeUpvalues(vm, frame);
+    pop(vm);
+    DISPATCH();
+}
 
 OPCODE(OP_CLASS) : push(vm, OBJ_VAL(newClass(vm, READ_STRING()))); DISPATCH();
 OPCODE(OP_CLASS_LONG) : push(vm, OBJ_VAL(newClass(vm, READ_STRING_LONG()))); DISPATCH();
@@ -930,7 +1009,9 @@ OPCODE(OP_IMPORT) : {
     ObjFunction* f = compile(vm, m, src);
     free(src);
     if (!f) return INTERPRET_RUNTIME_ERROR;
+
     ObjClosure* c = newClosure(vm, f);
+
     push(vm, OBJ_VAL(c));
     if (!call(vm, c, 0)) return INTERPRET_RUNTIME_ERROR;
     vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
@@ -954,7 +1035,9 @@ OPCODE(OP_IMPORT_LONG) : {
     ObjFunction* f = compile(vm, m, src);
     free(src);
     if (!f) return INTERPRET_RUNTIME_ERROR;
+
     ObjClosure* c = newClosure(vm, f);
+
     push(vm, OBJ_VAL(c));
     if (!call(vm, c, 0)) return INTERPRET_RUNTIME_ERROR;
     vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
@@ -971,6 +1054,10 @@ OPCODE(OP_IMPORT_LONG) : {
 
 InterpretResult interpret(VM* vm, ObjModule* m, const char* src) {
     ObjFunction* f = compile(vm, m, src); if (f == NULL) return INTERPRET_COMPILE_ERROR;
-    push(vm, OBJ_VAL(f)); ObjClosure* c = newClosure(vm, f); pop(vm); push(vm, OBJ_VAL(c));
+    push(vm, OBJ_VAL(f));
+
+    ObjClosure* c = newClosure(vm, f);
+
+    pop(vm); push(vm, OBJ_VAL(c));
     call(vm, c, 0); return run(vm);
 }

@@ -152,9 +152,11 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_SET_GLOBAL: return byteInstruction("OP_SET_GLOBAL", chunk, offset);
     case OP_SET_GLOBAL_LONG: return shortInstruction("OP_SET_GLOBAL_LONG", chunk, offset);
     case OP_GET_UPVALUE: return byteInstruction("OP_GET_UPVALUE", chunk, offset);
+    case OP_GET_UPVALUE_OPEN:   return byteInstruction("OP_GET_UPVALUE_OPEN", chunk, offset);
+    case OP_GET_UPVALUE_CLOSED: return byteInstruction("OP_GET_UPVALUE_CLOSED", chunk, offset);
     case OP_SET_UPVALUE: return byteInstruction("OP_SET_UPVALUE", chunk, offset);
-    case OP_GET_UPVALUE_OPEN:   return byteInstruction("OP_GET_UPVALUE_OPEN (PATCHED)", chunk, offset);
-    case OP_GET_UPVALUE_CLOSED: return byteInstruction("OP_GET_UPVALUE_CLOSED (PATCHED)", chunk, offset);
+    case OP_SET_UPVALUE_OPEN: return byteInstruction("OP_SET_UPVALUE_OPEN", chunk, offset);
+    case OP_SET_UPVALUE_CLOSED: return byteInstruction("OP_SET_UPVALUE_CLOSED", chunk, offset);
     case OP_GET_PROPERTY: return constantInstruction("OP_GET_PROPERTY", chunk, offset);
     case OP_GET_PROPERTY_LONG: return constantLongInstruction("OP_GET_PROPERTY_LONG", chunk, offset);
     case OP_SET_PROPERTY: return constantInstruction("OP_SET_PROPERTY", chunk, offset);
