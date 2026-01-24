@@ -58,10 +58,13 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
         break;
     }
     case OBJ_CLOSURE: {
-        ObjClosure* c = (ObjClosure*) object;
-        markObject(vm, (struct Obj*) c->function);
-        for (int i = 0; i < c->upvalueCount; i++) {
-            markObject(vm, (struct Obj*) c->upvalues[i]);
+        ObjClosure* closure = (ObjClosure*) object;
+        markObject(vm, (Obj*) closure->function);
+        for (int i = 0; i < closure->upvalueCount; i++) {
+            RuntimeUpvalue* uv = &closure->upvalues[i];
+            if (!uv->isOpen) {
+                markObject(vm, (Obj*) uv->loc.box);
+            }
         }
         break;
     }
@@ -112,9 +115,9 @@ static void freeObject(struct VM* vm, struct Obj* object) {
         break;
     }
     case OBJ_CLOSURE: {
-        ObjClosure* c = (ObjClosure*) object;
-        FREE_ARRAY(vm, ObjUpvalue*, c->upvalues, c->upvalueCount);
-        FREE(vm, ObjClosure, object);
+        ObjClosure* closure = (ObjClosure*) object;
+        size_t size = sizeof(ObjClosure) + sizeof(RuntimeUpvalue) * closure->upvalueCount;
+        reallocate(vm, object, size, 0);
         break;
     }
     case OBJ_FUNCTION: {
@@ -168,10 +171,6 @@ void collectGarbage(struct VM* vm) {
         markObject(vm, (struct Obj*) vm->frames[i].closure);
     }
 
-    for (int i = 0; i < vm->openUpvalueCount; i++) {
-        markObject(vm, (Obj*) vm->openUpvalues[i]);
-    }
-
     // Mark module registry
     markTable(vm, &vm->modules);
 
@@ -223,6 +222,5 @@ void freeObjects(struct VM* vm) {
         freeObject(vm, object);
         object = next;
     }
-    FREE_ARRAY(vm, ObjUpvalue*, vm->openUpvalues, vm->openUpvalueCapacity);
     free(vm->grayStack);
 }
