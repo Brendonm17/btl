@@ -63,7 +63,11 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
         for (int i = 0; i < closure->upvalueCount; i++) {
             RuntimeUpvalue* uv = &closure->upvalues[i];
             if (!uv->isOpen) {
-                markObject(vm, (Obj*) uv->loc.box);
+                if (uv->isMutable) {
+                    markObject(vm, (Obj*) uv->loc.box); // Trace Box
+                } else {
+                    markValue(vm, uv->loc.immValue);   // Trace Value directly
+                }
             }
         }
         break;

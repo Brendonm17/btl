@@ -154,9 +154,48 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_GET_UPVALUE: return byteInstruction("OP_GET_UPVALUE", chunk, offset);
     case OP_GET_UPVALUE_OPEN:   return byteInstruction("OP_GET_UPVALUE_OPEN", chunk, offset);
     case OP_GET_UPVALUE_CLOSED: return byteInstruction("OP_GET_UPVALUE_CLOSED", chunk, offset);
+    case OP_GET_UPVALUE_IMMUTABLE: return byteInstruction("OP_GET_UPVALUE_IMMUTABLE", chunk, offset);
     case OP_SET_UPVALUE: return byteInstruction("OP_SET_UPVALUE", chunk, offset);
     case OP_SET_UPVALUE_OPEN: return byteInstruction("OP_SET_UPVALUE_OPEN", chunk, offset);
     case OP_SET_UPVALUE_CLOSED: return byteInstruction("OP_SET_UPVALUE_CLOSED", chunk, offset);
+
+        // Numbered
+    case OP_GET_UPVALUE_0: return simpleInstruction("OP_GET_UPVALUE_0", offset);
+    case OP_GET_UPVALUE_OPEN_0: return simpleInstruction("OP_GET_UPVALUE_OPEN_0", offset);
+    case OP_GET_UPVALUE_CLOSED_0: return simpleInstruction("OP_GET_UPVALUE_CLOSED_0", offset);
+    case OP_GET_UPVALUE_IMMUTABLE_0: return simpleInstruction("OP_GET_UPVALUE_IMMUTABLE_0", offset);
+
+    case OP_SET_UPVALUE_0: return simpleInstruction("OP_SET_UPVALUE_0", offset);
+    case OP_SET_UPVALUE_OPEN_0: return simpleInstruction("OP_SET_UPVALUE_OPEN_0", offset);
+    case OP_SET_UPVALUE_CLOSED_0: return simpleInstruction("OP_SET_UPVALUE_CLOSED_0", offset);
+
+    case OP_GET_UPVALUE_1: return simpleInstruction("OP_GET_UPVALUE_1", offset);
+    case OP_GET_UPVALUE_OPEN_1: return simpleInstruction("OP_GET_UPVALUE_OPEN_1", offset);
+    case OP_GET_UPVALUE_CLOSED_1: return simpleInstruction("OP_GET_UPVALUE_CLOSED_1", offset);
+    case OP_GET_UPVALUE_IMMUTABLE_1: return simpleInstruction("OP_GET_UPVALUE_IMMUTABLE_1", offset);
+
+    case OP_SET_UPVALUE_1: return simpleInstruction("OP_SET_UPVALUE_1", offset);
+    case OP_SET_UPVALUE_OPEN_1: return simpleInstruction("OP_SET_UPVALUE_OPEN_1", offset);
+    case OP_SET_UPVALUE_CLOSED_1: return simpleInstruction("OP_SET_UPVALUE_CLOSED_1", offset);
+
+    case OP_GET_UPVALUE_2: return simpleInstruction("OP_GET_UPVALUE_2", offset);
+    case OP_GET_UPVALUE_OPEN_2: return simpleInstruction("OP_GET_UPVALUE_OPEN_2", offset);
+    case OP_GET_UPVALUE_CLOSED_2: return simpleInstruction("OP_GET_UPVALUE_CLOSED_2", offset);
+    case OP_GET_UPVALUE_IMMUTABLE_2: return simpleInstruction("OP_GET_UPVALUE_IMMUTABLE_2", offset);
+
+    case OP_SET_UPVALUE_2: return simpleInstruction("OP_SET_UPVALUE_2", offset);
+    case OP_SET_UPVALUE_OPEN_2: return simpleInstruction("OP_SET_UPVALUE_OPEN_2", offset);
+    case OP_SET_UPVALUE_CLOSED_2: return simpleInstruction("OP_SET_UPVALUE_CLOSED_2", offset);
+
+    case OP_GET_UPVALUE_3: return simpleInstruction("OP_GET_UPVALUE_3", offset);
+    case OP_GET_UPVALUE_OPEN_3: return simpleInstruction("OP_GET_UPVALUE_OPEN_3", offset);
+    case OP_GET_UPVALUE_CLOSED_3: return simpleInstruction("OP_GET_UPVALUE_CLOSED_3", offset);
+    case OP_GET_UPVALUE_IMMUTABLE_3: return simpleInstruction("OP_GET_UPVALUE_IMMUTABLE_3", offset);
+
+    case OP_SET_UPVALUE_3: return simpleInstruction("OP_SET_UPVALUE_3", offset);
+    case OP_SET_UPVALUE_OPEN_3: return simpleInstruction("OP_SET_UPVALUE_OPEN_3", offset);
+    case OP_SET_UPVALUE_CLOSED_3: return simpleInstruction("OP_SET_UPVALUE_CLOSED_3", offset);
+
     case OP_GET_PROPERTY: return constantInstruction("OP_GET_PROPERTY", chunk, offset);
     case OP_GET_PROPERTY_LONG: return constantLongInstruction("OP_GET_PROPERTY_LONG", chunk, offset);
     case OP_SET_PROPERTY: return constantInstruction("OP_SET_PROPERTY", chunk, offset);
@@ -242,37 +281,41 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_TAIL_SUPER_INVOKE: return invokeInstruction("OP_TAIL_SUPER_INVOKE", chunk, offset);
     case OP_TAIL_SUPER_INVOKE_LONG: return invokeLongInstruction("OP_TAIL_SUPER_INVOKE_LONG", chunk, offset);
     case OP_CLOSURE: {
-        offset++;
-        uint8_t constant = chunk->code[offset++];
+        uint8_t constant = chunk->code[offset + 1];
+        // Use STDERR here to prevent polluting test output
         fprintf(stderr, "%-16s %4d ", "OP_CLOSURE", constant);
         printValueStderr(chunk->constants.values[constant]);
         fprintf(stderr, "\n");
 
         ObjFunction* function = AS_FUNCTION(chunk->constants.values[constant]);
-        for (int j = 0; j < function->upvalueCount; j++) {
-            int isLocal = chunk->code[offset++];
-            int index = chunk->code[offset++];
-            fprintf(stderr, "%04d      |                     %s %d\n",
-                offset - 2, isLocal ? "local" : "upvalue", index);
+        int newOffset = offset + 2;
+        for (int i = 0; i < function->upvalueCount; i++) {
+            uint8_t isLocal = chunk->code[newOffset++];
+            uint8_t index = chunk->code[newOffset++];
+            uint8_t isMut = chunk->code[newOffset++];
+            fprintf(stderr, "%04d      |                     %s %d (%s)\n",
+                newOffset - 3, isLocal ? "local" : "upvalue", index,
+                isMut ? "mutable" : "immutable");
         }
-        return offset;
+        return newOffset;
     }
     case OP_CLOSURE_LONG: {
-        offset++;
         uint16_t constant = (uint16_t) (chunk->code[offset] | (chunk->code[offset + 1] << 8));
-        offset += 2;
         fprintf(stderr, "%-16s %4d ", "OP_CLOSURE_LONG", constant);
         printValueStderr(chunk->constants.values[constant]);
         fprintf(stderr, "\n");
 
         ObjFunction* function = AS_FUNCTION(chunk->constants.values[constant]);
-        for (int j = 0; j < function->upvalueCount; j++) {
-            int isLocal = chunk->code[offset++];
-            int index = chunk->code[offset++];
-            fprintf(stderr, "%04d      |                     %s %d\n",
-                offset - 2, isLocal ? "local" : "upvalue", index);
+        int newOffset = offset + 2;
+        for (int i = 0; i < function->upvalueCount; i++) {
+            uint8_t isLocal = chunk->code[newOffset++];
+            uint8_t index = chunk->code[newOffset++];
+            uint8_t isMut = chunk->code[newOffset++];
+            fprintf(stderr, "%04d      |                     %s %d (%s)\n",
+                newOffset - 3, isLocal ? "local" : "upvalue", index,
+                isMut ? "mutable" : "immutable");
         }
-        return offset;
+        return newOffset;
     }
     case OP_CLOSE_UPVALUE: return simpleInstruction("OP_CLOSE_UPVALUE", offset);
     case OP_RETURN: return simpleInstruction("OP_RETURN", offset);
