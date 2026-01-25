@@ -62,9 +62,11 @@ struct ObjUpvalue {
 // Lives inside ObjClosure. Renamed to avoid compiler.h conflict.
 struct RuntimeUpvalue {
     bool isOpen;
+    bool isMutable;
     union {
         Value* stack;       // Open
-        ObjUpvalue* box;    // Closed
+        ObjUpvalue* box;    // Closed (Mutable)
+        Value immValue;     // Closed (Immutable)
     } loc;
     struct RuntimeUpvalue* next;
 };
