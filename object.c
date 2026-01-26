@@ -105,21 +105,22 @@ ObjUpvalue* newUpvalueBox(VM* vm, Value value) {
 
 void printObject(Value value) {
     switch (OBJ_TYPE(value)) {
-    case OBJ_BOUND_METHOD: printf("<fn %s>", AS_BOUND_METHOD(value)->method->function->name->chars); break;
-    case OBJ_CLASS: printf("%s", AS_CLASS(value)->name->chars); break;
-    case OBJ_CLOSURE: printf("<fn %s>", AS_CLOSURE(value)->function->name->chars); break;
-    case OBJ_FUNCTION: printf("<fn %s>", AS_FUNCTION(value)->name->chars); break;
-    case OBJ_INSTANCE: printf("%s instance", AS_INSTANCE(value)->klass->name->chars); break;
+    case OBJ_BOUND_METHOD: printf("<func %s>", AS_BOUND_METHOD(value)->method->function->name->chars); break;
+    case OBJ_CLASS: printf("<class %s>", AS_CLASS(value)->name->chars); break;
+    case OBJ_CLOSURE: printf("<func %s>", AS_CLOSURE(value)->function->name->chars); break;
+    case OBJ_FUNCTION: printf("<func %s>", AS_FUNCTION(value)->name->chars); break;
+    case OBJ_INSTANCE: printf("<%s instance>", AS_INSTANCE(value)->klass->name->chars); break;
     case OBJ_LIST: {
-        ObjList* list = AS_LIST(value); printf("[");
+        ObjList* list = AS_LIST(value); printf("<list>[");
         for (int i = 0; i < list->items.count; i++) {
             printValue(list->items.values[i]); if (i < list->items.count - 1) printf(", ");
         }
         printf("]"); break;
     }
     case OBJ_MODULE: printf("<module %s>", AS_MODULE(value)->name->chars); break;
-    case OBJ_NATIVE: printf("<native fn>"); break;
+    case OBJ_NATIVE: printf("<native func>"); break;
     case OBJ_STRING: printf("%s", AS_CSTRING(value)); break;
-    case OBJ_UPVALUE: printf("upvalue"); break;
+    case OBJ_UPVALUE: printf("<upvalue>"); break;
+    default: printf("<obj>"); break;
     }
 }
