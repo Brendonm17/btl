@@ -7,9 +7,8 @@
 #include "value.h"
 
 // --- Forward Declarations ---
-// Necessary to allow structs to reference each other
-typedef struct ObjUpvalue ObjUpvalue;       // The "Box"
-typedef struct RuntimeUpvalue RuntimeUpvalue; // The "Inline" struct
+typedef struct ObjUpvalue ObjUpvalue;
+typedef struct RuntimeUpvalue RuntimeUpvalue;
 typedef struct ObjClosure ObjClosure;
 typedef struct ObjModule ObjModule;
 
@@ -49,17 +48,12 @@ struct Obj {
     struct Obj* next;
 };
 
-// --- Upvalue System ---
-
-// 1. The Box (Heap Object)
-// Stores the value when closed.
 struct ObjUpvalue {
     Obj obj;
     Value closed;
 };
 
-// 2. The Inline Struct (RuntimeUpvalue)
-// Lives inside ObjClosure. Renamed to avoid compiler.h conflict.
+
 struct RuntimeUpvalue {
     bool isOpen;
     bool isMutable;
@@ -71,15 +65,12 @@ struct RuntimeUpvalue {
     struct RuntimeUpvalue* next;
 };
 
-// 3. The Closure
 typedef struct ObjClosure {
     Obj obj;
     struct ObjFunction* function;
     int upvalueCount;
-    RuntimeUpvalue upvalues []; // Flexible Array Member
+    RuntimeUpvalue upvalues [];
 } ObjClosure;
-
-// --- Other Objects (Restored) ---
 
 typedef struct ObjString {
     Obj obj;
@@ -148,7 +139,6 @@ ObjString* takeString(struct VM* vm, char* chars, int length);
 ObjString* copyString(struct VM* vm, const char* chars, int length);
 
 void printObject(Value value);
-void printObjectStderr(Value value);
 
 static inline bool isObjType(Value v, ObjType t) {
     return IS_OBJ(v) && AS_OBJ(v)->type == t;

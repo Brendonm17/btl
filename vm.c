@@ -381,8 +381,16 @@ static InterpretResult run(VM* vm) {
 
 #ifdef HAS_COMPUTED_GOTOS
     static void* dispatchTable [] = {
-        && L_OP_CONSTANT,&& L_OP_CONSTANT_LONG,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_POP,&& L_OP_POP_N,
-        && L_OP_GET_LOCAL,&& L_OP_SET_LOCAL,&& L_OP_GET_GLOBAL,&& L_OP_GET_GLOBAL_LONG,
+        && L_OP_CONSTANT,&& L_OP_CONSTANT_LONG,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_0,&& L_OP_1,&& L_OP_2,
+        && L_OP_POP,&& L_OP_POP_N,
+        && L_OP_GET_LOCAL,&& L_OP_GET_LOCAL_0,&& L_OP_GET_LOCAL_1,&& L_OP_GET_LOCAL_2,&& L_OP_GET_LOCAL_3,
+        && L_OP_GET_LOCAL_4,&& L_OP_GET_LOCAL_5,&& L_OP_GET_LOCAL_6,&& L_OP_GET_LOCAL_7,
+        && L_OP_SET_LOCAL,&& L_OP_SET_LOCAL_0,&& L_OP_SET_LOCAL_1,&& L_OP_SET_LOCAL_2,&& L_OP_SET_LOCAL_3,
+        && L_OP_SET_LOCAL_4,&& L_OP_SET_LOCAL_5,&& L_OP_SET_LOCAL_6,&& L_OP_SET_LOCAL_7,
+        && L_OP_SET_LOCAL_0_POP,&& L_OP_SET_LOCAL_1_POP,&& L_OP_SET_LOCAL_2_POP,&& L_OP_SET_LOCAL_3_POP,
+        && L_OP_SET_LOCAL_4_POP,&& L_OP_SET_LOCAL_5_POP,&& L_OP_SET_LOCAL_6_POP,&& L_OP_SET_LOCAL_7_POP,
+        && L_OP_INC_LOCAL_POP,&& L_OP_INC_LOCAL,
+        && L_OP_GET_GLOBAL,&& L_OP_GET_GLOBAL_LONG,
         && L_OP_DEFINE_GLOBAL,&& L_OP_DEFINE_GLOBAL_LONG,&& L_OP_SET_GLOBAL,&& L_OP_SET_GLOBAL_LONG,
         && L_OP_GET_UPVALUE,&& L_OP_GET_UPVALUE_OPEN,&& L_OP_GET_UPVALUE_CLOSED,&& L_OP_GET_UPVALUE_IMMUTABLE,
         && L_OP_SET_UPVALUE,&& L_OP_SET_UPVALUE_OPEN,&& L_OP_SET_UPVALUE_CLOSED,
@@ -400,7 +408,9 @@ static InterpretResult run(VM* vm) {
         && L_OP_ADD,&& L_OP_SUBTRACT,&& L_OP_MULTIPLY,&& L_OP_DIVIDE,&& L_OP_MODULO,
         && L_OP_NOT,&& L_OP_NEGATE,
         && L_OP_PRINT,
-        && L_OP_JUMP,&& L_OP_JUMP_IF_FALSE,&& L_OP_LOOP,
+        && L_OP_JUMP,&& L_OP_JUMP_IF_FALSE,&& L_OP_POP_JUMP_IF_FALSE,&& L_OP_JUMP_IF_TRUE,&& L_OP_POP_JUMP_IF_TRUE,
+        && L_OP_JUMP_IF_NOT_EQUAL,&& L_OP_JUMP_IF_EQUAL,&& L_OP_JUMP_IF_NOT_GREATER,&& L_OP_JUMP_IF_NOT_LESS,
+        && L_OP_LOOP,
         && L_OP_CALL_0,&& L_OP_CALL_1,&& L_OP_CALL_2,&& L_OP_CALL_3,&& L_OP_CALL_4,
         && L_OP_CALL_5,&& L_OP_CALL_6,&& L_OP_CALL_7,&& L_OP_CALL_8,&& L_OP_CALL,
         && L_OP_TAIL_CALL_0,&& L_OP_TAIL_CALL_1,&& L_OP_TAIL_CALL_2,&& L_OP_TAIL_CALL_3,&& L_OP_TAIL_CALL_4,
@@ -435,11 +445,60 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_NIL) : push(vm, NIL_VAL); DISPATCH();
             OPCODE(OP_TRUE) : push(vm, BOOL_VAL(true)); DISPATCH();
             OPCODE(OP_FALSE) : push(vm, BOOL_VAL(false)); DISPATCH();
+            OPCODE(OP_0) : push(vm, NUMBER_VAL(0.0)); DISPATCH();
+            OPCODE(OP_1) : push(vm, NUMBER_VAL(1.0)); DISPATCH();
+            OPCODE(OP_2) : push(vm, NUMBER_VAL(2.0)); DISPATCH();
             OPCODE(OP_POP) : pop(vm); DISPATCH();
             OPCODE(OP_POP_N) : vm->stackTop -= READ_BYTE(); DISPATCH();
             OPCODE(OP_GET_LOCAL) : push(vm, frame->slots[READ_BYTE()]); DISPATCH();
+            OPCODE(OP_GET_LOCAL_0) : push(vm, frame->slots[0]); DISPATCH();
+            OPCODE(OP_GET_LOCAL_1) : push(vm, frame->slots[1]); DISPATCH();
+            OPCODE(OP_GET_LOCAL_2) : push(vm, frame->slots[2]); DISPATCH();
+            OPCODE(OP_GET_LOCAL_3) : push(vm, frame->slots[3]); DISPATCH();
+            OPCODE(OP_GET_LOCAL_4) : push(vm, frame->slots[4]); DISPATCH();
+            OPCODE(OP_GET_LOCAL_5) : push(vm, frame->slots[5]); DISPATCH();
+            OPCODE(OP_GET_LOCAL_6) : push(vm, frame->slots[6]); DISPATCH();
+            OPCODE(OP_GET_LOCAL_7) : push(vm, frame->slots[7]); DISPATCH();
             OPCODE(OP_SET_LOCAL) : frame->slots[READ_BYTE()] = peek(vm, 0); DISPATCH();
-
+            OPCODE(OP_SET_LOCAL_0) : frame->slots[0] = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_LOCAL_1) : frame->slots[1] = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_LOCAL_2) : frame->slots[2] = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_LOCAL_3) : frame->slots[3] = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_LOCAL_4) : frame->slots[4] = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_LOCAL_5) : frame->slots[5] = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_LOCAL_6) : frame->slots[6] = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_LOCAL_7) : frame->slots[7] = peek(vm, 0); DISPATCH();
+            OPCODE(OP_SET_LOCAL_0_POP) : frame->slots[0] = pop(vm); DISPATCH();
+            OPCODE(OP_SET_LOCAL_1_POP) : frame->slots[1] = pop(vm); DISPATCH();
+            OPCODE(OP_SET_LOCAL_2_POP) : frame->slots[2] = pop(vm); DISPATCH();
+            OPCODE(OP_SET_LOCAL_3_POP) : frame->slots[3] = pop(vm); DISPATCH();
+            OPCODE(OP_SET_LOCAL_4_POP) : frame->slots[4] = pop(vm); DISPATCH();
+            OPCODE(OP_SET_LOCAL_5_POP) : frame->slots[5] = pop(vm); DISPATCH();
+            OPCODE(OP_SET_LOCAL_6_POP) : frame->slots[6] = pop(vm); DISPATCH();
+            OPCODE(OP_SET_LOCAL_7_POP) : frame->slots[7] = pop(vm); DISPATCH();
+            OPCODE(OP_INC_LOCAL_POP) : {
+                uint8_t slot = READ_BYTE();
+                Value val = frame->slots[slot];
+                if (!IS_NUMBER(val)) {
+                    STORE_FRAME(); runtimeError(vm, "Can only increment numbers."); return INTERPRET_RUNTIME_ERROR;
+                }
+                double num = AS_NUMBER(val);
+                num += 1.0;
+                frame->slots[slot] = NUMBER_VAL(num);
+                DISPATCH();
+            }
+            OPCODE(OP_INC_LOCAL) : {
+                uint8_t slot = READ_BYTE();
+                Value val = frame->slots[slot];
+                if (!IS_NUMBER(val)) {
+                    STORE_FRAME(); runtimeError(vm, "Can only increment numbers."); return INTERPRET_RUNTIME_ERROR;
+                }
+                double num = AS_NUMBER(val);
+                num += 1.0;
+                frame->slots[slot] = NUMBER_VAL(num);
+                push(vm, NUMBER_VAL(num));
+                DISPATCH();
+            }
             OPCODE(OP_GET_GLOBAL) : {
                 uint8_t index = READ_BYTE();
                 Value val = frame->closure->function->module->globalValues.values[index];
@@ -729,6 +788,45 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_PRINT) : { printValue(pop(vm)); printf("\n"); DISPATCH(); }
             OPCODE(OP_JUMP) : { uint16_t offset = READ_SHORT(); ip += offset; DISPATCH(); }
             OPCODE(OP_JUMP_IF_FALSE) : { uint16_t offset = READ_SHORT(); if (isFalsey(peek(vm, 0))) ip += offset; DISPATCH(); }
+            OPCODE(OP_POP_JUMP_IF_FALSE) : { uint16_t offset = READ_SHORT(); if (isFalsey(pop(vm))) ip += offset; DISPATCH(); }
+            OPCODE(OP_JUMP_IF_TRUE) : { uint16_t offset = READ_SHORT(); if (!isFalsey(peek(vm, 0))) ip += offset; DISPATCH(); }
+            OPCODE(OP_POP_JUMP_IF_TRUE) : { uint16_t offset = READ_SHORT(); if (!isFalsey(pop(vm))) ip += offset; DISPATCH(); }
+            OPCODE(OP_JUMP_IF_NOT_EQUAL) : {
+                uint16_t offset = READ_SHORT();
+                Value b = pop(vm);
+                Value a = pop(vm);
+                if (!valuesEqual(a, b)) ip += offset;
+                DISPATCH();
+            }
+            OPCODE(OP_JUMP_IF_EQUAL) : {
+                uint16_t offset = READ_SHORT();
+                Value b = pop(vm);
+                Value a = pop(vm);
+                if (valuesEqual(a, b)) ip += offset;
+                DISPATCH();
+            }
+            OPCODE(OP_JUMP_IF_NOT_GREATER) : {
+                uint16_t offset = READ_SHORT();
+                if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) {
+                    runtimeError(vm, "Operands must be numbers.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                double b = AS_NUMBER(pop(vm));
+                double a = AS_NUMBER(pop(vm));
+                if (!(a > b)) ip += offset;
+                DISPATCH();
+            }
+            OPCODE(OP_JUMP_IF_NOT_LESS) : {
+                uint16_t offset = READ_SHORT();
+                if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) {
+                    runtimeError(vm, "Operands must be numbers.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                double b = AS_NUMBER(pop(vm));
+                double a = AS_NUMBER(pop(vm));
+                if (!(a < b)) ip += offset;
+                DISPATCH();
+            }
             OPCODE(OP_LOOP) : { uint16_t offset = READ_SHORT(); ip -= offset; DISPATCH(); }
             OPCODE(OP_RETURN) : {
                 Value result = pop(vm);

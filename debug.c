@@ -10,7 +10,7 @@ static void printValueStderr(Value value) {
     if (IS_BOOL(value)) {
         fprintf(stderr, AS_BOOL(value) ? "true" : "false");
     } else if (IS_NIL(value)) {
-        fprintf(stderr, "nil");
+        fprintf(stderr, "null");
     } else if (IS_NUMBER(value)) {
         fprintf(stderr, "%g", AS_NUMBER(value));
     } else if (IS_OBJ(value)) {
@@ -141,10 +141,39 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_NIL: return simpleInstruction("OP_NIL", offset);
     case OP_TRUE: return simpleInstruction("OP_TRUE", offset);
     case OP_FALSE: return simpleInstruction("OP_FALSE", offset);
+    case OP_0: return simpleInstruction("OP_0", offset);
+    case OP_1: return simpleInstruction("OP_1", offset);
+    case OP_2: return simpleInstruction("OP_2", offset);
     case OP_POP: return simpleInstruction("OP_POP", offset);
     case OP_POP_N: return byteInstruction("OP_POP_N", chunk, offset);
     case OP_GET_LOCAL: return byteInstruction("OP_GET_LOCAL", chunk, offset);
+    case OP_GET_LOCAL_0: return simpleInstruction("OP_GET_LOCAL_0", offset);
+    case OP_GET_LOCAL_1: return simpleInstruction("OP_GET_LOCAL_1", offset);
+    case OP_GET_LOCAL_2: return simpleInstruction("OP_GET_LOCAL_2", offset);
+    case OP_GET_LOCAL_3: return simpleInstruction("OP_GET_LOCAL_3", offset);
+    case OP_GET_LOCAL_4: return simpleInstruction("OP_GET_LOCAL_4", offset);
+    case OP_GET_LOCAL_5: return simpleInstruction("OP_GET_LOCAL_5", offset);
+    case OP_GET_LOCAL_6: return simpleInstruction("OP_GET_LOCAL_6", offset);
+    case OP_GET_LOCAL_7: return simpleInstruction("OP_GET_LOCAL_7", offset);
     case OP_SET_LOCAL: return byteInstruction("OP_SET_LOCAL", chunk, offset);
+    case OP_SET_LOCAL_0: return simpleInstruction("OP_SET_LOCAL_0", offset);
+    case OP_SET_LOCAL_1: return simpleInstruction("OP_SET_LOCAL_1", offset);
+    case OP_SET_LOCAL_2: return simpleInstruction("OP_SET_LOCAL_2", offset);
+    case OP_SET_LOCAL_3: return simpleInstruction("OP_SET_LOCAL_3", offset);
+    case OP_SET_LOCAL_4: return simpleInstruction("OP_SET_LOCAL_4", offset);
+    case OP_SET_LOCAL_5: return simpleInstruction("OP_SET_LOCAL_5", offset);
+    case OP_SET_LOCAL_6: return simpleInstruction("OP_SET_LOCAL_6", offset);
+    case OP_SET_LOCAL_7: return simpleInstruction("OP_SET_LOCAL_7", offset);
+    case OP_SET_LOCAL_0_POP: return simpleInstruction("OP_SET_LOCAL_0_POP", offset);
+    case OP_SET_LOCAL_1_POP: return simpleInstruction("OP_SET_LOCAL_1_POP", offset);
+    case OP_SET_LOCAL_2_POP: return simpleInstruction("OP_SET_LOCAL_2_POP", offset);
+    case OP_SET_LOCAL_3_POP: return simpleInstruction("OP_SET_LOCAL_3_POP", offset);
+    case OP_SET_LOCAL_4_POP: return simpleInstruction("OP_SET_LOCAL_4_POP", offset);
+    case OP_SET_LOCAL_5_POP: return simpleInstruction("OP_SET_LOCAL_5_POP", offset);
+    case OP_SET_LOCAL_6_POP: return simpleInstruction("OP_SET_LOCAL_6_POP", offset);
+    case OP_SET_LOCAL_7_POP: return simpleInstruction("OP_SET_LOCAL_7_POP", offset);
+    case OP_INC_LOCAL_POP: return byteInstruction("OP_INC_LOCAL_POP", chunk, offset);
+    case OP_INC_LOCAL: return byteInstruction("OP_INC_LOCAL", chunk, offset);
     case OP_GET_GLOBAL: return byteInstruction("OP_GET_GLOBAL", chunk, offset);
     case OP_GET_GLOBAL_LONG: return shortInstruction("OP_GET_GLOBAL_LONG", chunk, offset);
     case OP_DEFINE_GLOBAL: return byteInstruction("OP_DEFINE_GLOBAL", chunk, offset);
@@ -158,44 +187,34 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_SET_UPVALUE: return byteInstruction("OP_SET_UPVALUE", chunk, offset);
     case OP_SET_UPVALUE_OPEN: return byteInstruction("OP_SET_UPVALUE_OPEN", chunk, offset);
     case OP_SET_UPVALUE_CLOSED: return byteInstruction("OP_SET_UPVALUE_CLOSED", chunk, offset);
-
-        // Numbered
     case OP_GET_UPVALUE_0: return simpleInstruction("OP_GET_UPVALUE_0", offset);
     case OP_GET_UPVALUE_OPEN_0: return simpleInstruction("OP_GET_UPVALUE_OPEN_0", offset);
     case OP_GET_UPVALUE_CLOSED_0: return simpleInstruction("OP_GET_UPVALUE_CLOSED_0", offset);
     case OP_GET_UPVALUE_IMMUTABLE_0: return simpleInstruction("OP_GET_UPVALUE_IMMUTABLE_0", offset);
-
     case OP_SET_UPVALUE_0: return simpleInstruction("OP_SET_UPVALUE_0", offset);
     case OP_SET_UPVALUE_OPEN_0: return simpleInstruction("OP_SET_UPVALUE_OPEN_0", offset);
     case OP_SET_UPVALUE_CLOSED_0: return simpleInstruction("OP_SET_UPVALUE_CLOSED_0", offset);
-
     case OP_GET_UPVALUE_1: return simpleInstruction("OP_GET_UPVALUE_1", offset);
     case OP_GET_UPVALUE_OPEN_1: return simpleInstruction("OP_GET_UPVALUE_OPEN_1", offset);
     case OP_GET_UPVALUE_CLOSED_1: return simpleInstruction("OP_GET_UPVALUE_CLOSED_1", offset);
     case OP_GET_UPVALUE_IMMUTABLE_1: return simpleInstruction("OP_GET_UPVALUE_IMMUTABLE_1", offset);
-
     case OP_SET_UPVALUE_1: return simpleInstruction("OP_SET_UPVALUE_1", offset);
     case OP_SET_UPVALUE_OPEN_1: return simpleInstruction("OP_SET_UPVALUE_OPEN_1", offset);
     case OP_SET_UPVALUE_CLOSED_1: return simpleInstruction("OP_SET_UPVALUE_CLOSED_1", offset);
-
     case OP_GET_UPVALUE_2: return simpleInstruction("OP_GET_UPVALUE_2", offset);
     case OP_GET_UPVALUE_OPEN_2: return simpleInstruction("OP_GET_UPVALUE_OPEN_2", offset);
     case OP_GET_UPVALUE_CLOSED_2: return simpleInstruction("OP_GET_UPVALUE_CLOSED_2", offset);
     case OP_GET_UPVALUE_IMMUTABLE_2: return simpleInstruction("OP_GET_UPVALUE_IMMUTABLE_2", offset);
-
     case OP_SET_UPVALUE_2: return simpleInstruction("OP_SET_UPVALUE_2", offset);
     case OP_SET_UPVALUE_OPEN_2: return simpleInstruction("OP_SET_UPVALUE_OPEN_2", offset);
     case OP_SET_UPVALUE_CLOSED_2: return simpleInstruction("OP_SET_UPVALUE_CLOSED_2", offset);
-
     case OP_GET_UPVALUE_3: return simpleInstruction("OP_GET_UPVALUE_3", offset);
     case OP_GET_UPVALUE_OPEN_3: return simpleInstruction("OP_GET_UPVALUE_OPEN_3", offset);
     case OP_GET_UPVALUE_CLOSED_3: return simpleInstruction("OP_GET_UPVALUE_CLOSED_3", offset);
     case OP_GET_UPVALUE_IMMUTABLE_3: return simpleInstruction("OP_GET_UPVALUE_IMMUTABLE_3", offset);
-
     case OP_SET_UPVALUE_3: return simpleInstruction("OP_SET_UPVALUE_3", offset);
     case OP_SET_UPVALUE_OPEN_3: return simpleInstruction("OP_SET_UPVALUE_OPEN_3", offset);
     case OP_SET_UPVALUE_CLOSED_3: return simpleInstruction("OP_SET_UPVALUE_CLOSED_3", offset);
-
     case OP_GET_PROPERTY: return constantInstruction("OP_GET_PROPERTY", chunk, offset);
     case OP_GET_PROPERTY_LONG: return constantLongInstruction("OP_GET_PROPERTY_LONG", chunk, offset);
     case OP_SET_PROPERTY: return constantInstruction("OP_SET_PROPERTY", chunk, offset);
@@ -215,6 +234,13 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_PRINT: return simpleInstruction("OP_PRINT", offset);
     case OP_JUMP: return jumpInstruction("OP_JUMP", 1, chunk, offset);
     case OP_JUMP_IF_FALSE: return jumpInstruction("OP_JUMP_IF_FALSE", 1, chunk, offset);
+    case OP_POP_JUMP_IF_FALSE: return jumpInstruction("OP_POP_JUMP_IF_FALSE", 1, chunk, offset);
+    case OP_JUMP_IF_TRUE: return jumpInstruction("OP_JUMP_IF_TRUE", 1, chunk, offset);
+    case OP_POP_JUMP_IF_TRUE: return jumpInstruction("OP_POP_JUMP_IF_TRUE", 1, chunk, offset);
+    case OP_JUMP_IF_NOT_EQUAL: return jumpInstruction("OP_JUMP_IF_NOT_EQUAL", 1, chunk, offset);
+    case OP_JUMP_IF_EQUAL: return jumpInstruction("OP_JUMP_IF_EQUAL", 1, chunk, offset);
+    case OP_JUMP_IF_NOT_GREATER: return jumpInstruction("OP_JUMP_IF_NOT_GREATER", 1, chunk, offset);
+    case OP_JUMP_IF_NOT_LESS: return jumpInstruction("OP_JUMP_IF_NOT_LESS", 1, chunk, offset);
     case OP_LOOP: return jumpInstruction("OP_LOOP", -1, chunk, offset);
     case OP_CALL_0: return simpleInstruction("OP_CALL_0", offset);
     case OP_CALL_1: return simpleInstruction("OP_CALL_1", offset);
@@ -282,11 +308,9 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_TAIL_SUPER_INVOKE_LONG: return invokeLongInstruction("OP_TAIL_SUPER_INVOKE_LONG", chunk, offset);
     case OP_CLOSURE: {
         uint8_t constant = chunk->code[offset + 1];
-        // Use STDERR here to prevent polluting test output
         fprintf(stderr, "%-16s %4d ", "OP_CLOSURE", constant);
         printValueStderr(chunk->constants.values[constant]);
         fprintf(stderr, "\n");
-
         ObjFunction* function = AS_FUNCTION(chunk->constants.values[constant]);
         int newOffset = offset + 2;
         for (int i = 0; i < function->upvalueCount; i++) {
@@ -304,7 +328,6 @@ int disassembleInstruction(Chunk* chunk, int offset) {
         fprintf(stderr, "%-16s %4d ", "OP_CLOSURE_LONG", constant);
         printValueStderr(chunk->constants.values[constant]);
         fprintf(stderr, "\n");
-
         ObjFunction* function = AS_FUNCTION(chunk->constants.values[constant]);
         int newOffset = offset + 2;
         for (int i = 0; i < function->upvalueCount; i++) {
