@@ -202,30 +202,35 @@ static bool invokeFromClass(VM* vm, ObjClass* klass, struct ObjString* name, int
     return call(vm, AS_CLOSURE(method), argCount);
 }
 
-// FIX: Added Module support and name demangling
 static bool invoke(VM* vm, struct ObjString* name, int argCount) {
     Value receiver = peek(vm, argCount);
 
     if (IS_INSTANCE(receiver)) {
         ObjInstance* instance = AS_INSTANCE(receiver);
-        Value value;
-        if (tableGet(&instance->fields, OBJ_VAL(name), &value)) {
+        Value indexValue;
+
+        // TIER 2: Check if it's a field (that might contain a closure)
+        if (tableGet(&instance->klass->fieldIndices, OBJ_VAL(name), &indexValue)) {
+            Value value = instance->fields[(int) AS_NUMBER(indexValue)];
             vm->stackTop[-argCount - 1] = value;
             return callValue(vm, value, argCount);
         }
+
+        // Normal method lookup
         return invokeFromClass(vm, instance->klass, name, argCount);
+
     } else if (IS_MODULE(receiver)) {
         ObjModule* module = AS_MODULE(receiver);
         Value indexValue;
 
-        // 1. Try exact (mangled) name
+        // 1. Try exact name
         if (tableGet(&module->globalNames, OBJ_VAL(name), &indexValue)) {
             Value value = module->globalValues.values[(int) AS_NUMBER(indexValue)];
             vm->stackTop[-argCount - 1] = value;
             return callValue(vm, value, argCount);
         }
 
-        // 2. Try demangled (raw) name
+        // 2. Try demangled name
         if (name->length > 0) {
             ObjString* rawName = copyString(vm, name->chars, name->length - 1);
             if (tableGet(&module->globalNames, OBJ_VAL(rawName), &indexValue)) {
@@ -402,6 +407,7 @@ static InterpretResult run(VM* vm) {
         && L_OP_SET_UPVALUE_2,&& L_OP_SET_UPVALUE_OPEN_2,&& L_OP_SET_UPVALUE_CLOSED_2,
         && L_OP_GET_UPVALUE_3,&& L_OP_GET_UPVALUE_OPEN_3,&& L_OP_GET_UPVALUE_CLOSED_3,&& L_OP_GET_UPVALUE_IMMUTABLE_3,
         && L_OP_SET_UPVALUE_3,&& L_OP_SET_UPVALUE_OPEN_3,&& L_OP_SET_UPVALUE_CLOSED_3,
+        && L_OP_FIELD,&& L_OP_GET_FIELD_THIS,&& L_OP_SET_FIELD_THIS,
         && L_OP_GET_PROPERTY,&& L_OP_GET_PROPERTY_LONG,
         && L_OP_SET_PROPERTY,&& L_OP_SET_PROPERTY_LONG,&& L_OP_GET_SUPER,&& L_OP_GET_SUPER_LONG,
         && L_OP_EQUAL,&& L_OP_GREATER,&& L_OP_LESS,
@@ -672,66 +678,225 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_SET_UPVALUE_3) : { DO_SET_UV_SLOT(3); DISPATCH(); }
             OPCODE(OP_SET_UPVALUE_OPEN_3) : { DO_SET_UV_SLOT_OPEN(3); DISPATCH(); }
             OPCODE(OP_SET_UPVALUE_CLOSED_3) : { frame->closure->upvalues[3].loc.box->closed = peek(vm, 0); DISPATCH(); }
+            OPCODE(OP_FIELD) : {
+                ObjString* name = READ_STRING();
+                ObjClass* klass = AS_CLASS(peek(vm, 0));
 
+                Value dummy;
+                // Only add and increment if the field isn't already there (e.g. from superclass)
+                if (!tableGet(&klass->fieldIndices, OBJ_VAL(name), &dummy)) {
+                    tableSet(vm, &klass->fieldIndices, OBJ_VAL(name), NUMBER_VAL(klass->fieldCount));
+                    klass->fieldCount++;
+                }
+                DISPATCH();
+            }
+            OPCODE(OP_GET_FIELD_THIS) : {
+                uint8_t index = READ_BYTE();
+                Value receiver = frame->slots[0];
+                ObjInstance* instance = AS_INSTANCE(receiver);
+                push(vm, instance->fields[index]);
+                DISPATCH();
+            }
+            OPCODE(OP_SET_FIELD_THIS) : {
+                uint8_t index = READ_BYTE();
+                Value receiver = frame->slots[0];
+                ObjInstance* instance = AS_INSTANCE(receiver);
+                instance->fields[index] = peek(vm, 0);
+                DISPATCH();
+            }
             OPCODE(OP_GET_PROPERTY) : {
                 ObjString* name = READ_STRING();
                 Value receiver = peek(vm, 0);
+
                 if (IS_INSTANCE(receiver)) {
-                    ObjInstance* i = AS_INSTANCE(receiver); Value v;
-                    if (tableGet(&i->fields, OBJ_VAL(name), &v)) {
-                        pop(vm); push(vm, v); DISPATCH();
+                    ObjInstance* i = AS_INSTANCE(receiver);
+                    Value indexVal;
+
+                    // TIER 2 FIELD LOOKUP: Look in Class for the index
+                    if (tableGet(&i->klass->fieldIndices, OBJ_VAL(name), &indexVal)) {
+                        pop(vm); // instance
+                        push(vm, i->fields[(int) AS_NUMBER(indexVal)]);
+                        DISPATCH();
                     }
+
+                    // METHOD LOOKUP
                     if (bindMethod(vm, i->klass, name)) DISPATCH();
-                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", name->chars); return INTERPRET_RUNTIME_ERROR;
+
+                    STORE_FRAME();
+                    runtimeError(vm, "Undefined property '%s'.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
+
                 } else if (IS_MODULE(receiver)) {
-                    ObjModule* m = AS_MODULE(receiver); Value idx;
+                    ObjModule* m = AS_MODULE(receiver);
+                    Value idx;
+
+                    // MODULE LOOKUP (Your existing logic)
+                    // 1. Try exact name
                     if (tableGet(&m->globalNames, OBJ_VAL(name), &idx)) {
-                        pop(vm); push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]); DISPATCH();
+                        pop(vm);
+                        push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]);
+                        DISPATCH();
                     }
-                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", name->chars); return INTERPRET_RUNTIME_ERROR;
+
+                    // 2. Try demangled name (BTL specific)
+                    if (name->length > 0) {
+                        ObjString* rawName = copyString(vm, name->chars, name->length - 1);
+                        push(vm, OBJ_VAL(rawName)); // Protect from GC
+                        if (tableGet(&m->globalNames, OBJ_VAL(rawName), &idx)) {
+                            pop(vm); // rawName
+                            pop(vm); // module
+                            push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]);
+                            DISPATCH();
+                        }
+                        pop(vm); // rawName
+                    }
+
+                    STORE_FRAME();
+                    runtimeError(vm, "Undefined property '%s' in module.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
                 }
-                STORE_FRAME(); runtimeError(vm, "Only instances and modules have properties."); return INTERPRET_RUNTIME_ERROR;
+
+                STORE_FRAME();
+                runtimeError(vm, "Only instances and modules have properties.");
+                return INTERPRET_RUNTIME_ERROR;
             }
             OPCODE(OP_GET_PROPERTY_LONG) : {
                 ObjString* name = READ_STRING_LONG();
                 Value receiver = peek(vm, 0);
+
                 if (IS_INSTANCE(receiver)) {
-                    ObjInstance* i = AS_INSTANCE(receiver); Value v;
-                    if (tableGet(&i->fields, OBJ_VAL(name), &v)) {
-                        pop(vm); push(vm, v); DISPATCH();
+                    ObjInstance* i = AS_INSTANCE(receiver);
+                    Value indexVal;
+
+                    // TIER 2 FIELD LOOKUP: Look in Class for the index
+                    if (tableGet(&i->klass->fieldIndices, OBJ_VAL(name), &indexVal)) {
+                        pop(vm); // instance
+                        push(vm, i->fields[(int) AS_NUMBER(indexVal)]);
+                        DISPATCH();
                     }
+
+                    // METHOD LOOKUP
                     if (bindMethod(vm, i->klass, name)) DISPATCH();
-                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", name->chars); return INTERPRET_RUNTIME_ERROR;
+
+                    STORE_FRAME();
+                    runtimeError(vm, "Undefined property '%s'.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
+
                 } else if (IS_MODULE(receiver)) {
-                    ObjModule* m = AS_MODULE(receiver); Value idx;
+                    ObjModule* m = AS_MODULE(receiver);
+                    Value idx;
+
+                    // MODULE LOOKUP (Your existing logic)
+                    // 1. Try exact name
                     if (tableGet(&m->globalNames, OBJ_VAL(name), &idx)) {
-                        pop(vm); push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]); DISPATCH();
+                        pop(vm);
+                        push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]);
+                        DISPATCH();
                     }
-                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", name->chars); return INTERPRET_RUNTIME_ERROR;
+
+                    // 2. Try demangled name (BTL specific)
+                    if (name->length > 0) {
+                        ObjString* rawName = copyString(vm, name->chars, name->length - 1);
+                        push(vm, OBJ_VAL(rawName)); // Protect from GC
+                        if (tableGet(&m->globalNames, OBJ_VAL(rawName), &idx)) {
+                            pop(vm); // rawName
+                            pop(vm); // module
+                            push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]);
+                            DISPATCH();
+                        }
+                        pop(vm); // rawName
+                    }
+
+                    STORE_FRAME();
+                    runtimeError(vm, "Undefined property '%s' in module.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
                 }
-                STORE_FRAME(); runtimeError(vm, "Only instances and modules have properties."); return INTERPRET_RUNTIME_ERROR;
+
+                STORE_FRAME();
+                runtimeError(vm, "Only instances and modules have properties.");
+                return INTERPRET_RUNTIME_ERROR;
             }
             OPCODE(OP_SET_PROPERTY) : {
                 ObjString* name = READ_STRING();
-                Value val = pop(vm);
-                if (IS_INSTANCE(peek(vm, 0))) {
-                    ObjInstance* i = AS_INSTANCE(pop(vm));
-                    tableSet(vm, &i->fields, OBJ_VAL(name), val);
-                    push(vm, val);
-                    DISPATCH();
+                Value val = pop(vm); // The new value
+                Value receiver = peek(vm, 0);
+
+                if (IS_INSTANCE(receiver)) {
+                    ObjInstance* i = AS_INSTANCE(receiver);
+                    Value indexVal;
+
+                    // TIER 2 FIELD SET: Look in Class for the index
+                    if (tableGet(&i->klass->fieldIndices, OBJ_VAL(name), &indexVal)) {
+                        i->fields[(int) AS_NUMBER(indexVal)] = val;
+                        pop(vm); // instance
+                        push(vm, val); // Assignment returns the value
+                        DISPATCH();
+                    }
+
+                    STORE_FRAME();
+                    runtimeError(vm, "Cannot add new property '%s' to fixed class layout.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
+
+                } else if (IS_MODULE(receiver)) {
+                    // Usually, modules are read-only from the outside in BTL, 
+                    // but if you want to support it:
+                    ObjModule* m = AS_MODULE(receiver);
+                    Value idx;
+                    if (tableGet(&m->globalNames, OBJ_VAL(name), &idx)) {
+                        m->globalValues.values[(int) AS_NUMBER(idx)] = val;
+                        pop(vm); // module
+                        push(vm, val);
+                        DISPATCH();
+                    }
+                    STORE_FRAME();
+                    runtimeError(vm, "Cannot set undefined property in module.");
+                    return INTERPRET_RUNTIME_ERROR;
                 }
-                STORE_FRAME(); runtimeError(vm, "Only instances have fields."); return INTERPRET_RUNTIME_ERROR;
+
+                STORE_FRAME();
+                runtimeError(vm, "Only instances have fields.");
+                return INTERPRET_RUNTIME_ERROR;
             }
             OPCODE(OP_SET_PROPERTY_LONG) : {
                 ObjString* name = READ_STRING_LONG();
-                Value val = pop(vm);
-                if (IS_INSTANCE(peek(vm, 0))) {
-                    ObjInstance* i = AS_INSTANCE(pop(vm));
-                    tableSet(vm, &i->fields, OBJ_VAL(name), val);
-                    push(vm, val);
-                    DISPATCH();
+                Value val = pop(vm); // The new value
+                Value receiver = peek(vm, 0);
+
+                if (IS_INSTANCE(receiver)) {
+                    ObjInstance* i = AS_INSTANCE(receiver);
+                    Value indexVal;
+
+                    // TIER 2 FIELD SET: Look in Class for the index
+                    if (tableGet(&i->klass->fieldIndices, OBJ_VAL(name), &indexVal)) {
+                        i->fields[(int) AS_NUMBER(indexVal)] = val;
+                        pop(vm); // instance
+                        push(vm, val); // Assignment returns the value
+                        DISPATCH();
+                    }
+
+                    STORE_FRAME();
+                    runtimeError(vm, "Cannot add new property '%s' to fixed class layout.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
+
+                } else if (IS_MODULE(receiver)) {
+                    // Usually, modules are read-only from the outside in BTL, 
+                    // but if you want to support it:
+                    ObjModule* m = AS_MODULE(receiver);
+                    Value idx;
+                    if (tableGet(&m->globalNames, OBJ_VAL(name), &idx)) {
+                        m->globalValues.values[(int) AS_NUMBER(idx)] = val;
+                        pop(vm); // module
+                        push(vm, val);
+                        DISPATCH();
+                    }
+                    STORE_FRAME();
+                    runtimeError(vm, "Cannot set undefined property in module.");
+                    return INTERPRET_RUNTIME_ERROR;
                 }
-                STORE_FRAME(); runtimeError(vm, "Only instances have fields."); return INTERPRET_RUNTIME_ERROR;
+
+                STORE_FRAME();
+                runtimeError(vm, "Only instances have fields.");
+                return INTERPRET_RUNTIME_ERROR;
             }
 
             OPCODE(OP_GET_SUPER) : {
@@ -1187,16 +1352,33 @@ OPCODE(OP_CLOSE_UPVALUE) : {
     DISPATCH();
 }
 
-OPCODE(OP_CLASS) : push(vm, OBJ_VAL(newClass(vm, READ_STRING()))); DISPATCH();
-OPCODE(OP_CLASS_LONG) : push(vm, OBJ_VAL(newClass(vm, READ_STRING_LONG()))); DISPATCH();
+OPCODE(OP_CLASS) : {
+    ObjString* name = READ_STRING();
+    ObjClass* klass = newClass(vm, name);
+    push(vm, OBJ_VAL(klass));
+    DISPATCH(); }
+OPCODE(OP_CLASS_LONG) : {
+    ObjString* name = READ_STRING_LONG();
+    ObjClass* klass = newClass(vm, name);
+    push(vm, OBJ_VAL(klass));
+    DISPATCH();}
 
 OPCODE(OP_INHERIT) : {
-    Value sVal = peek(vm, 1);
-    if (!IS_CLASS(sVal)) {
+    Value superclassVal = peek(vm, 1);
+    if (!IS_CLASS(superclassVal)) {
         STORE_FRAME(); runtimeError(vm, "Superclass must be a class."); return INTERPRET_RUNTIME_ERROR;
     }
-    tableAddAll(vm, &AS_CLASS(sVal)->methods, &AS_CLASS(peek(vm, 0))->methods);
-    pop(vm);
+    ObjClass* superclass = AS_CLASS(superclassVal);
+    ObjClass* subclass = AS_CLASS(peek(vm, 0));
+
+    tableAddAll(vm, &superclass->methods, &subclass->methods);
+
+    // Inherit the layout
+    tableAddAll(vm, &superclass->fieldIndices, &subclass->fieldIndices);
+    subclass->fieldCount = superclass->fieldCount;
+
+    pop(vm); // subclass
+    pop(vm); // superclass
     DISPATCH();
 }
 

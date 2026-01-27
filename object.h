@@ -105,12 +105,15 @@ typedef struct ObjClass {
     Obj obj;
     ObjString* name;
     Table methods;
+
+    Table fieldIndices;
+    int fieldCount;
 } ObjClass;
 
 typedef struct ObjInstance {
     Obj obj;
     ObjClass* klass;
-    Table fields;
+    Value* fields;
 } ObjInstance;
 
 typedef struct ObjList {

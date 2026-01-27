@@ -136,6 +136,28 @@ static void emitBytes(Parser* p, Compiler* c, uint8_t byte1, uint8_t byte2) {
     writeChunk(c->vm, currentChunk(c), byte2, p->previous.line);
 }
 
+static Token syntheticToken(const char* text) {
+    Token token;
+    token.start = text;
+    token.length = (int) strlen(text);
+    token.line = 0; // Synthetic tokens don't have a real line
+    token.type = TOKEN_IDENTIFIER;
+    return token;
+}
+
+static void addLocal(Parser* p, Compiler* c, Token name) {
+    if (c->localCount == 256) {
+        errorAt(p, &name, "Too many local variables in function.");
+        return;
+    }
+
+    Local* local = &c->locals[c->localCount++];
+    local->name = name;
+    local->depth = -1; // Declared but uninitialized
+    local->isCaptured = false;
+    local->isModified = false;
+}
+
 // --- Back-Patching Logic ---
 
 static void markLocalAsModified(Compiler* c, int localIndex) {
@@ -513,33 +535,29 @@ static void emitUpvalue(Parser* p, Compiler* c, uint8_t arg, bool isSet) {
 
 static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Token name, bool canAssign) {
     int arg = resolveLocal(p, c, &name);
+
     if (arg != -1) {
+        // --- LOCAL VARIABLE ---
         if (canAssign && match(p, s, TOKEN_EQUAL)) {
             int exprStart = currentChunk(c)->count;
-
             expression(p, s, c, cc);
 
-            // Lookback Optimization: Check if the expression was exactly "<var> + 1"
+            // Lookback Optimization for ++ (e.g., i = i + 1)
             Chunk* chunk = currentChunk(c);
             if (chunk->count >= exprStart + 3) {
                 uint8_t op1 = chunk->code[exprStart];
                 uint8_t op2 = chunk->code[exprStart + 1];
                 uint8_t op3 = chunk->code[exprStart + 2];
-                // Check if op1 is GET_LOCAL for THIS same variable
                 bool isCorrectVar = ((op1 == (uint8_t) (OP_GET_LOCAL_0 + arg)) && arg <= 7) ||
                     (op1 == OP_GET_LOCAL && chunk->code[exprStart + 1] == arg);
-                // Check if it's adding 1
-                bool isPlusOne = (op2 == OP_1 && op3 == OP_ADD) ||
-                    (op3 == OP_1 && op2 == OP_ADD);
+                bool isPlusOne = (op2 == OP_1 && op3 == OP_ADD) || (op3 == OP_1 && op2 == OP_ADD);
                 if (isCorrectVar && isPlusOne) {
-                    // It's a match! Wipe the 3 instructions and emit the fused one
                     chunk->count = exprStart;
                     emitBytes(p, c, OP_INC_LOCAL, (uint8_t) arg);
                     markLocalAsModified(c, arg);
                     return;
                 }
             }
-            // Fallback for standard assignments
             markLocalAsModified(c, arg);
             if (arg <= 7) emitByte(p, c, (uint8_t) (OP_SET_LOCAL_0 + arg));
             else emitBytes(p, c, OP_SET_LOCAL, (uint8_t) arg);
@@ -547,9 +565,13 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
             if (arg <= 7) emitByte(p, c, (uint8_t) (OP_GET_LOCAL_0 + arg));
             else emitBytes(p, c, OP_GET_LOCAL, (uint8_t) arg);
         }
-    } else if ((arg = resolveUpvalue(p, c, &name)) != -1) {
+        return; // CRITICAL: Stop here!
+    }
+
+    arg = resolveUpvalue(p, c, &name);
+    if (arg != -1) {
+        // --- UPVALUE ---
         if (canAssign && match(p, s, TOKEN_EQUAL)) {
-            // Check enclosing parent for local variable modification
             if (c->upvalues[arg].isLocal && c->enclosing != NULL) {
                 markLocalAsModified(c->enclosing, c->upvalues[arg].index);
             }
@@ -558,14 +580,33 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
         } else {
             emitUpvalue(p, c, (uint8_t) arg, false);
         }
-    } else {
-        arg = identifierConstant(c, &name);
-        if (canAssign && match(p, s, TOKEN_EQUAL)) {
-            expression(p, s, c, cc);
-            emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
-        } else {
-            emitLong(p, c, OP_GET_GLOBAL, OP_GET_GLOBAL_LONG, arg);
+        return; // CRITICAL: Stop here!
+    }
+
+    if (cc != NULL) {
+        // --- CLASS FIELD ---
+        ObjString* fieldName = copyString(c->vm, name.start, name.length);
+        Value indexVal;
+        if (tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+            uint8_t index = (uint8_t) AS_NUMBER(indexVal);
+            if (canAssign && match(p, s, TOKEN_EQUAL)) {
+                expression(p, s, c, cc);
+                emitBytes(p, c, OP_SET_FIELD_THIS, index);
+            } else {
+                emitBytes(p, c, OP_GET_FIELD_THIS, index);
+            }
+            return; // Found a field, stop here!
         }
+    }
+
+    // --- GLOBAL VARIABLE ---
+    // If it's not a local, upvalue, or field, it MUST be a global.
+    arg = identifierConstant(c, &name);
+    if (canAssign && match(p, s, TOKEN_EQUAL)) {
+        expression(p, s, c, cc);
+        emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
+    } else {
+        emitLong(p, c, OP_GET_GLOBAL, OP_GET_GLOBAL_LONG, arg);
     }
 }
 
@@ -710,24 +751,62 @@ static void subscript(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, boo
 static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect property name after '.'.");
     Token name = p->previous;
+    ObjString* fieldName = copyString(c->vm, name.start, name.length);
 
-    if (canAssign && match(p, s, TOKEN_EQUAL)) {
-        int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, name.start, name.length)));
-        expression(p, s, c, cc);
-        emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
-    } else if (match(p, s, TOKEN_LEFT_PAREN)) {
+    // 1. Identify if the receiver is 'this'
+    bool isThis = false;
+    if (cc != NULL && c->lastInstruction != -1) {
+        uint8_t lastOp = currentChunk(c)->code[c->lastInstruction];
+        if (lastOp == OP_GET_LOCAL_0) isThis = true;
+    }
+
+    // 2. Specialized 'this' logic
+    // We only treat it as a Field if it's NOT a method call (followed by '(')
+    if (isThis && !check(p, TOKEN_LEFT_PAREN)) {
+        Value indexVal;
+        // Auto-register as a field if not already known
+        if (!tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+            indexVal = NUMBER_VAL((double) cc->fieldCount);
+            tableSet(c->vm, &cc->fields, OBJ_VAL(fieldName), indexVal);
+            cc->fieldCount++;
+        }
+
+        uint8_t index = (uint8_t) AS_NUMBER(indexVal);
+        removeChunkTail(currentChunk(c), 1); // Remove OP_GET_LOCAL_0
+
+        if (canAssign && match(p, s, TOKEN_EQUAL)) {
+            expression(p, s, c, cc);
+            emitBytes(p, c, OP_SET_FIELD_THIS, index);
+        } else {
+            emitBytes(p, c, OP_GET_FIELD_THIS, index);
+        }
+        return;
+    }
+
+    // 3. Method Call or Dynamic Property Access
+    if (match(p, s, TOKEN_LEFT_PAREN)) {
+        // This handles this.method(), obj.method(), etc.
         uint8_t args = 0;
         if (!check(p, TOKEN_RIGHT_PAREN)) {
             do {
-                expression(p, s, c, cc); args++;
+                expression(p, s, c, cc);
+                args++;
             } while (match(p, s, TOKEN_COMMA));
         }
         consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+
+        // Use the signature (name + arg count) to find the method
         int nameIdx = signatureConstant(p, c, &name, args);
         emitInvoke(p, c, nameIdx, args);
     } else {
-        int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, name.start, name.length)));
-        emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+        // Standard dynamic property access (e.g., obj.field or binding a method)
+        int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
+        if (canAssign && match(p, s, TOKEN_EQUAL)) {
+            expression(p, s, c, cc);
+            emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
+        } else {
+            emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+        }
     }
 }
 
@@ -1005,25 +1084,80 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     emitLong(p, c, OP_CLASS, OP_CLASS_LONG, nameStringConst);
     defineVariable(p, c, nameGlobalIdx);
 
-    ClassCompiler classC = { .enclosing = cc, .hasSuperclass = false };
+    ClassCompiler classC;
+    classC.enclosing = cc;
+    classC.hasSuperclass = false;
+    classC.fieldCount = 0;
+    initTable(&classC.fields);
+
     if (match(p, s, TOKEN_LESS)) {
         consume(p, s, TOKEN_IDENTIFIER, "Expect superclass name.");
-        if (identifiersEqual(&nameToken, &p->previous)) errorAt(p, &p->previous, "A class can't inherit from itself.");
+        Token superClassName = p->previous;
+
+        // PUSH 1: This slot will be the permanent home of the 'super' local variable.
         variable(p, s, c, &classC, false);
+
+        if (identifiersEqual(&nameToken, &superClassName)) {
+            errorAt(p, &superClassName, "A class can't inherit from itself.");
+        }
+
         beginScope(c);
-        Local* l = &c->locals[c->localCount++];
-        l->name.start = "super"; l->name.length = 5; l->depth = c->scopeDepth; l->isCaptured = false; l->isModified = false;
-        namedVariable(p, s, c, &classC, nameToken, false);
+        addLocal(p, c, syntheticToken("super"));
+        markInitialized(c); // The Superclass at PUSH 1 is now 'super'
+
+        // PUSH 2: A copy of Superclass for OP_INHERIT to pop.
+        namedVariable(p, s, c, NULL, superClassName, false);
+        // PUSH 3: A copy of Subclass for OP_INHERIT to pop.
+        namedVariable(p, s, c, NULL, nameToken, false);
+
         emitByte(p, c, OP_INHERIT);
         classC.hasSuperclass = true;
     }
 
-    namedVariable(p, s, c, &classC, nameToken, false);
-    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
-    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) method(p, s, c, &classC);
-    consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}'.");
-    emitPopOrRemoveLoad(p, c);
-    if (classC.hasSuperclass) endScope(p, c);
+    // PUSH 4: Load Subclass to be the receiver for all methods.
+    // This sits in a new slot ABOVE the 'super' local variable.
+    namedVariable(p, s, c, NULL, nameToken, false);
+
+    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{' before class body.");
+    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
+        if (match(p, s, TOKEN_VAR)) {
+            consume(p, s, TOKEN_IDENTIFIER, "Expect variable name.");
+            Token fieldName = p->previous;
+            consume(p, s, TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
+            ObjString* name = copyString(c->vm, fieldName.start, fieldName.length);
+            Value dummy;
+            if (!tableGet(&classC.fields, OBJ_VAL(name), &dummy)) {
+                tableSet(c->vm, &classC.fields, OBJ_VAL(name), NUMBER_VAL((double) classC.fieldCount++));
+            }
+        } else {
+            method(p, s, c, &classC);
+        }
+    }
+    consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
+
+    // Sync Fields
+    for (int i = 0; i < classC.fieldCount; i++) {
+        ObjString* foundName = NULL;
+        for (int j = 0; j < classC.fields.capacity; j++) {
+            Entry* entry = &classC.fields.entries[j];
+            if (IS_STRING(entry->key) && (int) AS_NUMBER(entry->value) == i) {
+                foundName = AS_STRING(entry->key);
+                break;
+            }
+        }
+        if (foundName != NULL) {
+            int nameIdx = makeConstant(p, c, OBJ_VAL(foundName));
+            emitLong(p, c, OP_FIELD, OP_FIELD, nameIdx);
+        }
+    }
+
+    emitByte(p, c, OP_POP); // Pops the Subclass (PUSH 4)
+
+    if (classC.hasSuperclass) {
+        endScope(p, c); // Pops the Superclass (PUSH 1)
+    }
+
+    freeTable(c->vm, &classC.fields);
 }
 
 static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {

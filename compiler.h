@@ -64,6 +64,8 @@ typedef struct Compiler {
 typedef struct ClassCompiler {
     struct ClassCompiler* enclosing;
     bool hasSuperclass;
+    Table fields;
+    int fieldCount;
 } ClassCompiler;
 
 ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source);

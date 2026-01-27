@@ -125,6 +125,7 @@ static int invokeLongInstruction(const char* name, Chunk* chunk, int offset) {
     return offset + 4;
 }
 
+
 int disassembleInstruction(Chunk* chunk, int offset) {
     fprintf(stderr, "%04d ", offset);
     if (offset > 0 &&
@@ -215,6 +216,9 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_SET_UPVALUE_3: return simpleInstruction("OP_SET_UPVALUE_3", offset);
     case OP_SET_UPVALUE_OPEN_3: return simpleInstruction("OP_SET_UPVALUE_OPEN_3", offset);
     case OP_SET_UPVALUE_CLOSED_3: return simpleInstruction("OP_SET_UPVALUE_CLOSED_3", offset);
+    case OP_FIELD: return constantInstruction("OP_FIELD", chunk, offset);
+    case OP_GET_FIELD_THIS: return byteInstruction("OP_GET_FIELD_THIS", chunk, offset);
+    case OP_SET_FIELD_THIS: return byteInstruction("OP_SET_FIELD_THIS", chunk, offset);
     case OP_GET_PROPERTY: return constantInstruction("OP_GET_PROPERTY", chunk, offset);
     case OP_GET_PROPERTY_LONG: return constantLongInstruction("OP_GET_PROPERTY_LONG", chunk, offset);
     case OP_SET_PROPERTY: return constantInstruction("OP_SET_PROPERTY", chunk, offset);
@@ -324,12 +328,12 @@ int disassembleInstruction(Chunk* chunk, int offset) {
         return newOffset;
     }
     case OP_CLOSURE_LONG: {
-        uint16_t constant = (uint16_t) (chunk->code[offset] | (chunk->code[offset + 1] << 8));
+        uint16_t constant = (uint16_t) (chunk->code[offset + 1] | (chunk->code[offset + 2] << 8));
         fprintf(stderr, "%-16s %4d ", "OP_CLOSURE_LONG", constant);
         printValueStderr(chunk->constants.values[constant]);
         fprintf(stderr, "\n");
         ObjFunction* function = AS_FUNCTION(chunk->constants.values[constant]);
-        int newOffset = offset + 2;
+        int newOffset = offset + 3; // Opcode + 2-byte index
         for (int i = 0; i < function->upvalueCount; i++) {
             uint8_t isLocal = chunk->code[newOffset++];
             uint8_t index = chunk->code[newOffset++];
