@@ -55,6 +55,7 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
         ObjClass* k = (ObjClass*) object;
         markObject(vm, (struct Obj*) k->name);
         markTable(vm, &k->methods);
+        markTable(vm, &k->fieldIndices);
         break;
     }
     case OBJ_CLOSURE: {
@@ -79,9 +80,12 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
         break;
     }
     case OBJ_INSTANCE: {
-        ObjInstance* i = (ObjInstance*) object;
-        markObject(vm, (struct Obj*) i->klass);
-        markTable(vm, &i->fields);
+        ObjInstance* instance = (ObjInstance*) object;
+        markObject(vm, (Obj*) instance->klass);
+        // Mark the fields array
+        for (int i = 0; i < instance->klass->fieldCount; i++) {
+            markValue(vm, instance->fields[i]);
+        }
         break;
     }
     case OBJ_LIST: {
@@ -113,8 +117,9 @@ static void freeObject(struct VM* vm, struct Obj* object) {
         FREE(vm, ObjBoundMethod, object);
         break;
     case OBJ_CLASS: {
-        ObjClass* k = (ObjClass*) object;
-        freeTable(vm, &k->methods);
+        ObjClass* klass = (ObjClass*) object;
+        freeTable(vm, &klass->methods);
+        freeTable(vm, &klass->fieldIndices); // Free the index map
         FREE(vm, ObjClass, object);
         break;
     }
@@ -131,8 +136,11 @@ static void freeObject(struct VM* vm, struct Obj* object) {
         break;
     }
     case OBJ_INSTANCE: {
-        ObjInstance* i = (ObjInstance*) object;
-        freeTable(vm, &i->fields);
+        ObjInstance* instance = (ObjInstance*) object;
+        // Free the array
+        if (instance->fields != NULL) {
+            FREE_ARRAY(vm, Value, instance->fields, instance->klass->fieldCount);
+        }
         FREE(vm, ObjInstance, object);
         break;
     }

@@ -21,7 +21,11 @@ ObjBoundMethod* newBoundMethod(struct VM* vm, Value receiver, ObjClosure* method
 
 ObjClass* newClass(struct VM* vm, struct ObjString* name) {
     ObjClass* klass = ALLOCATE_OBJ(vm, ObjClass, OBJ_CLASS);
-    klass->name = name; initTable(&klass->methods); return klass;
+    klass->name = name;
+    initTable(&klass->methods);
+    klass->fieldCount = 0;
+    initTable(&klass->fieldIndices);
+    return klass;
 }
 
 ObjClosure* newClosure(VM* vm, ObjFunction* function) {
@@ -45,7 +49,17 @@ ObjFunction* newFunction(struct VM* vm, ObjModule* module) {
 
 ObjInstance* newInstance(struct VM* vm, ObjClass* klass) {
     ObjInstance* instance = ALLOCATE_OBJ(vm, ObjInstance, OBJ_INSTANCE);
-    instance->klass = klass; initTable(&instance->fields); return instance;
+    instance->klass = klass;
+
+    // Safety: always allocate at least 1 byte if count is 0 
+    // to prevent malloc(0) implementation-defined behavior
+    int size = klass->fieldCount > 0 ? klass->fieldCount : 1;
+    instance->fields = ALLOCATE(vm, Value, size);
+
+    for (int i = 0; i < klass->fieldCount; i++) {
+        instance->fields[i] = NIL_VAL;
+    }
+    return instance;
 }
 
 ObjList* newList(struct VM* vm) {
