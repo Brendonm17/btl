@@ -123,17 +123,79 @@ static void emitByte(Parser* p, Compiler* c, uint8_t byte) {
 }
 
 static void emitBytes(Parser* p, Compiler* c, uint8_t byte1, uint8_t byte2) {
-    Chunk* chunk = currentChunk(c);
+    //Chunk* chunk = currentChunk(c);
+    /*
     if ((byte1 == OP_GET_LOCAL || byte1 == OP_GET_UPVALUE) &&
         c->lastInstruction >= 0 && c->lastInstruction + 2 == chunk->count) {
         uint8_t prevOp = chunk->code[c->lastInstruction];
         uint8_t prevOperand = chunk->code[c->lastInstruction + 1];
         if (byte1 == OP_GET_LOCAL && prevOp == OP_SET_LOCAL && prevOperand == byte2) return;
         if (byte1 == OP_GET_UPVALUE && prevOp == OP_SET_UPVALUE && prevOperand == byte2) return;
-    }
+    }*/
 
     emitByte(p, c, byte1);
     writeChunk(c->vm, currentChunk(c), byte2, p->previous.line);
+}
+
+// Creates method signature string: "methodName/arity"
+static ObjString* createMethodSignature(Compiler* c, Token* name, int arity) {
+    int nameLen = name->length;
+    char* buffer = ALLOCATE(c->vm, char, nameLen + 2);
+    memcpy(buffer, name->start, nameLen);
+    buffer[nameLen] = (char) arity;
+    buffer[nameLen + 1] = '\0';
+    ObjString* signature = copyString(c->vm, buffer, nameLen + 1);
+    FREE_ARRAY(c->vm, char, buffer, nameLen + 2);
+    return signature;
+}
+
+// Emit indexed invoke with optimized opcodes for 0-8 args
+static void emitInvokeIndexed(Parser* p, Compiler* c, int methodIndex, int argCount) {
+    if (argCount <= 8 && methodIndex < 256) {
+        emitBytes(p, c, (uint8_t) (OP_INVOKE_0 + argCount), (uint8_t) methodIndex);
+    } else if (methodIndex < 256) {
+        emitByte(p, c, OP_INVOKE);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+    } else {
+        emitByte(p, c, OP_INVOKE_LONG);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+    }
+}
+
+static void emitSuperInvokeIndexed(Parser* p, Compiler* c, int methodIndex, int argCount) {
+    if (argCount <= 8 && methodIndex < 256) {
+        emitBytes(p, c, (uint8_t) (OP_SUPER_INVOKE_0 + argCount), (uint8_t) methodIndex);
+    } else if (methodIndex < 256) {
+        emitByte(p, c, OP_SUPER_INVOKE);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+    } else {
+        emitByte(p, c, OP_SUPER_INVOKE_LONG);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+    }
+}
+
+// Try to resolve method index at compile time
+// Returns -1 if not possible (polymorphic call)
+static int tryResolveMethodIndex(Compiler* c, ClassCompiler* cc, Token* name, int argCount) {
+    if (cc == NULL) return -1;
+
+    ObjString* signature = createMethodSignature(c, name, argCount);
+    push(c->vm, OBJ_VAL(signature));
+
+    Value indexValue;
+    int methodIndex = -1;
+    if (tableGet(&cc->methodIndices, OBJ_VAL(signature), &indexValue)) {
+        methodIndex = (int) AS_NUMBER(indexValue);
+    }
+
+    pop(c->vm);
+    return methodIndex;
 }
 
 static Token syntheticToken(const char* text) {
@@ -320,21 +382,6 @@ static int makeConstant(Parser* p, Compiler* c, Value value) {
     return constant;
 }
 
-static int signatureConstant(Parser* p, Compiler* c, Token* name, int arity) {
-    if (arity > 255) {
-        errorAt(p, name, "Too many arguments.");
-        return 0;
-    }
-    int nameLen = name->length;
-    char* buffer = ALLOCATE(c->vm, char, nameLen + 2);
-    memcpy(buffer, name->start, nameLen);
-    buffer[nameLen] = (char) arity;
-    buffer[nameLen + 1] = '\0';
-    ObjString* string = copyString(c->vm, buffer, nameLen + 1);
-    FREE_ARRAY(c->vm, char, buffer, nameLen + 2);
-    return makeConstant(p, c, OBJ_VAL(string));
-}
-
 static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index) {
     if (index < 256) {
         emitByte(p, c, shortOp);
@@ -343,36 +390,6 @@ static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint
         emitByte(p, c, longOp);
         writeChunk(c->vm, currentChunk(c), (uint8_t) (index & 0xff), p->previous.line);
         writeChunk(c->vm, currentChunk(c), (uint8_t) ((index >> 8) & 0xff), p->previous.line);
-    }
-}
-
-static void emitInvoke(Parser* p, Compiler* c, int nameIdx, int args) {
-    if (args <= 8 && nameIdx < 256) {
-        emitBytes(p, c, (uint8_t) (OP_INVOKE_0 + args), (uint8_t) nameIdx);
-    } else if (nameIdx < 256) {
-        emitByte(p, c, OP_INVOKE);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
-    } else {
-        emitByte(p, c, OP_INVOKE_LONG);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) (nameIdx & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) ((nameIdx >> 8) & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
-    }
-}
-
-static void emitSuperInvoke(Parser* p, Compiler* c, int nameIdx, int args) {
-    if (args <= 8 && nameIdx < 256) {
-        emitBytes(p, c, (uint8_t) (OP_SUPER_INVOKE_0 + args), (uint8_t) nameIdx);
-    } else if (nameIdx < 256) {
-        emitByte(p, c, OP_SUPER_INVOKE);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
-    } else {
-        emitByte(p, c, OP_SUPER_INVOKE_LONG);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) (nameIdx & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) ((nameIdx >> 8) & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
     }
 }
 
@@ -753,27 +770,23 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
     Token name = p->previous;
     ObjString* fieldName = copyString(c->vm, name.start, name.length);
 
-    // 1. Identify if the receiver is 'this'
+    // Check if receiver is 'this'
     bool isThis = false;
     if (cc != NULL && c->lastInstruction != -1) {
         uint8_t lastOp = currentChunk(c)->code[c->lastInstruction];
         if (lastOp == OP_GET_LOCAL_0) isThis = true;
     }
 
-    // 2. Specialized 'this' logic
-    // We only treat it as a Field if it's NOT a method call (followed by '(')
+    // Specialized 'this' field access
     if (isThis && !check(p, TOKEN_LEFT_PAREN)) {
         Value indexVal;
-        // Auto-register as a field if not already known
         if (!tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
             indexVal = NUMBER_VAL((double) cc->fieldCount);
             tableSet(c->vm, &cc->fields, OBJ_VAL(fieldName), indexVal);
             cc->fieldCount++;
         }
-
         uint8_t index = (uint8_t) AS_NUMBER(indexVal);
-        removeChunkTail(currentChunk(c), 1); // Remove OP_GET_LOCAL_0
-
+        removeChunkTail(currentChunk(c), 1);
         if (canAssign && match(p, s, TOKEN_EQUAL)) {
             expression(p, s, c, cc);
             emitBytes(p, c, OP_SET_FIELD_THIS, index);
@@ -783,23 +796,76 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
         return;
     }
 
-    // 3. Method Call or Dynamic Property Access
+    // Method call
     if (match(p, s, TOKEN_LEFT_PAREN)) {
-        // This handles this.method(), obj.method(), etc.
-        uint8_t args = 0;
-        if (!check(p, TOKEN_RIGHT_PAREN)) {
-            do {
-                expression(p, s, c, cc);
-                args++;
-            } while (match(p, s, TOKEN_COMMA));
-        }
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        if (isThis && cc != NULL) {
+            uint8_t args = 0;
+            if (!check(p, TOKEN_RIGHT_PAREN)) {
+                do {
+                    expression(p, s, c, cc);
+                    args++;
+                } while (match(p, s, TOKEN_COMMA));
+            }
+            consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
 
-        // Use the signature (name + arg count) to find the method
-        int nameIdx = signatureConstant(p, c, &name, args);
-        emitInvoke(p, c, nameIdx, args);
+            int methodIndex = tryResolveMethodIndex(c, cc, &name, args);
+
+            if (methodIndex >= 0) {
+                emitInvokeIndexed(p, c, methodIndex, args);
+                return;
+            }
+
+            int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
+
+            if (args <= 8 && nameIdx < 256) {
+                emitBytes(p, c, (uint8_t) (OP_INVOKE_0 + args), 0xFF);
+                writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+            } else if (nameIdx < 256) {
+                emitByte(p, c, OP_INVOKE);
+                writeChunk(c->vm, currentChunk(c), 0xFF, p->previous.line);
+                writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+                writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
+            } else {
+                emitByte(p, c, OP_INVOKE_LONG);
+                writeChunk(c->vm, currentChunk(c), 0xFF, p->previous.line);
+                writeChunk(c->vm, currentChunk(c), 0xFF, p->previous.line);
+                writeChunk(c->vm, currentChunk(c), (uint8_t) (nameIdx & 0xff), p->previous.line);
+                writeChunk(c->vm, currentChunk(c), (uint8_t) ((nameIdx >> 8) & 0xff), p->previous.line);
+                writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
+            }
+            return;
+
+        } else {
+            // Polymorphic call - GET_PROPERTY first, THEN args, THEN call
+            int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
+            emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+
+            // NOW parse arguments
+            uint8_t args = 0;
+            if (!check(p, TOKEN_RIGHT_PAREN)) {
+                do {
+                    expression(p, s, c, cc);
+                    args++;
+                } while (match(p, s, TOKEN_COMMA));
+            }
+            consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+
+            // Now call the bound method/function
+            switch (args) {
+            case 0: emitByte(p, c, OP_CALL_0); break;
+            case 1: emitByte(p, c, OP_CALL_1); break;
+            case 2: emitByte(p, c, OP_CALL_2); break;
+            case 3: emitByte(p, c, OP_CALL_3); break;
+            case 4: emitByte(p, c, OP_CALL_4); break;
+            case 5: emitByte(p, c, OP_CALL_5); break;
+            case 6: emitByte(p, c, OP_CALL_6); break;
+            case 7: emitByte(p, c, OP_CALL_7); break;
+            case 8: emitByte(p, c, OP_CALL_8); break;
+            default: emitBytes(p, c, OP_CALL, args); break;
+            }
+        }
     } else {
-        // Standard dynamic property access (e.g., obj.field or binding a method)
+        // Property access
         int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
         if (canAssign && match(p, s, TOKEN_EQUAL)) {
             expression(p, s, c, cc);
@@ -922,8 +988,14 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
             } while (match(p, s, TOKEN_COMMA));
         }
         consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        int nameIdx = signatureConstant(p, c, &name, args);
-        emitSuperInvoke(p, c, nameIdx, args);
+        int methodIndex = tryResolveMethodIndex(c, cc, &name, args);
+
+        if (methodIndex < 0) {
+            errorAt(p, &name, "Undefined superclass method.");
+            return;
+        }
+
+        emitSuperInvokeIndexed(p, c, methodIndex, args);
     } else {
         int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, name.start, name.length)));
         emitLong(p, c, OP_GET_SUPER, OP_GET_SUPER_LONG, nameIdx);
@@ -1033,7 +1105,9 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect method name.");
     Token nameToken = p->previous;
     FunctionType type = TYPE_METHOD;
-    if (p->previous.length == 4 && memcmp(p->previous.start, "init", 4) == 0) type = TYPE_INITIALIZER;
+    if (p->previous.length == 4 && memcmp(p->previous.start, "init", 4) == 0) {
+        type = TYPE_INITIALIZER;
+    }
 
     Compiler sub;
     initCompiler(p, &sub, c, type, c->module);
@@ -1055,10 +1129,11 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     int fnIdx = makeConstant(p, c, OBJ_VAL(f));
     emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, fnIdx);
     pop(c->vm);
+
+    // Emit upvalue info (unchanged)
     for (int i = 0; i < f->upvalueCount; i++) {
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
-
         bool isMut = sub.upvalues[i].isMutable;
         if (sub.upvalues[i].isLocal) {
             if (c->locals[sub.upvalues[i].index].isModified) {
@@ -1070,10 +1145,34 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         writeChunk(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
     }
 
-    int nameIdx = signatureConstant(p, c, &nameToken, f->arity);
-    emitLong(p, c, OP_METHOD, OP_METHOD_LONG, nameIdx);
-}
+    // Create signature and assign/lookup method index
+    ObjString* signature = createMethodSignature(c, &nameToken, f->arity);
+    push(c->vm, OBJ_VAL(signature));
 
+    Value indexValue;
+    int methodIndex;
+    if (tableGet(&cc->methodIndices, OBJ_VAL(signature), &indexValue)) {
+        // Method override - use existing index
+        methodIndex = (int) AS_NUMBER(indexValue);
+    } else {
+        // New method - assign next index
+        methodIndex = cc->nextMethodIndex++;
+        tableSet(c->vm, &cc->methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
+    }
+
+    pop(c->vm);
+
+    if (methodIndex < 256) {
+        emitByte(p, c, OP_METHOD);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
+    } else {
+        emitByte(p, c, OP_METHOD_LONG);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
+        writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
+    }
+}
 static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect class name.");
     Token nameToken = p->previous;
@@ -1090,11 +1189,40 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     classC.fieldCount = 0;
     initTable(&classC.fields);
 
+    // Initialize method tracking
+    initTable(&classC.methodIndices);
+    classC.nextMethodIndex = 0;
+
     if (match(p, s, TOKEN_LESS)) {
         consume(p, s, TOKEN_IDENTIFIER, "Expect superclass name.");
         Token superClassName = p->previous;
 
-        // PUSH 1: This slot will be the permanent home of the 'super' local variable.
+        // Look up parent's compilation info from module
+        ObjString* parentName = copyString(c->vm, superClassName.start, superClassName.length);
+        push(c->vm, OBJ_VAL(parentName));
+
+        Value savedIndicesValue;
+        if (tableGet(&c->module->classInfo, OBJ_VAL(parentName), &savedIndicesValue)) {
+            // Retrieve the saved table pointer
+            Table* parentIndices = (Table*) (uintptr_t) AS_NUMBER(savedIndicesValue);
+
+            // Copy parent's methodIndices to child
+            tableAddAll(c->vm, parentIndices, &classC.methodIndices);
+
+            // Find max parent index
+            int maxParentIndex = -1;
+            for (int i = 0; i < parentIndices->capacity; i++) {
+                Entry* entry = &parentIndices->entries[i];
+                if (IS_STRING(entry->key) && IS_NUMBER(entry->value)) {
+                    int idx = (int) AS_NUMBER(entry->value);
+                    if (idx > maxParentIndex) maxParentIndex = idx;
+                }
+            }
+            classC.nextMethodIndex = maxParentIndex + 1;
+        }
+
+        pop(c->vm);
+
         variable(p, s, c, &classC, false);
 
         if (identifiersEqual(&nameToken, &superClassName)) {
@@ -1103,19 +1231,15 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
 
         beginScope(c);
         addLocal(p, c, syntheticToken("super"));
-        markInitialized(c); // The Superclass at PUSH 1 is now 'super'
+        markInitialized(c);
 
-        // PUSH 2: A copy of Superclass for OP_INHERIT to pop.
         namedVariable(p, s, c, NULL, superClassName, false);
-        // PUSH 3: A copy of Subclass for OP_INHERIT to pop.
         namedVariable(p, s, c, NULL, nameToken, false);
 
         emitByte(p, c, OP_INHERIT);
         classC.hasSuperclass = true;
     }
 
-    // PUSH 4: Load Subclass to be the receiver for all methods.
-    // This sits in a new slot ABOVE the 'super' local variable.
     namedVariable(p, s, c, NULL, nameToken, false);
 
     consume(p, s, TOKEN_LEFT_BRACE, "Expect '{' before class body.");
@@ -1151,13 +1275,29 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
         }
     }
 
-    emitByte(p, c, OP_POP); // Pops the Subclass (PUSH 4)
+    emitByte(p, c, OP_POP);
 
     if (classC.hasSuperclass) {
-        endScope(p, c); // Pops the Superclass (PUSH 1)
+        endScope(p, c);
     }
 
     freeTable(c->vm, &classC.fields);
+    // Save class compilation info for child classes to use
+    ObjString* className = copyString(c->vm, nameToken.start, nameToken.length);
+    push(c->vm, OBJ_VAL(className));
+
+    // Create a copy of the methodIndices table
+    Table* savedIndices = ALLOCATE(c->vm, Table, 1);
+    initTable(savedIndices);
+    tableAddAll(c->vm, &classC.methodIndices, savedIndices);
+
+    // Store it in the module's classInfo table as a pointer
+    // (We'll use a number to store the pointer)
+    tableSet(c->vm, &c->module->classInfo, OBJ_VAL(className),
+        NUMBER_VAL((double) (uintptr_t) savedIndices));
+
+    pop(c->vm);
+    freeTable(c->vm, &classC.methodIndices);
 }
 
 static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
