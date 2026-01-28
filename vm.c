@@ -104,6 +104,32 @@ static bool isFalsey(Value value) {
     return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
 }
 
+// Grows the method vtable to accommodate the given index
+static void growMethodTable(VM* vm, ObjClass* klass, int requiredIndex) {
+    if (requiredIndex < klass->methodCapacity) return;
+
+    int oldCapacity = klass->methodCapacity;
+    int newCapacity = oldCapacity < 8 ? 8 : oldCapacity * 2;
+    while (newCapacity <= requiredIndex) {
+        newCapacity *= 2;
+    }
+
+    MethodEntry* newMethods = ALLOCATE(vm, MethodEntry, newCapacity);
+
+    if (klass->methods != NULL) {
+        memcpy(newMethods, klass->methods, sizeof(MethodEntry) * klass->methodCount);
+        FREE_ARRAY(vm, MethodEntry, klass->methods, oldCapacity);
+    }
+
+    for (int i = klass->methodCount; i < newCapacity; i++) {
+        newMethods[i].closure = NULL;
+        newMethods[i].arity = 0;
+    }
+
+    klass->methods = newMethods;
+    klass->methodCapacity = newCapacity;
+}
+
 // --- Upvalue Logic ---
 
 static void closeUpvalues(VM* vm, CallFrame* frame) {
@@ -145,6 +171,23 @@ static void closeUpvalues(VM* vm, CallFrame* frame) {
 
 // --- Call Logic ---
 
+static bool bindMethod(VM* vm, ObjClass* klass, ObjString* name) {
+    // Search vtable for method with matching name
+    for (int i = 0; i < klass->methodCount; i++) {
+        if (klass->methods[i].closure != NULL &&
+            klass->methods[i].name != NULL &&
+            klass->methods[i].name == name) {  // Pointer comparison works for interned strings
+
+            ObjBoundMethod* bound = newBoundMethod(vm, peek(vm, 0),
+                klass->methods[i].closure);
+            pop(vm); // instance
+            push(vm, OBJ_VAL(bound));
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool call(VM* vm, ObjClosure* closure, int argCount) {
     if (argCount != closure->function->arity) {
         runtimeError(vm, "Expected %d arguments but got %d.", closure->function->arity, argCount);
@@ -172,13 +215,32 @@ static bool callValue(VM* vm, Value callee, int argCount) {
         case OBJ_CLASS: {
             ObjClass* klass = AS_CLASS(callee);
             vm->stackTop[-argCount - 1] = OBJ_VAL(newInstance(vm, klass));
-            Value initializer;
-            if (tableGet(&klass->methods, OBJ_VAL(vm->initString), &initializer)) {
-                return call(vm, AS_CLOSURE(initializer), argCount);
+            // Look for init method with matching arity
+            for (int i = 0; i < klass->methodCount; i++) {
+                if (klass->methods[i].closure == NULL) {
+                    continue;
+                }
+                if (klass->methods[i].name == NULL) {
+                    continue;
+                }
+                if (klass->methods[i].arity == argCount) {
+                    // Check if this is the init method
+                    if (klass->methods[i].name->length == 4 &&
+                        memcmp(klass->methods[i].name->chars, "init", 4) == 0) {
+                        return call(vm, klass->methods[i].closure, argCount);
+                    }
+                }
+            }
+
+            // No init method
+            if (argCount != 0) {
+                runtimeError(vm, "Expected 0 arguments but got %d.", argCount);
+                return false;
             }
             return true;
         }
-        case OBJ_CLOSURE: return call(vm, AS_CLOSURE(callee), argCount);
+        case OBJ_CLOSURE:
+            return call(vm, AS_CLOSURE(callee), argCount);
         case OBJ_NATIVE: {
             NativeFn native = AS_NATIVE(callee);
             Value result = native(argCount, vm->stackTop - argCount);
@@ -186,84 +248,12 @@ static bool callValue(VM* vm, Value callee, int argCount) {
             push(vm, result);
             return true;
         }
-        default: break;
+        default:
+            break;
         }
     }
     runtimeError(vm, "Can only call functions and classes.");
     return false;
-}
-
-static bool invokeFromClass(VM* vm, ObjClass* klass, struct ObjString* name, int argCount) {
-    Value method;
-    if (!tableGet(&klass->methods, OBJ_VAL(name), &method)) {
-        runtimeError(vm, "Undefined property '%s'.", name->chars);
-        return false;
-    }
-    return call(vm, AS_CLOSURE(method), argCount);
-}
-
-static bool invoke(VM* vm, struct ObjString* name, int argCount) {
-    Value receiver = peek(vm, argCount);
-
-    if (IS_INSTANCE(receiver)) {
-        ObjInstance* instance = AS_INSTANCE(receiver);
-        Value indexValue;
-
-        // TIER 2: Check if it's a field (that might contain a closure)
-        if (tableGet(&instance->klass->fieldIndices, OBJ_VAL(name), &indexValue)) {
-            Value value = instance->fields[(int) AS_NUMBER(indexValue)];
-            vm->stackTop[-argCount - 1] = value;
-            return callValue(vm, value, argCount);
-        }
-
-        // Normal method lookup
-        return invokeFromClass(vm, instance->klass, name, argCount);
-
-    } else if (IS_MODULE(receiver)) {
-        ObjModule* module = AS_MODULE(receiver);
-        Value indexValue;
-
-        // 1. Try exact name
-        if (tableGet(&module->globalNames, OBJ_VAL(name), &indexValue)) {
-            Value value = module->globalValues.values[(int) AS_NUMBER(indexValue)];
-            vm->stackTop[-argCount - 1] = value;
-            return callValue(vm, value, argCount);
-        }
-
-        // 2. Try demangled name
-        if (name->length > 0) {
-            ObjString* rawName = copyString(vm, name->chars, name->length - 1);
-            if (tableGet(&module->globalNames, OBJ_VAL(rawName), &indexValue)) {
-                Value value = module->globalValues.values[(int) AS_NUMBER(indexValue)];
-                vm->stackTop[-argCount - 1] = value;
-                return callValue(vm, value, argCount);
-            }
-        }
-
-        runtimeError(vm, "Undefined property '%s'.", name->chars);
-        return false;
-    }
-
-    runtimeError(vm, "Only instances and modules have methods.");
-    return false;
-}
-
-static bool bindMethod(VM* vm, ObjClass* klass, struct ObjString* name) {
-    Value method;
-    if (!tableGet(&klass->methods, OBJ_VAL(name), &method)) return false;
-    ObjBoundMethod* bound = newBoundMethod(vm, peek(vm, 0), AS_CLOSURE(method));
-    pop(vm); push(vm, OBJ_VAL(bound));
-    return true;
-}
-
-static void defineMethod(VM* vm, ObjClass* klass, ObjString* name, Value method) {
-    tableSet(vm, &klass->methods, OBJ_VAL(name), method);
-    if (name->length > 0) {
-        ObjString* rawName = copyString(vm, name->chars, name->length - 1);
-        push(vm, OBJ_VAL(rawName));
-        tableSet(vm, &klass->methods, OBJ_VAL(rawName), method);
-        pop(vm);
-    }
 }
 
 static ObjString* valueToString(struct VM* vm, Value value) {
@@ -1051,296 +1041,714 @@ static InterpretResult run(VM* vm) {
             DISPATCH();
             }
 
-        OPCODE(OP_INVOKE_0) : argCount = 0; goto do_invoke_special;
-        OPCODE(OP_INVOKE_1) : argCount = 1; goto do_invoke_special;
-        OPCODE(OP_INVOKE_2) : argCount = 2; goto do_invoke_special;
-        OPCODE(OP_INVOKE_3) : argCount = 3; goto do_invoke_special;
-        OPCODE(OP_INVOKE_4) : argCount = 4; goto do_invoke_special;
-        OPCODE(OP_INVOKE_5) : argCount = 5; goto do_invoke_special;
-        OPCODE(OP_INVOKE_6) : argCount = 6; goto do_invoke_special;
-        OPCODE(OP_INVOKE_7) : argCount = 7; goto do_invoke_special;
-        OPCODE(OP_INVOKE_8) : argCount = 8; goto do_invoke_special;
+        OPCODE(OP_INVOKE_0) : argCount = 0; goto do_invoke_indexed;
+        OPCODE(OP_INVOKE_1) : argCount = 1; goto do_invoke_indexed;
+        OPCODE(OP_INVOKE_2) : argCount = 2; goto do_invoke_indexed;
+        OPCODE(OP_INVOKE_3) : argCount = 3; goto do_invoke_indexed;
+        OPCODE(OP_INVOKE_4) : argCount = 4; goto do_invoke_indexed;
+        OPCODE(OP_INVOKE_5) : argCount = 5; goto do_invoke_indexed;
+        OPCODE(OP_INVOKE_6) : argCount = 6; goto do_invoke_indexed;
+        OPCODE(OP_INVOKE_7) : argCount = 7; goto do_invoke_indexed;
+        OPCODE(OP_INVOKE_8) : argCount = 8; goto do_invoke_indexed;
 
-    do_invoke_special: {
-        ObjString* method = READ_STRING();
+    do_invoke_indexed: {
+        uint8_t methodIndex = READ_BYTE();
+
+        if (methodIndex == 0xFF) {
+            // Name-based lookup!
+            uint8_t nameIdx = READ_BYTE();
+            ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+
+            Value receiver = peek(vm, argCount);
+            if (!IS_INSTANCE(receiver)) {
+                STORE_FRAME();
+                runtimeError(vm, "Only instances have methods.");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            ObjInstance* instance = AS_INSTANCE(receiver);
+
+            // Search by name
+            for (int i = 0; i < instance->klass->methodCount; i++) {
+                if (instance->klass->methods[i].closure != NULL &&
+                    instance->klass->methods[i].name != NULL &&
+                    instance->klass->methods[i].name == name) {
+
+                    if (argCount != instance->klass->methods[i].arity) {
+                        STORE_FRAME();
+                        runtimeError(vm, "Expected %d arguments but got %d.",
+                            instance->klass->methods[i].arity, argCount);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+
+                    STORE_FRAME();
+                    if (!call(vm, instance->klass->methods[i].closure, argCount)) {
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    REFRESH_FRAME();
+                    DISPATCH();
+                }
+            }
+
+            STORE_FRAME();
+            runtimeError(vm, "Undefined property '%s'.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        // Normal indexed invoke (existing code)
+        Value receiver = peek(vm, argCount);
+        if (!IS_INSTANCE(receiver)) {
+            STORE_FRAME();
+            runtimeError(vm, "Only instances have methods.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        ObjInstance* instance = AS_INSTANCE(receiver);
+        ObjClass* klass = instance->klass;
+
+        if (methodIndex >= klass->methodCount || klass->methods[methodIndex].closure == NULL) {
+            STORE_FRAME();
+            runtimeError(vm, "Undefined method.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        MethodEntry* entry = &klass->methods[methodIndex];
+
         STORE_FRAME();
-        if (!invoke(vm, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+        if (!call(vm, entry->closure, argCount)) {
+            return INTERPRET_RUNTIME_ERROR;
+        }
         REFRESH_FRAME();
         DISPATCH();
         }
 
     OPCODE(OP_INVOKE) : {
-        ObjString* method = READ_STRING();
+        uint8_t methodIndex = READ_BYTE();
         argCount = READ_BYTE();
-        STORE_FRAME();
-        if (!invoke(vm, method, argCount)) return INTERPRET_RUNTIME_ERROR;
-        REFRESH_FRAME();
-        DISPATCH();
-    }
-    OPCODE(OP_INVOKE_LONG) : {
-        ObjString* method = READ_STRING_LONG();
-        argCount = READ_BYTE();
-        STORE_FRAME();
-        if (!invoke(vm, method, argCount)) return INTERPRET_RUNTIME_ERROR;
-        REFRESH_FRAME();
-        DISPATCH();
-    }
 
-    OPCODE(OP_TAIL_INVOKE_0) : argCount = 0; goto do_tail_invoke_special;
-    OPCODE(OP_TAIL_INVOKE_1) : argCount = 1; goto do_tail_invoke_special;
-    OPCODE(OP_TAIL_INVOKE_2) : argCount = 2; goto do_tail_invoke_special;
-    OPCODE(OP_TAIL_INVOKE_3) : argCount = 3; goto do_tail_invoke_special;
-    OPCODE(OP_TAIL_INVOKE_4) : argCount = 4; goto do_tail_invoke_special;
-    OPCODE(OP_TAIL_INVOKE_5) : argCount = 5; goto do_tail_invoke_special;
-    OPCODE(OP_TAIL_INVOKE_6) : argCount = 6; goto do_tail_invoke_special;
-    OPCODE(OP_TAIL_INVOKE_7) : argCount = 7; goto do_tail_invoke_special;
-    OPCODE(OP_TAIL_INVOKE_8) : argCount = 8; goto do_tail_invoke_special;
+        if (methodIndex == 0xFF) {
+            // Name-based invoke
+            uint8_t nameIdx = READ_BYTE();
+            ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+            Value receiver = vm->stackTop[-(argCount + 1)];
 
-do_tail_invoke_special: {
-    ObjString* method = READ_STRING();
-    Value rec = peek(vm, argCount);
-    if (IS_INSTANCE(rec)) {
-        ObjInstance* i = AS_INSTANCE(rec);
-        Value meth;
-        if (!tableGet(&i->klass->methods, OBJ_VAL(method), &meth)) {
-            STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
-        }
-        ObjClosure* c = AS_CLOSURE(meth);
-        closeUpvalues(vm, frame);
-        memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
-        vm->stackTop = frame->slots + (argCount + 1);
-        frame->closure = c;
-        frame->ip = c->function->chunk.code;
-        frame->openUpvalues = NULL;
-        ip = frame->ip;
-        DISPATCH();
-    } else if (IS_MODULE(rec)) {
-        ObjModule* m = AS_MODULE(rec);
-        Value idxVal;
-        // Try mangled then demangled
-        if (!tableGet(&m->globalNames, OBJ_VAL(method), &idxVal)) {
-            if (method->length > 0) {
-                ObjString* raw = copyString(vm, method->chars, method->length - 1);
-                if (!tableGet(&m->globalNames, OBJ_VAL(raw), &idxVal)) {
-                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+            if (!IS_INSTANCE(receiver)) {
+                STORE_FRAME();
+                runtimeError(vm, "Only instances have methods.");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            ObjInstance* instance = AS_INSTANCE(receiver);
+
+            for (int i = 0; i < instance->klass->methodCount; i++) {
+                if (instance->klass->methods[i].closure != NULL &&
+                    instance->klass->methods[i].name != NULL &&
+                    instance->klass->methods[i].name == name) {
+
+                    if (argCount != instance->klass->methods[i].arity) {
+                        STORE_FRAME();
+                        runtimeError(vm, "Expected %d arguments but got %d.",
+                            instance->klass->methods[i].arity, argCount);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+
+                    STORE_FRAME();
+                    if (!call(vm, instance->klass->methods[i].closure, argCount)) {
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    REFRESH_FRAME();
+                    DISPATCH();
                 }
-            } else {
-                STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+            }
+
+            STORE_FRAME();
+            runtimeError(vm, "Undefined property '%s'.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        // Normal indexed invoke
+        goto do_invoke_indexed;
+    }
+
+    OPCODE(OP_INVOKE_LONG) : {
+        uint16_t methodIndex = READ_SHORT();
+        argCount = READ_BYTE();
+
+        if (methodIndex == 0xFFFF) {
+            // Name-based invoke
+            uint16_t nameIdx = READ_SHORT();
+            ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+            Value receiver = vm->stackTop[-(argCount + 1)];
+
+            if (!IS_INSTANCE(receiver)) {
+                STORE_FRAME();
+                runtimeError(vm, "Only instances have methods.");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            ObjInstance* instance = AS_INSTANCE(receiver);
+
+            for (int i = 0; i < instance->klass->methodCount; i++) {
+                if (instance->klass->methods[i].closure != NULL &&
+                    instance->klass->methods[i].name != NULL &&
+                    instance->klass->methods[i].name == name) {
+
+                    if (argCount != instance->klass->methods[i].arity) {
+                        STORE_FRAME();
+                        runtimeError(vm, "Expected %d arguments but got %d.",
+                            instance->klass->methods[i].arity, argCount);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+
+                    STORE_FRAME();
+                    if (!call(vm, instance->klass->methods[i].closure, argCount)) {
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    REFRESH_FRAME();
+                    DISPATCH();
+                }
+            }
+
+            STORE_FRAME();
+            runtimeError(vm, "Undefined property '%s'.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        // Normal indexed invoke
+        Value receiver = vm->stackTop[-(argCount + 1)];
+        if (!IS_INSTANCE(receiver)) {
+            STORE_FRAME();
+            runtimeError(vm, "Only instances have methods.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        ObjInstance* instance = AS_INSTANCE(receiver);
+        ObjClass* klass = instance->klass;
+
+        if (methodIndex >= klass->methodCount || klass->methods[methodIndex].closure == NULL) {
+            STORE_FRAME();
+            runtimeError(vm, "Undefined method.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        MethodEntry* entry = &klass->methods[methodIndex];
+
+        STORE_FRAME();
+        if (!call(vm, entry->closure, argCount)) {
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        REFRESH_FRAME();
+        DISPATCH();
+    }
+
+    OPCODE(OP_TAIL_INVOKE_0) : argCount = 0; goto do_tail_invoke_indexed;
+    OPCODE(OP_TAIL_INVOKE_1) : argCount = 1; goto do_tail_invoke_indexed;
+    OPCODE(OP_TAIL_INVOKE_2) : argCount = 2; goto do_tail_invoke_indexed;
+    OPCODE(OP_TAIL_INVOKE_3) : argCount = 3; goto do_tail_invoke_indexed;
+    OPCODE(OP_TAIL_INVOKE_4) : argCount = 4; goto do_tail_invoke_indexed;
+    OPCODE(OP_TAIL_INVOKE_5) : argCount = 5; goto do_tail_invoke_indexed;
+    OPCODE(OP_TAIL_INVOKE_6) : argCount = 6; goto do_tail_invoke_indexed;
+    OPCODE(OP_TAIL_INVOKE_7) : argCount = 7; goto do_tail_invoke_indexed;
+    OPCODE(OP_TAIL_INVOKE_8) : argCount = 8; goto do_tail_invoke_indexed;
+
+do_tail_invoke_indexed: {
+    uint8_t methodIndex = READ_BYTE();
+
+    if (methodIndex == 0xFF) {
+        // Name-based tail invoke!
+        uint8_t nameIdx = READ_BYTE();
+        Value receiver = vm->stackTop[-(argCount + 1)];
+
+        fprintf(stderr, "DEBUG tail invoke: argCount=%d, receiver type = ", argCount);
+        if (IS_INSTANCE(receiver)) fprintf(stderr, "INSTANCE\n");
+        else if (IS_NUMBER(receiver)) fprintf(stderr, "NUMBER %g\n", AS_NUMBER(receiver));
+        else if (IS_STRING(receiver)) fprintf(stderr, "STRING\n");
+        else fprintf(stderr, "OTHER\n");
+
+        if (!IS_INSTANCE(receiver)) {
+            STORE_FRAME();
+            runtimeError(vm, "Only instances have methods.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+        ObjInstance* instance = AS_INSTANCE(receiver);
+
+        // Search by name
+        ObjClosure* method = NULL;
+        for (int i = 0; i < instance->klass->methodCount; i++) {
+            if (instance->klass->methods[i].closure != NULL &&
+                instance->klass->methods[i].name != NULL &&
+                instance->klass->methods[i].name == name) {
+
+                if (argCount != instance->klass->methods[i].arity) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Expected %d arguments but got %d.",
+                        instance->klass->methods[i].arity, argCount);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                method = instance->klass->methods[i].closure;
+                break;
             }
         }
 
-        Value func = m->globalValues.values[(int) AS_NUMBER(idxVal)];
-        if (!IS_CLOSURE(func)) {
-            STORE_FRAME(); runtimeError(vm, "Tail call targets must be closures."); return INTERPRET_RUNTIME_ERROR;
+        if (method == NULL) {
+            STORE_FRAME();
+            runtimeError(vm, "Undefined property '%s'.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
         }
-        ObjClosure* c = AS_CLOSURE(func);
+
+        // Perform tail call
         closeUpvalues(vm, frame);
         memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
         vm->stackTop = frame->slots + (argCount + 1);
-        frame->closure = c;
-        frame->ip = c->function->chunk.code;
+        frame->closure = method;
+        frame->ip = method->function->chunk.code;
         frame->openUpvalues = NULL;
         ip = frame->ip;
         DISPATCH();
     }
-    STORE_FRAME(); runtimeError(vm, "Only instances and modules have methods."); return INTERPRET_RUNTIME_ERROR;
+
+    // Normal indexed tail invoke
+    Value receiver = vm->stackTop[-(argCount + 1)];
+    if (!IS_INSTANCE(receiver)) {
+        STORE_FRAME();
+        runtimeError(vm, "Only instances have methods.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    ObjInstance* instance = AS_INSTANCE(receiver);
+    ObjClass* klass = instance->klass;
+
+    if (methodIndex >= klass->methodCount || klass->methods[methodIndex].closure == NULL) {
+        STORE_FRAME();
+        runtimeError(vm, "Undefined method.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    MethodEntry* entry = &klass->methods[methodIndex];
+
+    ObjClosure* method = entry->closure;
+
+    closeUpvalues(vm, frame);
+    memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
+    vm->stackTop = frame->slots + (argCount + 1);
+    frame->closure = method;
+    frame->ip = method->function->chunk.code;
+    frame->openUpvalues = NULL;
+    ip = frame->ip;
+    DISPATCH();
     }
 
 OPCODE(OP_TAIL_INVOKE) : {
-    ObjString* method = READ_STRING();
+    uint8_t methodIndex = READ_BYTE();
     argCount = READ_BYTE();
-    Value rec = peek(vm, argCount);
-    if (IS_INSTANCE(rec)) {
-        ObjInstance* i = AS_INSTANCE(rec);
-        Value meth;
-        if (!tableGet(&i->klass->methods, OBJ_VAL(method), &meth)) {
-            STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+
+    if (methodIndex == 0xFF) {
+        // Name-based tail invoke
+        uint8_t nameIdx = READ_BYTE();
+        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+        Value receiver = vm->stackTop[-(argCount + 1)];
+
+        if (!IS_INSTANCE(receiver)) {
+            STORE_FRAME();
+            runtimeError(vm, "Only instances have methods.");
+            return INTERPRET_RUNTIME_ERROR;
         }
-        ObjClosure* c = AS_CLOSURE(meth);
-        closeUpvalues(vm, frame);
-        memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
-        vm->stackTop = frame->slots + (argCount + 1);
-        frame->closure = c;
-        frame->ip = c->function->chunk.code;
-        frame->openUpvalues = NULL;
-        ip = frame->ip;
-        DISPATCH();
-    } else if (IS_MODULE(rec)) {
-        ObjModule* m = AS_MODULE(rec);
-        Value idxVal;
-        if (!tableGet(&m->globalNames, OBJ_VAL(method), &idxVal)) {
-            if (method->length > 0) {
-                ObjString* raw = copyString(vm, method->chars, method->length - 1);
-                if (!tableGet(&m->globalNames, OBJ_VAL(raw), &idxVal)) {
-                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+
+        ObjInstance* instance = AS_INSTANCE(receiver);
+        ObjClosure* method = NULL;
+
+        for (int i = 0; i < instance->klass->methodCount; i++) {
+            if (instance->klass->methods[i].closure != NULL &&
+                instance->klass->methods[i].name != NULL &&
+                instance->klass->methods[i].name == name) {
+
+                if (argCount != instance->klass->methods[i].arity) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Expected %d arguments but got %d.",
+                        instance->klass->methods[i].arity, argCount);
+                    return INTERPRET_RUNTIME_ERROR;
                 }
-            } else {
-                STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+
+                method = instance->klass->methods[i].closure;
+                break;
             }
         }
-        Value func = m->globalValues.values[(int) AS_NUMBER(idxVal)];
-        if (!IS_CLOSURE(func)) {
-            STORE_FRAME(); runtimeError(vm, "Tail call targets must be closures."); return INTERPRET_RUNTIME_ERROR;
+
+        if (method == NULL) {
+            STORE_FRAME();
+            runtimeError(vm, "Undefined property '%s'.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
         }
-        ObjClosure* c = AS_CLOSURE(func);
+
         closeUpvalues(vm, frame);
         memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
         vm->stackTop = frame->slots + (argCount + 1);
-        frame->closure = c;
-        frame->ip = c->function->chunk.code;
+        frame->closure = method;
+        frame->ip = method->function->chunk.code;
         frame->openUpvalues = NULL;
         ip = frame->ip;
         DISPATCH();
     }
-    STORE_FRAME(); runtimeError(vm, "Only instances and modules have methods."); return INTERPRET_RUNTIME_ERROR;
+
+    // Normal indexed tail invoke
+    goto do_tail_invoke_indexed;
 }
+
 OPCODE(OP_TAIL_INVOKE_LONG) : {
-    ObjString* method = READ_STRING_LONG();
+    uint16_t methodIndex = READ_SHORT();
     argCount = READ_BYTE();
-    Value rec = peek(vm, argCount);
-    if (IS_INSTANCE(rec)) {
-        ObjInstance* i = AS_INSTANCE(rec);
-        Value meth;
-        if (!tableGet(&i->klass->methods, OBJ_VAL(method), &meth)) {
-            STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+
+    if (methodIndex == 0xFFFF) {
+        // Name-based tail invoke
+        uint16_t nameIdx = READ_SHORT();
+        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+        Value receiver = vm->stackTop[-(argCount + 1)];
+
+        if (!IS_INSTANCE(receiver)) {
+            STORE_FRAME();
+            runtimeError(vm, "Only instances have methods.");
+            return INTERPRET_RUNTIME_ERROR;
         }
-        ObjClosure* c = AS_CLOSURE(meth);
-        closeUpvalues(vm, frame);
-        memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
-        vm->stackTop = frame->slots + (argCount + 1);
-        frame->closure = c;
-        frame->ip = c->function->chunk.code;
-        frame->openUpvalues = NULL;
-        ip = frame->ip;
-        DISPATCH();
-    } else if (IS_MODULE(rec)) {
-        ObjModule* m = AS_MODULE(rec);
-        Value idxVal;
-        if (!tableGet(&m->globalNames, OBJ_VAL(method), &idxVal)) {
-            if (method->length > 0) {
-                ObjString* raw = copyString(vm, method->chars, method->length - 1);
-                if (!tableGet(&m->globalNames, OBJ_VAL(raw), &idxVal)) {
-                    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+
+        ObjInstance* instance = AS_INSTANCE(receiver);
+        ObjClosure* method = NULL;
+
+        for (int i = 0; i < instance->klass->methodCount; i++) {
+            if (instance->klass->methods[i].closure != NULL &&
+                instance->klass->methods[i].name != NULL &&
+                instance->klass->methods[i].name == name) {
+
+                if (argCount != instance->klass->methods[i].arity) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Expected %d arguments but got %d.",
+                        instance->klass->methods[i].arity, argCount);
+                    return INTERPRET_RUNTIME_ERROR;
                 }
-            } else {
-                STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", method->chars); return INTERPRET_RUNTIME_ERROR;
+
+                method = instance->klass->methods[i].closure;
+                break;
             }
         }
-        Value func = m->globalValues.values[(int) AS_NUMBER(idxVal)];
-        if (!IS_CLOSURE(func)) {
-            STORE_FRAME(); runtimeError(vm, "Tail call targets must be closures."); return INTERPRET_RUNTIME_ERROR;
+
+        if (method == NULL) {
+            STORE_FRAME();
+            runtimeError(vm, "Undefined property '%s'.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
         }
-        ObjClosure* c = AS_CLOSURE(func);
+
         closeUpvalues(vm, frame);
         memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
         vm->stackTop = frame->slots + (argCount + 1);
-        frame->closure = c;
-        frame->ip = c->function->chunk.code;
+        frame->closure = method;
+        frame->ip = method->function->chunk.code;
         frame->openUpvalues = NULL;
         ip = frame->ip;
         DISPATCH();
     }
-    STORE_FRAME(); runtimeError(vm, "Only instances and modules have methods."); return INTERPRET_RUNTIME_ERROR;
+
+    // Normal indexed tail invoke
+    Value receiver = vm->stackTop[-(argCount + 1)];
+    if (!IS_INSTANCE(receiver)) {
+        STORE_FRAME();
+        runtimeError(vm, "Only instances have methods.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    ObjInstance* instance = AS_INSTANCE(receiver);
+    ObjClass* klass = instance->klass;
+
+    if (methodIndex >= klass->methodCount || klass->methods[methodIndex].closure == NULL) {
+        STORE_FRAME();
+        runtimeError(vm, "Undefined method.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    MethodEntry* entry = &klass->methods[methodIndex];
+
+    ObjClosure* method = entry->closure;
+
+    closeUpvalues(vm, frame);
+    memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value)* (argCount + 1));
+    vm->stackTop = frame->slots + (argCount + 1);
+    frame->closure = method;
+    frame->ip = method->function->chunk.code;
+    frame->openUpvalues = NULL;
+    ip = frame->ip;
+    DISPATCH();
 }
 
-OPCODE(OP_SUPER_INVOKE_0) : argCount = 0; goto do_super_special;
-OPCODE(OP_SUPER_INVOKE_1) : argCount = 1; goto do_super_special;
-OPCODE(OP_SUPER_INVOKE_2) : argCount = 2; goto do_super_special;
-OPCODE(OP_SUPER_INVOKE_3) : argCount = 3; goto do_super_special;
-OPCODE(OP_SUPER_INVOKE_4) : argCount = 4; goto do_super_special;
-OPCODE(OP_SUPER_INVOKE_5) : argCount = 5; goto do_super_special;
-OPCODE(OP_SUPER_INVOKE_6) : argCount = 6; goto do_super_special;
-OPCODE(OP_SUPER_INVOKE_7) : argCount = 7; goto do_super_special;
-OPCODE(OP_SUPER_INVOKE_8) : argCount = 8; goto do_super_special;
+OPCODE(OP_SUPER_INVOKE_0) : argCount = 0; goto do_super_invoke_indexed;
+OPCODE(OP_SUPER_INVOKE_1) : argCount = 1; goto do_super_invoke_indexed;
+OPCODE(OP_SUPER_INVOKE_2) : argCount = 2; goto do_super_invoke_indexed;
+OPCODE(OP_SUPER_INVOKE_3) : argCount = 3; goto do_super_invoke_indexed;
+OPCODE(OP_SUPER_INVOKE_4) : argCount = 4; goto do_super_invoke_indexed;
+OPCODE(OP_SUPER_INVOKE_5) : argCount = 5; goto do_super_invoke_indexed;
+OPCODE(OP_SUPER_INVOKE_6) : argCount = 6; goto do_super_invoke_indexed;
+OPCODE(OP_SUPER_INVOKE_7) : argCount = 7; goto do_super_invoke_indexed;
+OPCODE(OP_SUPER_INVOKE_8) : argCount = 8; goto do_super_invoke_indexed;
 
-do_super_special: {
-ObjString* method = READ_STRING();
+do_super_invoke_indexed: {
+uint8_t methodIndex = READ_BYTE();
 ObjClass* superclass = AS_CLASS(pop(vm));
+
+if (methodIndex >= superclass->methodCount || superclass->methods[methodIndex].closure == NULL) {
+    STORE_FRAME();
+    runtimeError(vm, "Undefined method in superclass.");
+    return INTERPRET_RUNTIME_ERROR;
+}
+
+MethodEntry* entry = &superclass->methods[methodIndex];
+
 STORE_FRAME();
-if (!invokeFromClass(vm, superclass, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+if (!call(vm, entry->closure, argCount)) {
+    return INTERPRET_RUNTIME_ERROR;
+}
 REFRESH_FRAME();
 DISPATCH();
 }
 
 OPCODE(OP_SUPER_INVOKE) : {
-    ObjString* method = READ_STRING();
+    uint8_t methodIndex = READ_BYTE();
     argCount = READ_BYTE();
+
     ObjClass* superclass = AS_CLASS(pop(vm));
-    STORE_FRAME();
-    if (!invokeFromClass(vm, superclass, method, argCount)) return INTERPRET_RUNTIME_ERROR;
-    REFRESH_FRAME();
-    DISPATCH();
+
+    if (methodIndex == 0xFF) {
+        // Name-based super invoke
+        uint8_t nameIdx = READ_BYTE();
+        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+
+        for (int i = 0; i < superclass->methodCount; i++) {
+            if (superclass->methods[i].closure != NULL &&
+                superclass->methods[i].name != NULL &&
+                superclass->methods[i].name == name) {
+
+                if (argCount != superclass->methods[i].arity) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Expected %d arguments but got %d.",
+                        superclass->methods[i].arity, argCount);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                STORE_FRAME();
+                if (!call(vm, superclass->methods[i].closure, argCount)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                REFRESH_FRAME();
+                DISPATCH();
+            }
+        }
+
+        STORE_FRAME();
+        runtimeError(vm, "Undefined method '%s' in superclass.", name->chars);
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    // Normal indexed super invoke
+    goto do_super_invoke_indexed;
 }
+
 OPCODE(OP_SUPER_INVOKE_LONG) : {
-    ObjString* method = READ_STRING_LONG();
+    uint16_t methodIndex = READ_SHORT();
     argCount = READ_BYTE();
+
     ObjClass* superclass = AS_CLASS(pop(vm));
+
+    if (methodIndex == 0xFFFF) {
+        // Name-based super invoke
+        uint16_t nameIdx = READ_SHORT();
+        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+
+        for (int i = 0; i < superclass->methodCount; i++) {
+            if (superclass->methods[i].closure != NULL &&
+                superclass->methods[i].name != NULL &&
+                superclass->methods[i].name == name) {
+
+                if (argCount != superclass->methods[i].arity) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Expected %d arguments but got %d.",
+                        superclass->methods[i].arity, argCount);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                STORE_FRAME();
+                if (!call(vm, superclass->methods[i].closure, argCount)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                REFRESH_FRAME();
+                DISPATCH();
+            }
+        }
+
+        STORE_FRAME();
+        runtimeError(vm, "Undefined method '%s' in superclass.", name->chars);
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    // Normal indexed super invoke
+    if (methodIndex >= superclass->methodCount || superclass->methods[methodIndex].closure == NULL) {
+        STORE_FRAME();
+        runtimeError(vm, "Undefined method in superclass.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    MethodEntry* entry = &superclass->methods[methodIndex];
+
     STORE_FRAME();
-    if (!invokeFromClass(vm, superclass, method, argCount)) return INTERPRET_RUNTIME_ERROR;
+    if (!call(vm, entry->closure, argCount)) {
+        return INTERPRET_RUNTIME_ERROR;
+    }
     REFRESH_FRAME();
     DISPATCH();
 }
 
-OPCODE(OP_TAIL_SUPER_INVOKE_0) : argCount = 0; goto do_tail_super_special;
-OPCODE(OP_TAIL_SUPER_INVOKE_1) : argCount = 1; goto do_tail_super_special;
-OPCODE(OP_TAIL_SUPER_INVOKE_2) : argCount = 2; goto do_tail_super_special;
-OPCODE(OP_TAIL_SUPER_INVOKE_3) : argCount = 3; goto do_tail_super_special;
-OPCODE(OP_TAIL_SUPER_INVOKE_4) : argCount = 4; goto do_tail_super_special;
-OPCODE(OP_TAIL_SUPER_INVOKE_5) : argCount = 5; goto do_tail_super_special;
-OPCODE(OP_TAIL_SUPER_INVOKE_6) : argCount = 6; goto do_tail_super_special;
-OPCODE(OP_TAIL_SUPER_INVOKE_7) : argCount = 7; goto do_tail_super_special;
-OPCODE(OP_TAIL_SUPER_INVOKE_8) : argCount = 8; goto do_tail_super_special;
+OPCODE(OP_TAIL_SUPER_INVOKE_0) : argCount = 0; goto do_tail_super_invoke_indexed;
+OPCODE(OP_TAIL_SUPER_INVOKE_1) : argCount = 1; goto do_tail_super_invoke_indexed;
+OPCODE(OP_TAIL_SUPER_INVOKE_2) : argCount = 2; goto do_tail_super_invoke_indexed;
+OPCODE(OP_TAIL_SUPER_INVOKE_3) : argCount = 3; goto do_tail_super_invoke_indexed;
+OPCODE(OP_TAIL_SUPER_INVOKE_4) : argCount = 4; goto do_tail_super_invoke_indexed;
+OPCODE(OP_TAIL_SUPER_INVOKE_5) : argCount = 5; goto do_tail_super_invoke_indexed;
+OPCODE(OP_TAIL_SUPER_INVOKE_6) : argCount = 6; goto do_tail_super_invoke_indexed;
+OPCODE(OP_TAIL_SUPER_INVOKE_7) : argCount = 7; goto do_tail_super_invoke_indexed;
+OPCODE(OP_TAIL_SUPER_INVOKE_8) : argCount = 8; goto do_tail_super_invoke_indexed;
 
-do_tail_super_special: {
-ObjString* m = READ_STRING();
-ObjClass* s = AS_CLASS(pop(vm));
-Value meth;
-if (!tableGet(&s->methods, OBJ_VAL(m), &meth)) {
-    STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", m->chars); return INTERPRET_RUNTIME_ERROR;
+do_tail_super_invoke_indexed: {
+uint8_t methodIndex = READ_BYTE();
+ObjClass* superclass = AS_CLASS(pop(vm));
+
+if (methodIndex >= superclass->methodCount || superclass->methods[methodIndex].closure == NULL) {
+    STORE_FRAME();
+    runtimeError(vm, "Undefined method in superclass.");
+    return INTERPRET_RUNTIME_ERROR;
 }
-ObjClosure* c = AS_CLOSURE(meth);
+
+MethodEntry* entry = &superclass->methods[methodIndex];
+
+ObjClosure* method = entry->closure;
+
 closeUpvalues(vm, frame);
 memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
 vm->stackTop = frame->slots + (argCount + 1);
-frame->closure = c;
-frame->ip = c->function->chunk.code;
+frame->closure = method;
+frame->ip = method->function->chunk.code;
 frame->openUpvalues = NULL;
 ip = frame->ip;
 DISPATCH();
 }
 
 OPCODE(OP_TAIL_SUPER_INVOKE) : {
-    ObjString* m = READ_STRING();
+    uint8_t methodIndex = READ_BYTE();
     argCount = READ_BYTE();
-    ObjClass* s = AS_CLASS(pop(vm));
-    Value meth;
-    if (!tableGet(&s->methods, OBJ_VAL(m), &meth)) {
-        STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", m->chars); return INTERPRET_RUNTIME_ERROR;
+
+    ObjClass* superclass = AS_CLASS(pop(vm));
+
+    if (methodIndex == 0xFF) {
+        // Name-based tail super invoke
+        uint8_t nameIdx = READ_BYTE();
+        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+        ObjClosure* method = NULL;
+
+        for (int i = 0; i < superclass->methodCount; i++) {
+            if (superclass->methods[i].closure != NULL &&
+                superclass->methods[i].name != NULL &&
+                superclass->methods[i].name == name) {
+
+                if (argCount != superclass->methods[i].arity) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Expected %d arguments but got %d.",
+                        superclass->methods[i].arity, argCount);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                method = superclass->methods[i].closure;
+                break;
+            }
+        }
+
+        if (method == NULL) {
+            STORE_FRAME();
+            runtimeError(vm, "Undefined method '%s' in superclass.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        closeUpvalues(vm, frame);
+        memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
+        vm->stackTop = frame->slots + (argCount + 1);
+        frame->closure = method;
+        frame->ip = method->function->chunk.code;
+        frame->openUpvalues = NULL;
+        ip = frame->ip;
+        DISPATCH();
     }
-    ObjClosure* c = AS_CLOSURE(meth);
-    closeUpvalues(vm, frame);
-    memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value)* (argCount + 1));
-    vm->stackTop = frame->slots + (argCount + 1);
-    frame->closure = c;
-    frame->ip = c->function->chunk.code;
-    frame->openUpvalues = NULL;
-    ip = frame->ip;
-    DISPATCH();
+
+    // Normal indexed tail super invoke
+    goto do_tail_super_invoke_indexed;
 }
+
 OPCODE(OP_TAIL_SUPER_INVOKE_LONG) : {
-    ObjString* m = READ_STRING_LONG();
+    uint16_t methodIndex = READ_SHORT();
     argCount = READ_BYTE();
-    ObjClass* s = AS_CLASS(pop(vm));
-    Value meth;
-    if (!tableGet(&s->methods, OBJ_VAL(m), &meth)) {
-        STORE_FRAME(); runtimeError(vm, "Undefined property '%s'.", m->chars); return INTERPRET_RUNTIME_ERROR;
+
+    ObjClass* superclass = AS_CLASS(pop(vm));
+
+    if (methodIndex == 0xFFFF) {
+        // Name-based tail super invoke
+        uint16_t nameIdx = READ_SHORT();
+        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+        ObjClosure* method = NULL;
+
+        for (int i = 0; i < superclass->methodCount; i++) {
+            if (superclass->methods[i].closure != NULL &&
+                superclass->methods[i].name != NULL &&
+                superclass->methods[i].name == name) {
+
+                if (argCount != superclass->methods[i].arity) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Expected %d arguments but got %d.",
+                        superclass->methods[i].arity, argCount);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                method = superclass->methods[i].closure;
+                break;
+            }
+        }
+
+        if (method == NULL) {
+            STORE_FRAME();
+            runtimeError(vm, "Undefined method '%s' in superclass.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        closeUpvalues(vm, frame);
+        memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
+        vm->stackTop = frame->slots + (argCount + 1);
+        frame->closure = method;
+        frame->ip = method->function->chunk.code;
+        frame->openUpvalues = NULL;
+        ip = frame->ip;
+        DISPATCH();
     }
-    ObjClosure* c = AS_CLOSURE(meth);
+
+    // Normal indexed tail super invoke
+    if (methodIndex >= superclass->methodCount || superclass->methods[methodIndex].closure == NULL) {
+        STORE_FRAME();
+        runtimeError(vm, "Undefined method in superclass.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    MethodEntry* entry = &superclass->methods[methodIndex];
+
+    ObjClosure* method = entry->closure;
+
     closeUpvalues(vm, frame);
     memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value)* (argCount + 1));
     vm->stackTop = frame->slots + (argCount + 1);
-    frame->closure = c;
-    frame->ip = c->function->chunk.code;
+    frame->closure = method;
+    frame->ip = method->function->chunk.code;
     frame->openUpvalues = NULL;
     ip = frame->ip;
     DISPATCH();
@@ -1366,24 +1774,109 @@ OPCODE(OP_CLASS_LONG) : {
 OPCODE(OP_INHERIT) : {
     Value superclassVal = peek(vm, 1);
     if (!IS_CLASS(superclassVal)) {
-        STORE_FRAME(); runtimeError(vm, "Superclass must be a class."); return INTERPRET_RUNTIME_ERROR;
+        STORE_FRAME();
+        runtimeError(vm, "Superclass must be a class.");
+        return INTERPRET_RUNTIME_ERROR;
     }
+
     ObjClass* superclass = AS_CLASS(superclassVal);
     ObjClass* subclass = AS_CLASS(peek(vm, 0));
 
-    tableAddAll(vm, &superclass->methods, &subclass->methods);
+    // Copy vtable array
+    if (superclass->methodCount > 0) {
+        subclass->methodCapacity = superclass->methodCapacity;
+        subclass->methodCount = superclass->methodCount;
+        subclass->methods = ALLOCATE(vm, MethodEntry, subclass->methodCapacity);
 
-    // Inherit the layout
+        memcpy(subclass->methods, superclass->methods,
+            sizeof(MethodEntry) * superclass->methodCount);
+
+        tableAddAll(vm, &superclass->methodIndices, &subclass->methodIndices);
+    }
+
+    // Inherit field layout
     tableAddAll(vm, &superclass->fieldIndices, &subclass->fieldIndices);
     subclass->fieldCount = superclass->fieldCount;
 
-    pop(vm); // subclass
-    pop(vm); // superclass
+    pop(vm);
+    pop(vm);
     DISPATCH();
 }
 
-OPCODE(OP_METHOD) : { ObjString* n = READ_STRING(); defineMethod(vm, AS_CLASS(peek(vm, 1)), n, peek(vm, 0)); pop(vm); DISPATCH(); }
-OPCODE(OP_METHOD_LONG) : { ObjString* n = READ_STRING_LONG(); defineMethod(vm, AS_CLASS(peek(vm, 1)), n, peek(vm, 0)); pop(vm); DISPATCH(); }
+OPCODE(OP_METHOD) : {
+    uint8_t methodIndex = READ_BYTE();
+    uint8_t arity = READ_BYTE();
+
+    ObjClosure* method = AS_CLOSURE(peek(vm, 0));
+    ObjClass* klass = AS_CLASS(peek(vm, 1));
+
+    if (methodIndex >= klass->methodCapacity) {
+        growMethodTable(vm, klass, methodIndex);
+    }
+
+    klass->methods[methodIndex].closure = method;
+    klass->methods[methodIndex].arity = arity;
+    klass->methods[methodIndex].name = method->function->name;
+
+    if (methodIndex >= klass->methodCount) {
+        klass->methodCount = methodIndex + 1;
+    }
+
+    // Also store in methodIndices table for inheritance
+    ObjString* name = method->function->name;
+    int nameLen = name->length;
+    char* buffer = ALLOCATE(vm, char, nameLen + 2);
+    memcpy(buffer, name->chars, nameLen);
+    buffer[nameLen] = (char) arity;
+    buffer[nameLen + 1] = '\0';
+    ObjString* signature = copyString(vm, buffer, nameLen + 1);
+    FREE_ARRAY(vm, char, buffer, nameLen + 2);
+
+    push(vm, OBJ_VAL(signature));
+    tableSet(vm, &klass->methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
+    pop(vm);
+
+    pop(vm);
+    DISPATCH();
+}
+
+OPCODE(OP_METHOD_LONG) : {
+    uint16_t methodIndex = READ_SHORT();
+    uint8_t arity = READ_BYTE();
+
+    ObjClosure* method = AS_CLOSURE(peek(vm, 0));
+    ObjClass* klass = AS_CLASS(peek(vm, 1));
+
+    if (methodIndex >= klass->methodCapacity) {
+        growMethodTable(vm, klass, methodIndex);
+    }
+
+    klass->methods[methodIndex].closure = method;
+    klass->methods[methodIndex].arity = arity;
+    klass->methods[methodIndex].name = method->function->name;
+
+    if (methodIndex >= klass->methodCount) {
+        klass->methodCount = methodIndex + 1;
+    }
+
+    // Also store in methodIndices table for inheritance
+    ObjString* name = method->function->name;
+    int nameLen = name->length;
+    char* buffer = ALLOCATE(vm, char, nameLen + 2);
+    memcpy(buffer, name->chars, nameLen);
+    buffer[nameLen] = (char) arity;
+    buffer[nameLen + 1] = '\0';
+    ObjString* signature = copyString(vm, buffer, nameLen + 1);
+    FREE_ARRAY(vm, char, buffer, nameLen + 2);
+
+    push(vm, OBJ_VAL(signature));
+    tableSet(vm, &klass->methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
+    pop(vm);
+
+    pop(vm);
+    DISPATCH();
+}
+
 
 OPCODE(OP_BUILD_LIST) : {
     uint8_t count = READ_BYTE(); ObjList* l = newList(vm); push(vm, OBJ_VAL(l));
@@ -1462,7 +1955,7 @@ OPCODE(OP_IMPORT_LONG) : {
 }
 
 #ifndef HAS_COMPUTED_GOTOS
-        }
+}
     }
 #endif
 }

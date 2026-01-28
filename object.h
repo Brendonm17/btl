@@ -53,7 +53,6 @@ struct ObjUpvalue {
     Value closed;
 };
 
-
 struct RuntimeUpvalue {
     bool isOpen;
     bool isMutable;
@@ -84,6 +83,7 @@ typedef struct ObjModule {
     ObjString* name;
     Table globalNames;
     ValueArray globalValues;
+    Table classInfo;
 } ObjModule;
 
 typedef struct ObjFunction {
@@ -101,11 +101,26 @@ typedef struct ObjNative {
     NativeFn function;
 } ObjNative;
 
+// OPTIMIZATION: Method table entry for vtable-based dispatch
+typedef struct {
+    ObjClosure* closure;
+    uint8_t arity;
+    ObjString* name;
+} MethodEntry;
+
 typedef struct ObjClass {
     Obj obj;
     ObjString* name;
-    Table methods;
 
+    // OPTIMIZED: Vtable for fast method dispatch
+    MethodEntry* methods;       // Array of methods (vtable)
+    int methodCount;            // Number of defined methods
+    int methodCapacity;         // Allocated capacity
+
+    // Method name->index mapping (compile-time lookup only)
+    Table methodIndices;        // ObjString* -> NUMBER_VAL(index)
+
+    // Field system (already optimized)
     Table fieldIndices;
     int fieldCount;
 } ObjClass;

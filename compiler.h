@@ -66,6 +66,8 @@ typedef struct ClassCompiler {
     bool hasSuperclass;
     Table fields;
     int fieldCount;
+    Table methodIndices;
+    int nextMethodIndex;
 } ClassCompiler;
 
 ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source);

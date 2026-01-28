@@ -37,6 +37,20 @@ void markValue(struct VM* vm, Value value) {
     if (IS_OBJ(value)) markObject(vm, AS_OBJ(value));
 }
 
+static void markClass(VM* vm, ObjClass* klass) {
+    markObject(vm, (Obj*) klass->name);
+    markTable(vm, &klass->methodIndices);
+    markTable(vm, &klass->fieldIndices);
+
+    // Mark all methods in vtable
+    for (int i = 0; i < klass->methodCount; i++) {
+        if (klass->methods[i].closure != NULL) {
+            markObject(vm, (Obj*) klass->methods[i].closure);
+            markObject(vm, (Obj*) klass->methods[i].name);  // ← Make sure this is here
+        }
+    }
+}
+
 static void markArray(struct VM* vm, ValueArray* array) {
     for (int i = 0; i < array->count; i++) {
         markValue(vm, array->values[i]);
@@ -52,10 +66,7 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
         break;
     }
     case OBJ_CLASS: {
-        ObjClass* k = (ObjClass*) object;
-        markObject(vm, (struct Obj*) k->name);
-        markTable(vm, &k->methods);
-        markTable(vm, &k->fieldIndices);
+        markClass(vm, (ObjClass*) object);
         break;
     }
     case OBJ_CLOSURE: {
@@ -118,8 +129,16 @@ static void freeObject(struct VM* vm, struct Obj* object) {
         break;
     case OBJ_CLASS: {
         ObjClass* klass = (ObjClass*) object;
-        freeTable(vm, &klass->methods);
-        freeTable(vm, &klass->fieldIndices); // Free the index map
+
+        // OPTIMIZED: Free the vtable array
+        if (klass->methods != NULL) {
+            FREE_ARRAY(vm, MethodEntry, klass->methods, klass->methodCapacity);
+        }
+
+        // Free tables
+        freeTable(vm, &klass->methodIndices);
+        freeTable(vm, &klass->fieldIndices);
+
         FREE(vm, ObjClass, object);
         break;
     }
@@ -152,8 +171,15 @@ static void freeObject(struct VM* vm, struct Obj* object) {
     }
     case OBJ_MODULE: {
         ObjModule* m = (ObjModule*) object;
-        freeTable(vm, &m->globalNames);
-        freeValueArray(vm, &m->globalValues);
+        for (int i = 0; i < m->classInfo.capacity; i++) {
+            Entry* entry = &m->classInfo.entries[i];
+            if (!IS_EMPTY(entry->key)) {
+                Table* savedTable = (Table*) (uintptr_t) AS_NUMBER(entry->value);
+                freeTable(vm, savedTable);
+                FREE(vm, Table, savedTable);
+            }
+        }
+        freeTable(vm, &m->classInfo);
         FREE(vm, ObjModule, object);
         break;
     }
