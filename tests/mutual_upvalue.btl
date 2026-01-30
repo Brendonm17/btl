@@ -1,4 +1,4 @@
-fun wrapper() {
+func wrapper() {
   var secret = "correct";
   
   // 1. Declare the names first
@@ -6,12 +6,12 @@ fun wrapper() {
   var isOdd;
 
   // 2. Assign the functions to the variables
-  isEven = fun(n) {
+  isEven = func(n) {
     if (n == 0) return secret;
     return isOdd(n - 1);
   };
 
-  isOdd = fun(n) {
+  isOdd = func(n) {
     if (n == 0) return "wrong";
     return isEven(n - 1);
   };

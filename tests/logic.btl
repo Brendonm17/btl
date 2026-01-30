@@ -1,6 +1,6 @@
 var sideEffect = "did not run";
 
-fun setSideEffect() {
+func setSideEffect() {
   sideEffect = "ran";
   return true;
 }

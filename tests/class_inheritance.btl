@@ -1,11 +1,11 @@
 class Doughnut {
-  cook() {
+  func cook() {
     print "Fry until golden brown.";
   }
 }
 
 class BostonCream < Doughnut {
-  fill() {
+  func fill() {
     print "Insert custard.";
   }
 }

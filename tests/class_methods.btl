@@ -1,5 +1,5 @@
 class Person {
-  sayName() {
+  func sayName() {
     print this.name;
   }
 }

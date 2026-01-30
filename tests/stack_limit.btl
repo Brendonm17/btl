@@ -1,4 +1,4 @@
-fun recurse(n) {
+func recurse(n) {
   if (n == 0) return "done";
   return recurse(n - 1);
 }

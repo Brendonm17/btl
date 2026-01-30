@@ -1028,7 +1028,7 @@ ParseRule rules [] = {
   [TOKEN_SUPER] = {super_, NULL, PREC_NONE},
   [TOKEN_THIS] = {this_, NULL, PREC_NONE},
   [TOKEN_EOF] = {NULL, NULL, PREC_NONE},
-  [TOKEN_FUN] = {func, NULL,   PREC_NONE},
+  [TOKEN_FUNC] = {func, NULL,   PREC_NONE},
 };
 
 static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Precedence prec) {
@@ -1105,13 +1105,17 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect method name.");
     Token nameToken = p->previous;
     FunctionType type = TYPE_METHOD;
+    bool isInit = false;
+
     if (p->previous.length == 4 && memcmp(p->previous.start, "init", 4) == 0) {
         type = TYPE_INITIALIZER;
+        isInit = true;
     }
 
     Compiler sub;
     initCompiler(p, &sub, c, type, c->module);
     beginScope(&sub);
+
     consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
     if (!check(p, TOKEN_RIGHT_PAREN)) {
         do {
@@ -1122,6 +1126,39 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     }
     consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
     consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
+
+    // INJECT FIELD INITIALIZERS at the start of init()
+    if (isInit && cc != NULL) {
+        for (int i = 0; i < cc->fieldCount; i++) {
+            if (cc->fieldInfos[i].hasInit) {
+                // Create a mini-scanner for the initializer expression
+                Scanner initScanner;
+                initScanner.start = cc->fieldInfos[i].initSource;
+                initScanner.current = cc->fieldInfos[i].initSource;
+                initScanner.line = 1;  // Line doesn't matter for initializers
+
+                // Create a mini-parser
+                Parser initParser = *p;  // Copy current parser state
+                initParser.hadError = false;
+                initParser.panicMode = false;
+
+                // Prime the scanner
+                advance(&initParser, &initScanner);
+
+                // Compile the expression
+                expression(&initParser, &initScanner, &sub, cc);
+
+                // Emit: this.fieldName = <expression>
+                emitBytes(p, &sub, OP_SET_FIELD_THIS, (uint8_t) i);
+                emitPopOrRemoveLoad(p, &sub);
+
+                // Check if there was an error
+                if (initParser.hadError) {
+                    errorAt(p, &nameToken, "Error in field initializer.");
+                }
+            }
+        }
+    }
     block(p, s, &sub, cc);
     ObjFunction* f = endCompiler(p, &sub);
 
@@ -1173,6 +1210,7 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
     }
 }
+
 static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     consume(p, s, TOKEN_IDENTIFIER, "Expect class name.");
     Token nameToken = p->previous;
@@ -1188,10 +1226,15 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     classC.hasSuperclass = false;
     classC.fieldCount = 0;
     initTable(&classC.fields);
-
-    // Initialize method tracking
     initTable(&classC.methodIndices);
     classC.nextMethodIndex = 0;
+
+    classC.fieldInfoCapacity = 8;
+    classC.fieldInfos = ALLOCATE(c->vm, FieldInfo, classC.fieldInfoCapacity);
+
+    // Track if user defined init and if we have initializers
+    bool userDefinedInit = false;
+    bool hasFieldInitializers = false;
 
     if (match(p, s, TOKEN_LESS)) {
         consume(p, s, TOKEN_IDENTIFIER, "Expect superclass name.");
@@ -1245,19 +1288,185 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     consume(p, s, TOKEN_LEFT_BRACE, "Expect '{' before class body.");
     while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
         if (match(p, s, TOKEN_VAR)) {
-            consume(p, s, TOKEN_IDENTIFIER, "Expect variable name.");
-            Token fieldName = p->previous;
+            do {
+                consume(p, s, TOKEN_IDENTIFIER, "Expect variable name.");
+                Token fieldName = p->previous;
+
+                ObjString* name = copyString(c->vm, fieldName.start, fieldName.length);
+                Value dummy;
+                int fieldIndex;
+
+                if (!tableGet(&classC.fields, OBJ_VAL(name), &dummy)) {
+                    fieldIndex = classC.fieldCount++;
+                    tableSet(c->vm, &classC.fields, OBJ_VAL(name), NUMBER_VAL((double) fieldIndex));
+
+                    // Grow array if needed
+                    if (fieldIndex >= classC.fieldInfoCapacity) {
+                        int oldCap = classC.fieldInfoCapacity;
+                        classC.fieldInfoCapacity *= 2;
+                        classC.fieldInfos = GROW_ARRAY(c->vm, FieldInfo, classC.fieldInfos,
+                            oldCap, classC.fieldInfoCapacity);
+                    }
+
+                    classC.fieldInfos[fieldIndex].fieldName = name;
+                    classC.fieldInfos[fieldIndex].fieldIndex = fieldIndex;
+                    classC.fieldInfos[fieldIndex].hasInit = false;
+                } else {
+                    fieldIndex = (int) AS_NUMBER(dummy);
+                }
+
+                // Check for initializer
+                if (match(p, s, TOKEN_EQUAL)) {
+                    hasFieldInitializers = true;  // Mark that we have at least one initializer
+
+                    // Remember where the expression starts
+                    const char* exprStart = p->current.start;
+
+                    // Parse the expression to validate it and find its end
+                    int parenDepth = 0;
+                    int braceDepth = 0;
+                    int bracketDepth = 0;
+
+                    while (!check(p, TOKEN_EOF)) {
+                        // Track nesting
+                        if (check(p, TOKEN_LEFT_PAREN)) parenDepth++;
+                        if (check(p, TOKEN_RIGHT_PAREN)) parenDepth--;
+                        if (check(p, TOKEN_LEFT_BRACE)) braceDepth++;
+                        if (check(p, TOKEN_RIGHT_BRACE)) braceDepth--;
+                        if (check(p, TOKEN_LEFT_BRACKET)) bracketDepth++;
+                        if (check(p, TOKEN_RIGHT_BRACKET)) bracketDepth--;
+
+                        // Stop at comma or semicolon when not nested
+                        if (parenDepth == 0 && braceDepth == 0 && bracketDepth == 0) {
+                            if (check(p, TOKEN_COMMA) || check(p, TOKEN_SEMICOLON)) {
+                                break;
+                            }
+                        }
+
+                        advance(p, s);
+                    }
+
+                    // Calculate length of expression
+                    const char* exprEnd = p->previous.start + p->previous.length;
+                    int exprLength = (int) (exprEnd - exprStart);
+
+                    // Store the source text
+                    classC.fieldInfos[fieldIndex].initSource = exprStart;
+                    classC.fieldInfos[fieldIndex].initLength = exprLength;
+                    classC.fieldInfos[fieldIndex].hasInit = true;
+                }
+            } while (match(p, s, TOKEN_COMMA));
+
             consume(p, s, TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
-            ObjString* name = copyString(c->vm, fieldName.start, fieldName.length);
-            Value dummy;
-            if (!tableGet(&classC.fields, OBJ_VAL(name), &dummy)) {
-                tableSet(c->vm, &classC.fields, OBJ_VAL(name), NUMBER_VAL((double) classC.fieldCount++));
+        } else if (match(p, s, TOKEN_FUNC)) {
+            // Peek at the method name without consuming it
+            if (check(p, TOKEN_IDENTIFIER) &&
+                p->current.length == 4 &&
+                memcmp(p->current.start, "init", 4) == 0) {
+                userDefinedInit = true;
             }
-        } else {
+
+            // Now let method() consume it normally
             method(p, s, c, &classC);
+        } else {
+            errorAt(p, &p->current, "Expect 'func' or 'var' in class body.");
+            advance(p, s);
         }
     }
     consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
+
+    // AUTO-GENERATE init() if we have field initializers but no user-defined init
+    if (hasFieldInitializers && !userDefinedInit) {
+        namedVariable(p, s, c, NULL, nameToken, false);
+
+        // Create synthetic init() method
+        Token initToken;
+        initToken.start = "init";
+        initToken.length = 4;
+        initToken.line = nameToken.line;
+        initToken.type = TOKEN_IDENTIFIER;
+
+        Compiler sub;
+        initCompiler(p, &sub, c, TYPE_INITIALIZER, c->module);
+        beginScope(&sub);
+
+        // No parameters for auto-generated init
+        sub.function->arity = 0;
+
+        // Inject field initializers
+        for (int i = 0; i < classC.fieldCount; i++) {
+            if (classC.fieldInfos[i].hasInit) {
+                Scanner initScanner;
+                initScanner.start = classC.fieldInfos[i].initSource;
+                initScanner.current = classC.fieldInfos[i].initSource;
+                initScanner.line = 1;
+
+                Parser initParser = *p;
+                initParser.hadError = false;
+                initParser.panicMode = false;
+
+                advance(&initParser, &initScanner);
+                expression(&initParser, &initScanner, &sub, &classC);
+
+                emitBytes(p, &sub, OP_SET_FIELD_THIS, (uint8_t) i);
+                emitPopOrRemoveLoad(p, &sub);
+
+                if (initParser.hadError) {
+                    p->hadError = true;
+                }
+            }
+        }
+
+        // Return this
+        emitBytes(p, &sub, OP_GET_LOCAL, 0);
+        emitByte(p, &sub, OP_RETURN);
+
+        ObjFunction* f = sub.function;
+
+        push(c->vm, OBJ_VAL(f));
+        int fnIdx = makeConstant(p, c, OBJ_VAL(f));
+        emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, fnIdx);
+        pop(c->vm);
+
+        // Emit upvalue info
+        for (int i = 0; i < f->upvalueCount; i++) {
+            writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
+            writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
+            bool isMut = sub.upvalues[i].isMutable;
+            if (sub.upvalues[i].isLocal && c->locals[sub.upvalues[i].index].isModified) {
+                isMut = true;
+            }
+            writeChunk(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
+        }
+
+        // Register the method
+        ObjString* signature = createMethodSignature(c, &initToken, 0);
+        push(c->vm, OBJ_VAL(signature));
+
+        Value indexValue;
+        int methodIndex;
+        if (tableGet(&classC.methodIndices, OBJ_VAL(signature), &indexValue)) {
+            methodIndex = (int) AS_NUMBER(indexValue);
+        } else {
+            methodIndex = classC.nextMethodIndex++;
+            tableSet(c->vm, &classC.methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
+        }
+
+        pop(c->vm);
+
+        if (methodIndex < 256) {
+            emitByte(p, c, OP_METHOD);
+            writeChunk(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
+            writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
+        } else {
+            emitByte(p, c, OP_METHOD_LONG);
+            writeChunk(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
+            writeChunk(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
+            writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
+        }
+
+        emitByte(p, c, OP_POP);
+    }
 
     // Sync Fields
     for (int i = 0; i < classC.fieldCount; i++) {
@@ -1282,6 +1491,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     }
 
     freeTable(c->vm, &classC.fields);
+
     // Save class compilation info for child classes to use
     ObjString* className = copyString(c->vm, nameToken.start, nameToken.length);
     push(c->vm, OBJ_VAL(className));
@@ -1292,12 +1502,12 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     tableAddAll(c->vm, &classC.methodIndices, savedIndices);
 
     // Store it in the module's classInfo table as a pointer
-    // (We'll use a number to store the pointer)
     tableSet(c->vm, &c->module->classInfo, OBJ_VAL(className),
         NUMBER_VAL((double) (uintptr_t) savedIndices));
 
     pop(c->vm);
     freeTable(c->vm, &classC.methodIndices);
+    FREE_ARRAY(c->vm, FieldInfo, classC.fieldInfos, classC.fieldInfoCapacity);
 }
 
 static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
@@ -1519,13 +1729,18 @@ static int parseVariable(Parser* p, Scanner* s, Compiler* c, const char* msg) {
 
 static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (match(p, s, TOKEN_CLASS)) classDeclaration(p, s, c, cc);
-    else if (match(p, s, TOKEN_FUN)) funDeclaration(p, s, c, cc);
+    else if (match(p, s, TOKEN_FUNC)) funDeclaration(p, s, c, cc);
     else if (match(p, s, TOKEN_VAR)) {
-        int global = parseVariable(p, s, c, "Expect name.");
-        if (match(p, s, TOKEN_EQUAL)) expression(p, s, c, cc);
-        else emitByte(p, c, OP_NIL);
+        do {
+            int global = parseVariable(p, s, c, "Expect name.");
+            if (match(p, s, TOKEN_EQUAL)) {
+                expression(p, s, c, cc);
+            } else {
+                emitByte(p, c, OP_NIL);
+            }
+            defineVariable(p, c, global);
+        } while (match(p, s, TOKEN_COMMA));
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        defineVariable(p, c, global);
     } else if (match(p, s, TOKEN_IMPORT)) {
         consume(p, s, TOKEN_STRING, "Expect filename.");
         Token pathToken = p->previous;
@@ -1554,7 +1769,7 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
                 p->panicMode = false; return;
             }
             switch (p->current.type) {
-            case TOKEN_CLASS: case TOKEN_FUN: case TOKEN_VAR: case TOKEN_FOR:
+            case TOKEN_CLASS: case TOKEN_FUNC: case TOKEN_VAR: case TOKEN_FOR:
             case TOKEN_IF: case TOKEN_WHILE: case TOKEN_PRINT: case TOKEN_RETURN: p->panicMode = false; return;
             default:;
             }

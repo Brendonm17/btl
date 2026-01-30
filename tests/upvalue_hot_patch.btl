@@ -1,10 +1,10 @@
 // This will run millions of upvalue lookups.
 // The VM will patch OP_GET_UPVALUE to OP_GET_UPVALUE_OPEN immediately,
 // and eventually to OP_GET_UPVALUE_CLOSED.
-fun test() {
+func test() {
   var count = 0;
   
-  fun increment() {
+  func increment() {
     count = count + 1;
   }
 

@@ -1,6 +1,6 @@
 class Person {
-  init(name) { this.name = name; }
-  sayName() { print this.name; }
+  func init(name) { this.name = name; }
+  func sayName() { print this.name; }
 }
 
 var p = Person("Alice");

@@ -1,12 +1,12 @@
-fun map(list, func) {
+func map(list, fun) {
   var new_list = [];
   for (var i = 0; i < 3; i = i + 1) { // Assuming list length 3 for now
-    new_list[i] = func(list[i]);
+    new_list[i] = fun(list[i]);
   }
   return new_list;
 }
 
-fun double(x) { return x * 2; }
+func double(x) { return x * 2; }
 
 var results = map([1, 2, 3], double);
 print results[0]; // expect: 2

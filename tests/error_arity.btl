@@ -1,4 +1,4 @@
-fun takeTwo(a, b) {
+func takeTwo(a, b) {
   return a + b;
 }
 

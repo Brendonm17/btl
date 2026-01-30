@@ -1,5 +1,5 @@
 // This function recurses far beyond the 64-call limit of the standard VM.
-fun count(n) {
+func count(n) {
   if (n == 0) {
     return "TCO Success";
   }

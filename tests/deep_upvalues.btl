@@ -1,7 +1,7 @@
-fun level1(a) {
-  fun level2(b) {
-    fun level3(c) {
-      fun level4(d) {
+func level1(a) {
+  func level2(b) {
+    func level3(c) {
+      func level4(d) {
         return a + b + c + d;
       }
       return level4;

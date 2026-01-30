@@ -1,4 +1,4 @@
-fun addElement(l, val) {
+func addElement(l, val) {
   l[3] = val; // Assuming list started with 3 elements
 }
 
