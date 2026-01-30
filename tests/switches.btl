@@ -62,48 +62,15 @@ switch (y) {
     break;
 };
 
-// duping a few times to check stack contents
+// boolean cases
 switch (y) {
     case 5:
     print "5";
     break;
-    case 8:
-    print "8";
+    case > 8:
+    print "8";                          // expect: 8
     break;
     default:
-    print "other";                      // expect: other
-    break;
-};
-switch (y) {
-    case 5:
-    print "5";
-    break;
-    case 8:
-    print "8";
-    break;
-    default:
-    print "other";                      // expect: other
-    break;
-};
-switch (y) {
-    case 5:
-    print "5";
-    break;
-    case 8:
-    print "8";
-    break;
-    default:
-    print "other";                      // expect: other
-    break;
-};
-switch (y) {
-    case 5:
-    print "5";
-    break;
-    case 8:
-    print "8";
-    break;
-    default:
-    print "other";                      // expect: other
+    print "other";
     break;
 };

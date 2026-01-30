@@ -1515,10 +1515,54 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
                 emitByte(p, c, OP_POP);
             }
 
-            emitByte(p, c, OP_DUP);
-            expression(p, s, c, cc);
-            consume(p, s, TOKEN_COLON, "Expect ':' after case value.");
-            emitByte(p, c, OP_EQUAL);
+            // Check if this is a boolean condition (starts with comparison operator)
+            bool isBooleanCondition = false;
+            if (check(p, TOKEN_LESS) || check(p, TOKEN_LESS_EQUAL) ||
+                check(p, TOKEN_GREATER) || check(p, TOKEN_GREATER_EQUAL) ||
+                check(p, TOKEN_EQUAL_EQUAL) || check(p, TOKEN_BANG_EQUAL)) {
+                isBooleanCondition = true;
+            }
+
+            if (isBooleanCondition) {
+                // Boolean condition: case < 5:
+                emitByte(p, c, OP_DUP);
+
+                TokenType op = p->current.type;
+                advance(p, s);  // Consume the operator
+
+                expression(p, s, c, cc);  // Parse right side
+                consume(p, s, TOKEN_COLON, "Expect ':' after case condition.");
+
+                // Emit the comparison operator
+                switch (op) {
+                case TOKEN_LESS:
+                    emitByte(p, c, OP_LESS);
+                    break;
+                case TOKEN_LESS_EQUAL:
+                    emitBytes(p, c, OP_GREATER, OP_NOT);
+                    break;
+                case TOKEN_GREATER:
+                    emitByte(p, c, OP_GREATER);
+                    break;
+                case TOKEN_GREATER_EQUAL:
+                    emitBytes(p, c, OP_LESS, OP_NOT);
+                    break;
+                case TOKEN_EQUAL_EQUAL:
+                    emitByte(p, c, OP_EQUAL);
+                    break;
+                case TOKEN_BANG_EQUAL:
+                    emitBytes(p, c, OP_EQUAL, OP_NOT);
+                    break;
+                default:
+                    break;
+                }
+            } else {
+                // Normal value comparison: case 10:
+                emitByte(p, c, OP_DUP);
+                expression(p, s, c, cc);
+                consume(p, s, TOKEN_COLON, "Expect ':' after case value.");
+                emitByte(p, c, OP_EQUAL);
+            }
 
             int caseJump = emitJump(p, c, OP_JUMP_IF_FALSE);
             emitByte(p, c, OP_POP);
@@ -1615,7 +1659,6 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
             patchJump(p, c, switchCtx.breakJumps[i]);
         }
 
-        // Push NIL so the expression statement handler can pop it
         emitByte(p, c, OP_NIL);
     }
 
