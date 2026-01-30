@@ -1515,57 +1515,83 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
                 emitByte(p, c, OP_POP);
             }
 
-            // Check if this is a boolean condition (starts with comparison operator)
-            bool isBooleanCondition = false;
-            if (check(p, TOKEN_LESS) || check(p, TOKEN_LESS_EQUAL) ||
-                check(p, TOKEN_GREATER) || check(p, TOKEN_GREATER_EQUAL) ||
-                check(p, TOKEN_EQUAL_EQUAL) || check(p, TOKEN_BANG_EQUAL)) {
-                isBooleanCondition = true;
-            }
+            int* successJumps = ALLOCATE(c->vm, int, 8);
+            int successCount = 0;
+            int successCapacity = 8;
 
-            if (isBooleanCondition) {
-                // Boolean condition: case < 5:
-                emitByte(p, c, OP_DUP);
+            // Parse conditions in a loop
+            for (;;) {
+                bool isBooleanCondition = (check(p, TOKEN_LESS) || check(p, TOKEN_LESS_EQUAL) ||
+                    check(p, TOKEN_GREATER) || check(p, TOKEN_GREATER_EQUAL) ||
+                    check(p, TOKEN_EQUAL_EQUAL) || check(p, TOKEN_BANG_EQUAL));
 
-                TokenType op = p->current.type;
-                advance(p, s);  // Consume the operator
+                if (isBooleanCondition) {
+                    emitByte(p, c, OP_DUP);
+                    TokenType op = p->current.type;
+                    advance(p, s);
+                    parsePrecedence(p, s, c, cc, PREC_COMPARISON);  // Changed from expression()
 
-                expression(p, s, c, cc);  // Parse right side
-                consume(p, s, TOKEN_COLON, "Expect ':' after case condition.");
-
-                // Emit the comparison operator
-                switch (op) {
-                case TOKEN_LESS:
-                    emitByte(p, c, OP_LESS);
-                    break;
-                case TOKEN_LESS_EQUAL:
-                    emitBytes(p, c, OP_GREATER, OP_NOT);
-                    break;
-                case TOKEN_GREATER:
-                    emitByte(p, c, OP_GREATER);
-                    break;
-                case TOKEN_GREATER_EQUAL:
-                    emitBytes(p, c, OP_LESS, OP_NOT);
-                    break;
-                case TOKEN_EQUAL_EQUAL:
+                    switch (op) {
+                    case TOKEN_LESS: emitByte(p, c, OP_LESS); break;
+                    case TOKEN_LESS_EQUAL: emitBytes(p, c, OP_GREATER, OP_NOT); break;
+                    case TOKEN_GREATER: emitByte(p, c, OP_GREATER); break;
+                    case TOKEN_GREATER_EQUAL: emitBytes(p, c, OP_LESS, OP_NOT); break;
+                    case TOKEN_EQUAL_EQUAL: emitByte(p, c, OP_EQUAL); break;
+                    case TOKEN_BANG_EQUAL: emitBytes(p, c, OP_EQUAL, OP_NOT); break;
+                    default: break;
+                    }
+                } else {
+                    emitByte(p, c, OP_DUP);
+                    parsePrecedence(p, s, c, cc, PREC_COMPARISON);  // Changed from expression()
                     emitByte(p, c, OP_EQUAL);
-                    break;
-                case TOKEN_BANG_EQUAL:
-                    emitBytes(p, c, OP_EQUAL, OP_NOT);
-                    break;
-                default:
+                }
+
+                // Check if there's another condition coming
+                if (match(p, s, TOKEN_COMMA) || match(p, s, TOKEN_OR) || match(p, s, TOKEN_AND)) {
+                    // For OR/comma: if current condition is true, jump to case body
+                    // For AND: if current condition is false, jump to next case
+
+                    if (p->previous.type == TOKEN_AND) {
+                        // AND logic: must continue if true, fail if false
+                        int andJump = emitJump(p, c, OP_JUMP_IF_FALSE);
+                        emitByte(p, c, OP_POP);
+
+                        // This is a case failure jump - add to caseJumps
+                        if (switchCtx.caseJumpCount >= switchCtx.caseJumpCapacity) {
+                            int oldCap = switchCtx.caseJumpCapacity;
+                            switchCtx.caseJumpCapacity *= 2;
+                            switchCtx.caseJumps = GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
+                        }
+                        switchCtx.caseJumps[switchCtx.caseJumpCount++] = andJump;
+                    } else {
+                        // OR/comma logic: short-circuit to success
+                        int orJump = emitJump(p, c, OP_JUMP_IF_TRUE);
+                        emitByte(p, c, OP_POP);
+
+                        if (successCount >= successCapacity) {
+                            int oldCap = successCapacity;
+                            successCapacity *= 2;
+                            successJumps = GROW_ARRAY(c->vm, int, successJumps, oldCap, successCapacity);
+                        }
+                        successJumps[successCount++] = orJump;
+                    }
+                    // Continue to parse next condition
+                } else {
+                    // No more conditions
                     break;
                 }
-            } else {
-                // Normal value comparison: case 10:
-                emitByte(p, c, OP_DUP);
-                expression(p, s, c, cc);
-                consume(p, s, TOKEN_COLON, "Expect ':' after case value.");
-                emitByte(p, c, OP_EQUAL);
             }
+
+            consume(p, s, TOKEN_COLON, "Expect ':' after case condition.");
 
             int caseJump = emitJump(p, c, OP_JUMP_IF_FALSE);
             emitByte(p, c, OP_POP);
+
+            for (int i = 0; i < successCount; i++) {
+                patchJump(p, c, successJumps[i]);
+                emitByte(p, c, OP_POP);
+            }
+            FREE_ARRAY(c->vm, int, successJumps, successCapacity);
 
             if (switchCtx.caseJumpCount >= switchCtx.caseJumpCapacity) {
                 int oldCap = switchCtx.caseJumpCapacity;

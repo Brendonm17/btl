@@ -74,3 +74,26 @@ switch (y) {
     print "other";
     break;
 };
+
+// all mixed up
+func oddSwitch(x) {
+    switch (x) {
+        case 1, 2, 3:
+            print "small";
+            break;
+        case < 0 or > 100:
+            print "out of range";
+            break;
+        case >= 10 and <= 20:
+            print "teens";
+            break;
+        case 5, < 8 or > 50:
+            print "mixed";
+            break;
+    };
+}
+
+oddSwitch(2);                           // expect: small
+oddSwitch(-5);                          // expect: out of range
+oddSwitch(16);                          // expect: teens
+oddSwitch(55);                          // expect: mixed
