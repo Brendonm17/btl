@@ -75,8 +75,11 @@ switch (y) {
     break;
 };
 
+var five = 5;
+
 // all mixed up
 func oddSwitch(x) {
+    var four = 4;
     switch (x) {
         case 1, 2, 3:
             print "small";
@@ -87,7 +90,7 @@ func oddSwitch(x) {
         case >= 10 and <= 20:
             print "teens";
             break;
-        case 5, < 8 or > 50:
+        case five, four, < 8 or > 50:
             print "mixed";
             break;
     };
@@ -96,4 +99,5 @@ func oddSwitch(x) {
 oddSwitch(2);                           // expect: small
 oddSwitch(-5);                          // expect: out of range
 oddSwitch(16);                          // expect: teens
-oddSwitch(55);                          // expect: mixed
+oddSwitch(5);                           // expect: mixed
+oddSwitch(4);                           // expect: mixed

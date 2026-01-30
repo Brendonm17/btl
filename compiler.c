@@ -1519,7 +1519,10 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
             int successCount = 0;
             int successCapacity = 8;
 
-            // Parse conditions in a loop
+            int* failJumps = ALLOCATE(c->vm, int, 8);
+            int failCount = 0;
+            int failCapacity = 8;
+
             for (;;) {
                 bool isBooleanCondition = (check(p, TOKEN_LESS) || check(p, TOKEN_LESS_EQUAL) ||
                     check(p, TOKEN_GREATER) || check(p, TOKEN_GREATER_EQUAL) ||
@@ -1529,7 +1532,7 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
                     emitByte(p, c, OP_DUP);
                     TokenType op = p->current.type;
                     advance(p, s);
-                    parsePrecedence(p, s, c, cc, PREC_COMPARISON);  // Changed from expression()
+                    parsePrecedence(p, s, c, cc, PREC_COMPARISON);
 
                     switch (op) {
                     case TOKEN_LESS: emitByte(p, c, OP_LESS); break;
@@ -1542,29 +1545,22 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
                     }
                 } else {
                     emitByte(p, c, OP_DUP);
-                    parsePrecedence(p, s, c, cc, PREC_COMPARISON);  // Changed from expression()
+                    parsePrecedence(p, s, c, cc, PREC_COMPARISON);
                     emitByte(p, c, OP_EQUAL);
                 }
 
-                // Check if there's another condition coming
                 if (match(p, s, TOKEN_COMMA) || match(p, s, TOKEN_OR) || match(p, s, TOKEN_AND)) {
-                    // For OR/comma: if current condition is true, jump to case body
-                    // For AND: if current condition is false, jump to next case
-
                     if (p->previous.type == TOKEN_AND) {
-                        // AND logic: must continue if true, fail if false
                         int andJump = emitJump(p, c, OP_JUMP_IF_FALSE);
                         emitByte(p, c, OP_POP);
 
-                        // This is a case failure jump - add to caseJumps
-                        if (switchCtx.caseJumpCount >= switchCtx.caseJumpCapacity) {
-                            int oldCap = switchCtx.caseJumpCapacity;
-                            switchCtx.caseJumpCapacity *= 2;
-                            switchCtx.caseJumps = GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
+                        if (failCount >= failCapacity) {
+                            int oldCap = failCapacity;
+                            failCapacity *= 2;
+                            failJumps = GROW_ARRAY(c->vm, int, failJumps, oldCap, failCapacity);
                         }
-                        switchCtx.caseJumps[switchCtx.caseJumpCount++] = andJump;
+                        failJumps[failCount++] = andJump;
                     } else {
-                        // OR/comma logic: short-circuit to success
                         int orJump = emitJump(p, c, OP_JUMP_IF_TRUE);
                         emitByte(p, c, OP_POP);
 
@@ -1575,9 +1571,7 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
                         }
                         successJumps[successCount++] = orJump;
                     }
-                    // Continue to parse next condition
                 } else {
-                    // No more conditions
                     break;
                 }
             }
@@ -1589,8 +1583,11 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
 
             for (int i = 0; i < successCount; i++) {
                 patchJump(p, c, successJumps[i]);
+            }
+            if (successCount > 0) {
                 emitByte(p, c, OP_POP);
             }
+
             FREE_ARRAY(c->vm, int, successJumps, successCapacity);
 
             if (switchCtx.caseJumpCount >= switchCtx.caseJumpCapacity) {
@@ -1599,6 +1596,17 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
                 switchCtx.caseJumps = GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
             }
             switchCtx.caseJumps[switchCtx.caseJumpCount++] = caseJump;
+
+            for (int i = 0; i < failCount; i++) {
+                if (switchCtx.caseJumpCount >= switchCtx.caseJumpCapacity) {
+                    int oldCap = switchCtx.caseJumpCapacity;
+                    switchCtx.caseJumpCapacity *= 2;
+                    switchCtx.caseJumps = GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
+                }
+                switchCtx.caseJumps[switchCtx.caseJumpCount++] = failJumps[i];
+            }
+
+            FREE_ARRAY(c->vm, int, failJumps, failCapacity);
 
             for (int i = 0; i < fallthroughCount; i++) {
                 patchJump(p, c, fallthroughJumps[i]);
