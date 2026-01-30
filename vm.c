@@ -377,7 +377,7 @@ static InterpretResult run(VM* vm) {
 #ifdef HAS_COMPUTED_GOTOS
     static void* dispatchTable [] = {
         && L_OP_CONSTANT,&& L_OP_CONSTANT_LONG,&& L_OP_NIL,&& L_OP_TRUE,&& L_OP_FALSE,&& L_OP_0,&& L_OP_1,&& L_OP_2,
-        && L_OP_POP,&& L_OP_POP_N,
+        && L_OP_POP,&& L_OP_POP_N,&& L_OP_DUP,&& L_OP_SWAP,
         && L_OP_GET_LOCAL,&& L_OP_GET_LOCAL_0,&& L_OP_GET_LOCAL_1,&& L_OP_GET_LOCAL_2,&& L_OP_GET_LOCAL_3,
         && L_OP_GET_LOCAL_4,&& L_OP_GET_LOCAL_5,&& L_OP_GET_LOCAL_6,&& L_OP_GET_LOCAL_7,
         && L_OP_SET_LOCAL,&& L_OP_SET_LOCAL_0,&& L_OP_SET_LOCAL_1,&& L_OP_SET_LOCAL_2,&& L_OP_SET_LOCAL_3,
@@ -425,7 +425,10 @@ static InterpretResult run(VM* vm) {
         && L_OP_CLASS,&& L_OP_CLASS_LONG,&& L_OP_INHERIT,&& L_OP_METHOD,&& L_OP_METHOD_LONG,
         && L_OP_BUILD_LIST,&& L_OP_INDEX_GET,&& L_OP_INDEX_SET,&& L_OP_IMPORT,&& L_OP_IMPORT_LONG
     };
-#define DISPATCH() do { TRACE_IF_ENABLED(); goto *dispatchTable[*ip++]; } while (0)
+
+
+#define DISPATCH() do { \
+    TRACE_IF_ENABLED(); goto *dispatchTable[*ip++]; } while (0)
 #define OPCODE(name) L_##name
     DISPATCH();
 #else
@@ -440,12 +443,25 @@ static InterpretResult run(VM* vm) {
             OPCODE(OP_CONSTANT_LONG) : push(vm, READ_CONSTANT_LONG()); DISPATCH();
             OPCODE(OP_NIL) : push(vm, NIL_VAL); DISPATCH();
             OPCODE(OP_TRUE) : push(vm, BOOL_VAL(true)); DISPATCH();
-            OPCODE(OP_FALSE) : push(vm, BOOL_VAL(false)); DISPATCH();
-            OPCODE(OP_0) : push(vm, NUMBER_VAL(0.0)); DISPATCH();
+            OPCODE(OP_FALSE) : {
+                push(vm, BOOL_VAL(false)); DISPATCH();
+            }
+            OPCODE(OP_0) : {
+                Value zero = NUMBER_VAL(0.0);
+                push(vm, zero);
+                DISPATCH();
+            }
             OPCODE(OP_1) : push(vm, NUMBER_VAL(1.0)); DISPATCH();
             OPCODE(OP_2) : push(vm, NUMBER_VAL(2.0)); DISPATCH();
             OPCODE(OP_POP) : pop(vm); DISPATCH();
             OPCODE(OP_POP_N) : vm->stackTop -= READ_BYTE(); DISPATCH();
+            OPCODE(OP_DUP) : { push(vm, peek(vm, 0)); DISPATCH();}
+            OPCODE(OP_SWAP) : {
+                Value temp = vm->stackTop[-1];
+                vm->stackTop[-1] = vm->stackTop[-2];
+                vm->stackTop[-2] = temp;
+                DISPATCH();
+            }
             OPCODE(OP_GET_LOCAL) : push(vm, frame->slots[READ_BYTE()]); DISPATCH();
             OPCODE(OP_GET_LOCAL_0) : push(vm, frame->slots[0]); DISPATCH();
             OPCODE(OP_GET_LOCAL_1) : push(vm, frame->slots[1]); DISPATCH();
@@ -942,7 +958,8 @@ static InterpretResult run(VM* vm) {
 
             OPCODE(OP_PRINT) : { printValue(pop(vm)); printf("\n"); DISPATCH(); }
             OPCODE(OP_JUMP) : { uint16_t offset = READ_SHORT(); ip += offset; DISPATCH(); }
-            OPCODE(OP_JUMP_IF_FALSE) : { uint16_t offset = READ_SHORT(); if (isFalsey(peek(vm, 0))) ip += offset; DISPATCH(); }
+            OPCODE(OP_JUMP_IF_FALSE) : {
+                uint16_t offset = READ_SHORT(); if (isFalsey(peek(vm, 0))) ip += offset; DISPATCH(); }
             OPCODE(OP_POP_JUMP_IF_FALSE) : { uint16_t offset = READ_SHORT(); if (isFalsey(pop(vm))) ip += offset; DISPATCH(); }
             OPCODE(OP_JUMP_IF_TRUE) : { uint16_t offset = READ_SHORT(); if (!isFalsey(peek(vm, 0))) ip += offset; DISPATCH(); }
             OPCODE(OP_POP_JUMP_IF_TRUE) : { uint16_t offset = READ_SHORT(); if (!isFalsey(pop(vm))) ip += offset; DISPATCH(); }
@@ -1258,12 +1275,6 @@ do_tail_invoke_indexed: {
         // Name-based tail invoke!
         uint8_t nameIdx = READ_BYTE();
         Value receiver = vm->stackTop[-(argCount + 1)];
-
-        fprintf(stderr, "DEBUG tail invoke: argCount=%d, receiver type = ", argCount);
-        if (IS_INSTANCE(receiver)) fprintf(stderr, "INSTANCE\n");
-        else if (IS_NUMBER(receiver)) fprintf(stderr, "NUMBER %g\n", AS_NUMBER(receiver));
-        else if (IS_STRING(receiver)) fprintf(stderr, "STRING\n");
-        else fprintf(stderr, "OTHER\n");
 
         if (!IS_INSTANCE(receiver)) {
             STORE_FRAME();
@@ -1955,7 +1966,7 @@ OPCODE(OP_IMPORT_LONG) : {
 }
 
 #ifndef HAS_COMPUTED_GOTOS
-}
+        }
     }
 #endif
 }

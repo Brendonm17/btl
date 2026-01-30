@@ -109,11 +109,13 @@ static TokenType identifierType(Scanner* scanner) {
     case 'c':
         if (scanner->current - scanner->start > 1) {
             switch (scanner->start[1]) {
+            case 'a': return checkKeyword(scanner, 2, 2, "se", TOKEN_CASE);
             case 'l': return checkKeyword(scanner, 2, 3, "ass", TOKEN_CLASS);
             case 'o': return checkKeyword(scanner, 2, 6, "ntinue", TOKEN_CONTINUE);
             }
         }
         break;
+    case 'd': return checkKeyword(scanner, 1, 6, "efault", TOKEN_DEFAULT);
     case 'e': return checkKeyword(scanner, 1, 3, "lse", TOKEN_ELSE);
     case 'f':
         if (scanner->current - scanner->start > 1) {
@@ -136,7 +138,20 @@ static TokenType identifierType(Scanner* scanner) {
     case 'o': return checkKeyword(scanner, 1, 1, "r", TOKEN_OR);
     case 'p': return checkKeyword(scanner, 1, 4, "rint", TOKEN_PRINT);
     case 'r': return checkKeyword(scanner, 1, 5, "eturn", TOKEN_RETURN);
-    case 's': return checkKeyword(scanner, 1, 4, "uper", TOKEN_SUPER);
+    case 's':
+        if (scanner->current - scanner->start > 1) {
+            switch (scanner->start[1]) {
+            case 'u':
+                if (scanner->current - scanner->start > 2) {
+                    switch (scanner->start[2]) {
+                    case 'p': return checkKeyword(scanner, 3, 2, "er", TOKEN_SUPER);
+                    }
+                }
+                break;
+            case 'w': return checkKeyword(scanner, 2, 4, "itch", TOKEN_SWITCH);
+            }
+        }
+        break;
     case 't':
         if (scanner->current - scanner->start > 1) {
             switch (scanner->start[1]) {
@@ -184,6 +199,7 @@ Token scanToken(Scanner* scanner) {
     case ';': return makeToken(scanner, TOKEN_SEMICOLON);
     case ',': return makeToken(scanner, TOKEN_COMMA);
     case '.': return makeToken(scanner, TOKEN_DOT);
+    case ':': return makeToken(scanner, TOKEN_COLON);
     case '-': return makeToken(scanner, TOKEN_MINUS);
     case '+': return makeToken(scanner, TOKEN_PLUS);
     case '/': return makeToken(scanner, TOKEN_SLASH);

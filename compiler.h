@@ -32,6 +32,19 @@ typedef struct Loop {
     int breakCount;
 } Loop;
 
+typedef struct SwitchContext {
+    struct SwitchContext* enclosing;
+    int* caseJumps;
+    int caseJumpCount;
+    int caseJumpCapacity;
+    int* breakJumps;
+    int breakCount;
+    int breakCapacity;
+    int scopeDepth;
+    bool hasDefault;
+    bool isExpression;  // ADD THIS - tracks if switch is used as expression
+} SwitchContext;
+
 typedef enum {
     TYPE_FUNCTION,
     TYPE_INITIALIZER,
@@ -59,6 +72,7 @@ typedef struct Compiler {
     ObjModule* module;
     Table constants;
     struct Loop* currentLoop;
+    SwitchContext* currentSwitch;
 } Compiler;
 
 typedef struct {
