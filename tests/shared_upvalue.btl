@@ -1,10 +1,10 @@
-fun createCounter() {
+func createCounter() {
   var count = 0;
-  fun increment() {
+  func increment() {
     count = count + 1;
     print count;
   }
-  fun decrement() {
+  func decrement() {
     count = count - 1;
     print count;
   }

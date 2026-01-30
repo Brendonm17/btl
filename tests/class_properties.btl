@@ -1,4 +1,4 @@
-class Toast { var jam; var bread;}
+class Toast { var jam, bread;}
 var t = Toast();
 t.jam = "strawberry";
 t.bread = "wheat";

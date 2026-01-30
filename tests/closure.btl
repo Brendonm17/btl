@@ -1,6 +1,6 @@
-fun makeCounter() {
+func makeCounter() {
   var i = 0;
-  fun count() {
+  func count() {
     i = i + 1;
     print i;
   }

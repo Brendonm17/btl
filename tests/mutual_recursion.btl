@@ -1,9 +1,9 @@
-fun isEven(n) {
+func isEven(n) {
   if (n == 0) return true;
   return isOdd(n - 1);
 }
 
-fun isOdd(n) {
+func isOdd(n) {
   if (n == 0) return false;
   return isEven(n - 1);
 }

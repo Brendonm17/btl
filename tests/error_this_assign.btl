@@ -1,5 +1,5 @@
 class Test {
-  method() {
+  func method() {
     this = "not allowed"; // expect error: Invalid assignment target.
   }
 }

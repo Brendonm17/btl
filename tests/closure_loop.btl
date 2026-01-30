@@ -2,15 +2,15 @@ var functions = [];
 
 for (var i = 0; i < 10; i = i + 1) {
   var j = i; 
-  fun f() { return j; }
+  func f() { return j; }
   if (f() != i) print "Error: captured wrong value";
 }
 
 // Harder variant: Nested closures with shared upvalues
-fun outer() {
+func outer() {
   var x = "initial";
-  fun inner() {
-    fun innermost() {
+  func inner() {
+    func innermost() {
       x = "updated";
     }
     innermost();

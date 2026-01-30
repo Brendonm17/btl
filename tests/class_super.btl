@@ -1,11 +1,11 @@
 class A {
-  method() {
+  func method() {
     print "A method";
   }
 }
 
 class B < A {
-  method() {
+  func method() {
     print "B method";
     super.method();
   }

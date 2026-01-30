@@ -61,6 +61,14 @@ typedef struct Compiler {
     struct Loop* currentLoop;
 } Compiler;
 
+typedef struct {
+    ObjString* fieldName;
+    int fieldIndex;
+    const char* initSource;
+    int initLength;
+    bool hasInit;
+} FieldInfo;
+
 typedef struct ClassCompiler {
     struct ClassCompiler* enclosing;
     bool hasSuperclass;
@@ -68,6 +76,9 @@ typedef struct ClassCompiler {
     int fieldCount;
     Table methodIndices;
     int nextMethodIndex;
+
+    FieldInfo* fieldInfos;
+    int fieldInfoCapacity;
 } ClassCompiler;
 
 ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source);

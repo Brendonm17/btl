@@ -1,14 +1,14 @@
 class Transformer {
-  init(val) {
+  func init(val) {
     this.val = val;
   }
 
-  first(n) {
+  func first(n) {
     if (n == 0) return this.val;
     return this.second(n - 1); // Tail call involving 'this'
   }
 
-  second(n) {
+  func second(n) {
     return this.first(n); // Mutual method tail call
   }
 }

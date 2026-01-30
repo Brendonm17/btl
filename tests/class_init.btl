@@ -1,5 +1,5 @@
 class Coffee {
-  init(type) {
+  func init(type) {
     this.type = type;
   }
 }
