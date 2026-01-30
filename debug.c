@@ -166,6 +166,8 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_2: return simpleInstruction("OP_2", offset);
     case OP_POP: return simpleInstruction("OP_POP", offset);
     case OP_POP_N: return byteInstruction("OP_POP_N", chunk, offset);
+    case OP_DUP: return simpleInstruction("OP_DUP", offset);
+    case OP_SWAP: return simpleInstruction("OP_SWAP", offset);
     case OP_GET_LOCAL: return byteInstruction("OP_GET_LOCAL", chunk, offset);
     case OP_GET_LOCAL_0: return simpleInstruction("OP_GET_LOCAL_0", offset);
     case OP_GET_LOCAL_1: return simpleInstruction("OP_GET_LOCAL_1", offset);
@@ -285,56 +287,50 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_TAIL_CALL_7: return simpleInstruction("OP_TAIL_CALL_7", offset);
     case OP_TAIL_CALL_8: return simpleInstruction("OP_TAIL_CALL_8", offset);
     case OP_TAIL_CALL: return byteInstruction("OP_TAIL_CALL", chunk, offset);
-
-        // OPTIMIZED: Indexed invoke opcodes (replaces old string-based OP_INVOKE)
-    case OP_INVOKE_0: return indexedInvokeInstruction("OP_INVOKE_IDX_0", chunk, offset, 0);
-    case OP_INVOKE_1: return indexedInvokeInstruction("OP_INVOKE_IDX_1", chunk, offset, 1);
-    case OP_INVOKE_2: return indexedInvokeInstruction("OP_INVOKE_IDX_2", chunk, offset, 2);
-    case OP_INVOKE_3: return indexedInvokeInstruction("OP_INVOKE_IDX_3", chunk, offset, 3);
-    case OP_INVOKE_4: return indexedInvokeInstruction("OP_INVOKE_IDX_4", chunk, offset, 4);
-    case OP_INVOKE_5: return indexedInvokeInstruction("OP_INVOKE_IDX_5", chunk, offset, 5);
-    case OP_INVOKE_6: return indexedInvokeInstruction("OP_INVOKE_IDX_6", chunk, offset, 6);
-    case OP_INVOKE_7: return indexedInvokeInstruction("OP_INVOKE_IDX_7", chunk, offset, 7);
-    case OP_INVOKE_8: return indexedInvokeInstruction("OP_INVOKE_IDX_8", chunk, offset, 8);
-    case OP_INVOKE: return invokeIndexedInstruction("OP_INVOKE_IDX", chunk, offset);
-    case OP_INVOKE_LONG: return invokeIndexedLongInstruction("OP_INVOKE_IDX_L", chunk, offset);
-
-    case OP_TAIL_INVOKE_0: return indexedInvokeInstruction("OP_T_INVOKE_IDX_0", chunk, offset, 0);
-    case OP_TAIL_INVOKE_1: return indexedInvokeInstruction("OP_T_INVOKE_IDX_1", chunk, offset, 1);
-    case OP_TAIL_INVOKE_2: return indexedInvokeInstruction("OP_T_INVOKE_IDX_2", chunk, offset, 2);
-    case OP_TAIL_INVOKE_3: return indexedInvokeInstruction("OP_T_INVOKE_IDX_3", chunk, offset, 3);
-    case OP_TAIL_INVOKE_4: return indexedInvokeInstruction("OP_T_INVOKE_IDX_4", chunk, offset, 4);
-    case OP_TAIL_INVOKE_5: return indexedInvokeInstruction("OP_T_INVOKE_IDX_5", chunk, offset, 5);
-    case OP_TAIL_INVOKE_6: return indexedInvokeInstruction("OP_T_INVOKE_IDX_6", chunk, offset, 6);
-    case OP_TAIL_INVOKE_7: return indexedInvokeInstruction("OP_T_INVOKE_IDX_7", chunk, offset, 7);
-    case OP_TAIL_INVOKE_8: return indexedInvokeInstruction("OP_T_INVOKE_IDX_8", chunk, offset, 8);
-    case OP_TAIL_INVOKE: return invokeIndexedInstruction("OP_T_INVOKE_IDX", chunk, offset);
-    case OP_TAIL_INVOKE_LONG: return invokeIndexedLongInstruction("OP_T_INVOKE_IDX_L", chunk, offset);
-
-    case OP_SUPER_INVOKE_0: return indexedInvokeInstruction("OP_S_INVOKE_IDX_0", chunk, offset, 0);
-    case OP_SUPER_INVOKE_1: return indexedInvokeInstruction("OP_S_INVOKE_IDX_1", chunk, offset, 1);
-    case OP_SUPER_INVOKE_2: return indexedInvokeInstruction("OP_S_INVOKE_IDX_2", chunk, offset, 2);
-    case OP_SUPER_INVOKE_3: return indexedInvokeInstruction("OP_S_INVOKE_IDX_3", chunk, offset, 3);
-    case OP_SUPER_INVOKE_4: return indexedInvokeInstruction("OP_S_INVOKE_IDX_4", chunk, offset, 4);
-    case OP_SUPER_INVOKE_5: return indexedInvokeInstruction("OP_S_INVOKE_IDX_5", chunk, offset, 5);
-    case OP_SUPER_INVOKE_6: return indexedInvokeInstruction("OP_S_INVOKE_IDX_6", chunk, offset, 6);
-    case OP_SUPER_INVOKE_7: return indexedInvokeInstruction("OP_S_INVOKE_IDX_7", chunk, offset, 7);
-    case OP_SUPER_INVOKE_8: return indexedInvokeInstruction("OP_S_INVOKE_IDX_8", chunk, offset, 8);
-    case OP_SUPER_INVOKE: return invokeIndexedInstruction("OP_S_INVOKE_IDX", chunk, offset);
-    case OP_SUPER_INVOKE_LONG: return invokeIndexedLongInstruction("OP_S_INVOKE_IDX_L", chunk, offset);
-
-    case OP_TAIL_SUPER_INVOKE_0: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_0", chunk, offset, 0);
-    case OP_TAIL_SUPER_INVOKE_1: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_1", chunk, offset, 1);
-    case OP_TAIL_SUPER_INVOKE_2: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_2", chunk, offset, 2);
-    case OP_TAIL_SUPER_INVOKE_3: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_3", chunk, offset, 3);
-    case OP_TAIL_SUPER_INVOKE_4: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_4", chunk, offset, 4);
-    case OP_TAIL_SUPER_INVOKE_5: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_5", chunk, offset, 5);
-    case OP_TAIL_SUPER_INVOKE_6: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_6", chunk, offset, 6);
-    case OP_TAIL_SUPER_INVOKE_7: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_7", chunk, offset, 7);
-    case OP_TAIL_SUPER_INVOKE_8: return indexedInvokeInstruction("OP_TS_INVOKE_IDX_8", chunk, offset, 8);
-    case OP_TAIL_SUPER_INVOKE: return invokeIndexedInstruction("OP_TS_INVOKE_IDX", chunk, offset);
-    case OP_TAIL_SUPER_INVOKE_LONG: return invokeIndexedLongInstruction("OP_TS_INVOKE_IDX_L", chunk, offset);
-
+    case OP_INVOKE_0: return indexedInvokeInstruction("OP_INVOKE_0", chunk, offset, 0);
+    case OP_INVOKE_1: return indexedInvokeInstruction("OP_INVOKE_1", chunk, offset, 1);
+    case OP_INVOKE_2: return indexedInvokeInstruction("OP_INVOKE_2", chunk, offset, 2);
+    case OP_INVOKE_3: return indexedInvokeInstruction("OP_INVOKE_3", chunk, offset, 3);
+    case OP_INVOKE_4: return indexedInvokeInstruction("OP_INVOKE_4", chunk, offset, 4);
+    case OP_INVOKE_5: return indexedInvokeInstruction("OP_INVOKE_5", chunk, offset, 5);
+    case OP_INVOKE_6: return indexedInvokeInstruction("OP_INVOKE_6", chunk, offset, 6);
+    case OP_INVOKE_7: return indexedInvokeInstruction("OP_INVOKE_7", chunk, offset, 7);
+    case OP_INVOKE_8: return indexedInvokeInstruction("OP_INVOKE_8", chunk, offset, 8);
+    case OP_INVOKE: return invokeIndexedInstruction("OP_INVOKE", chunk, offset);
+    case OP_INVOKE_LONG: return invokeIndexedLongInstruction("OP_INVOKE_L", chunk, offset);
+    case OP_TAIL_INVOKE_0: return indexedInvokeInstruction("OP_T_INVOKE_0", chunk, offset, 0);
+    case OP_TAIL_INVOKE_1: return indexedInvokeInstruction("OP_T_INVOKE_1", chunk, offset, 1);
+    case OP_TAIL_INVOKE_2: return indexedInvokeInstruction("OP_T_INVOKE_2", chunk, offset, 2);
+    case OP_TAIL_INVOKE_3: return indexedInvokeInstruction("OP_T_INVOKE_3", chunk, offset, 3);
+    case OP_TAIL_INVOKE_4: return indexedInvokeInstruction("OP_T_INVOKE_4", chunk, offset, 4);
+    case OP_TAIL_INVOKE_5: return indexedInvokeInstruction("OP_T_INVOKE_5", chunk, offset, 5);
+    case OP_TAIL_INVOKE_6: return indexedInvokeInstruction("OP_T_INVOKE_6", chunk, offset, 6);
+    case OP_TAIL_INVOKE_7: return indexedInvokeInstruction("OP_T_INVOKE_7", chunk, offset, 7);
+    case OP_TAIL_INVOKE_8: return indexedInvokeInstruction("OP_T_INVOKE_8", chunk, offset, 8);
+    case OP_TAIL_INVOKE: return invokeIndexedInstruction("OP_T_INVOKE", chunk, offset);
+    case OP_TAIL_INVOKE_LONG: return invokeIndexedLongInstruction("OP_T_INVOKE_L", chunk, offset);
+    case OP_SUPER_INVOKE_0: return indexedInvokeInstruction("OP_S_INVOKE_0", chunk, offset, 0);
+    case OP_SUPER_INVOKE_1: return indexedInvokeInstruction("OP_S_INVOKE_1", chunk, offset, 1);
+    case OP_SUPER_INVOKE_2: return indexedInvokeInstruction("OP_S_INVOKE_2", chunk, offset, 2);
+    case OP_SUPER_INVOKE_3: return indexedInvokeInstruction("OP_S_INVOKE_3", chunk, offset, 3);
+    case OP_SUPER_INVOKE_4: return indexedInvokeInstruction("OP_S_INVOKE_4", chunk, offset, 4);
+    case OP_SUPER_INVOKE_5: return indexedInvokeInstruction("OP_S_INVOKE_5", chunk, offset, 5);
+    case OP_SUPER_INVOKE_6: return indexedInvokeInstruction("OP_S_INVOKE_6", chunk, offset, 6);
+    case OP_SUPER_INVOKE_7: return indexedInvokeInstruction("OP_S_INVOKE_7", chunk, offset, 7);
+    case OP_SUPER_INVOKE_8: return indexedInvokeInstruction("OP_S_INVOKE_8", chunk, offset, 8);
+    case OP_SUPER_INVOKE: return invokeIndexedInstruction("OP_S_INVOKE", chunk, offset);
+    case OP_SUPER_INVOKE_LONG: return invokeIndexedLongInstruction("OP_S_INVOKE_L", chunk, offset);
+    case OP_TAIL_SUPER_INVOKE_0: return indexedInvokeInstruction("OP_TS_INVOKE_0", chunk, offset, 0);
+    case OP_TAIL_SUPER_INVOKE_1: return indexedInvokeInstruction("OP_TS_INVOKE_1", chunk, offset, 1);
+    case OP_TAIL_SUPER_INVOKE_2: return indexedInvokeInstruction("OP_TS_INVOKE_2", chunk, offset, 2);
+    case OP_TAIL_SUPER_INVOKE_3: return indexedInvokeInstruction("OP_TS_INVOKE_3", chunk, offset, 3);
+    case OP_TAIL_SUPER_INVOKE_4: return indexedInvokeInstruction("OP_TS_INVOKE_4", chunk, offset, 4);
+    case OP_TAIL_SUPER_INVOKE_5: return indexedInvokeInstruction("OP_TS_INVOKE_5", chunk, offset, 5);
+    case OP_TAIL_SUPER_INVOKE_6: return indexedInvokeInstruction("OP_TS_INVOKE_6", chunk, offset, 6);
+    case OP_TAIL_SUPER_INVOKE_7: return indexedInvokeInstruction("OP_TS_INVOKE_7", chunk, offset, 7);
+    case OP_TAIL_SUPER_INVOKE_8: return indexedInvokeInstruction("OP_TS_INVOKE_8", chunk, offset, 8);
+    case OP_TAIL_SUPER_INVOKE: return invokeIndexedInstruction("OP_TS_INVOKE", chunk, offset);
+    case OP_TAIL_SUPER_INVOKE_LONG: return invokeIndexedLongInstruction("OP_TS_INVOKE_L", chunk, offset);
     case OP_CLOSURE: {
         uint8_t constant = chunk->code[offset + 1];
         fprintf(stderr, "%-16s %4d ", "OP_CLOSURE", constant);
@@ -374,11 +370,8 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_CLASS: return constantInstruction("OP_CLASS", chunk, offset);
     case OP_CLASS_LONG: return constantLongInstruction("OP_CLASS_LONG", chunk, offset);
     case OP_INHERIT: return simpleInstruction("OP_INHERIT", offset);
-
-        // OPTIMIZED: Indexed method definition (replaces old OP_METHOD)
-    case OP_METHOD: return methodIndexedInstruction("OP_METHOD_IDX", chunk, offset);
-    case OP_METHOD_LONG: return methodIndexedLongInstruction("OP_METHOD_IDX_L", chunk, offset);
-
+    case OP_METHOD: return methodIndexedInstruction("OP_METHOD", chunk, offset);
+    case OP_METHOD_LONG: return methodIndexedLongInstruction("OP_METHOD_L", chunk, offset);
     case OP_BUILD_LIST: return byteInstruction("OP_BUILD_LIST", chunk, offset);
     case OP_INDEX_GET: return simpleInstruction("OP_INDEX_GET", offset);
     case OP_INDEX_SET: return simpleInstruction("OP_INDEX_SET", offset);

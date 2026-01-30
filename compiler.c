@@ -57,6 +57,7 @@ static void expression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, FunctionType type);
+static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
 static int parseVariable(Parser* p, Scanner* s, Compiler* c, const char* errorMessage);
 static void defineVariable(Parser* p, Compiler* c, int global);
 static ParseRule* getRule(TokenType type);
@@ -123,16 +124,6 @@ static void emitByte(Parser* p, Compiler* c, uint8_t byte) {
 }
 
 static void emitBytes(Parser* p, Compiler* c, uint8_t byte1, uint8_t byte2) {
-    //Chunk* chunk = currentChunk(c);
-    /*
-    if ((byte1 == OP_GET_LOCAL || byte1 == OP_GET_UPVALUE) &&
-        c->lastInstruction >= 0 && c->lastInstruction + 2 == chunk->count) {
-        uint8_t prevOp = chunk->code[c->lastInstruction];
-        uint8_t prevOperand = chunk->code[c->lastInstruction + 1];
-        if (byte1 == OP_GET_LOCAL && prevOp == OP_SET_LOCAL && prevOperand == byte2) return;
-        if (byte1 == OP_GET_UPVALUE && prevOp == OP_SET_UPVALUE && prevOperand == byte2) return;
-    }*/
-
     emitByte(p, c, byte1);
     writeChunk(c->vm, currentChunk(c), byte2, p->previous.line);
 }
@@ -202,7 +193,7 @@ static Token syntheticToken(const char* text) {
     Token token;
     token.start = text;
     token.length = (int) strlen(text);
-    token.line = 0; // Synthetic tokens don't have a real line
+    token.line = 0;
     token.type = TOKEN_IDENTIFIER;
     return token;
 }
@@ -215,7 +206,7 @@ static void addLocal(Parser* p, Compiler* c, Token name) {
 
     Local* local = &c->locals[c->localCount++];
     local->name = name;
-    local->depth = -1; // Declared but uninitialized
+    local->depth = -1;
     local->isCaptured = false;
     local->isModified = false;
 }
@@ -227,7 +218,7 @@ static void markLocalAsModified(Compiler* c, int localIndex) {
     for (int i = 0; i < c->patchCount; i++) {
         if (c->patches[i].localIndex == localIndex) {
             int offset = c->patches[i].codeOffset;
-            currentChunk(c)->code[offset] = 1; // Flip to Mutable
+            currentChunk(c)->code[offset] = 1;
         }
     }
 }
@@ -250,14 +241,10 @@ static void removeChunkTail(Chunk* chunk, int n) {
 
 static void emitPopOrRemoveLoad(Parser* p, Compiler* c) {
     Chunk* chunk = currentChunk(c);
-    // Don't pop if the last instruction was a return
     if (c->lastInstruction >= 0 && c->lastInstruction < chunk->count) {
         uint8_t prevOp = chunk->code[c->lastInstruction];
         if (prevOp == OP_RETURN) return;
     }
-    // why would we go to all this trouble? because we want to avoid
-    // generating unnecessary bytecode for loading a local/upvalue
-    // only to immediately pop it
     if (chunk->count >= 2) {
         int lastIndex = chunk->count - 1;
         int opcodeIndex = lastIndex - 1;
@@ -335,20 +322,17 @@ static int emitJump(Parser* p, Compiler* c, uint8_t instruction) {
 static int emitFusedJump(Parser* p, Compiler* c, uint8_t defaultJump) {
     Chunk* chunk = currentChunk(c);
 
-    // Look at the very last byte emitted
     if (chunk->count > 0) {
         uint8_t lastOp = chunk->code[chunk->count - 1];
         uint8_t fusedOp = 0;
 
-        // Map standard comparisons to their "Jump if False" equivalents
         switch (lastOp) {
         case OP_EQUAL:   fusedOp = OP_JUMP_IF_NOT_EQUAL; break;
         case OP_GREATER: fusedOp = OP_JUMP_IF_NOT_GREATER; break;
         case OP_LESS:    fusedOp = OP_JUMP_IF_NOT_LESS; break;
-            // For != (which is OP_EQUAL + OP_NOT), check 2 bytes
         case OP_NOT:
             if (chunk->count > 1 && chunk->code[chunk->count - 2] == OP_EQUAL) {
-                removeChunkTail(chunk, 1); // Remove OP_NOT
+                removeChunkTail(chunk, 1);
                 lastOp = OP_EQUAL;
                 fusedOp = OP_JUMP_IF_EQUAL;
             }
@@ -356,12 +340,11 @@ static int emitFusedJump(Parser* p, Compiler* c, uint8_t defaultJump) {
         }
 
         if (fusedOp != 0) {
-            removeChunkTail(chunk, 1); // Remove the original OP_EQUAL/LESS/etc
+            removeChunkTail(chunk, 1);
             return emitJump(p, c, fusedOp);
         }
     }
 
-    // Fallback to standard popping jump if no comparison was found
     return emitJump(p, c, defaultJump);
 }
 
@@ -413,6 +396,7 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
     c->patchCount = 0;
     initTable(&c->constants);
     c->currentLoop = NULL;
+    c->currentSwitch = NULL;
     c->function = newFunction(p->vm, module);
     c->vm->compiler = (void*) c;
 
@@ -465,7 +449,8 @@ static void endScope(Parser* p, Compiler* c) {
     while (c->localCount > 0 && c->locals[c->localCount - 1].depth > c->scopeDepth) {
         if (c->locals[c->localCount - 1].isCaptured) {
             if (popCount) {
-                emitPopN(p, c, popCount); popCount = 0;
+                emitPopN(p, c, popCount);
+                popCount = 0;
             }
             emitByte(p, c, OP_CLOSE_UPVALUE);
         } else {
@@ -486,7 +471,8 @@ static int identifierConstant(Compiler* c, Token* name) {
     push(c->vm, OBJ_VAL(nameString));
     Value indexValue;
     if (tableGet(&c->module->globalNames, OBJ_VAL(nameString), &indexValue)) {
-        pop(c->vm); return (int) AS_NUMBER(indexValue);
+        pop(c->vm);
+        return (int) AS_NUMBER(indexValue);
     }
     int index = c->module->globalValues.count;
     writeValueArray(c->vm, &c->module->globalValues, EMPTY_VAL);
@@ -522,8 +508,6 @@ static int resolveUpvalue(Parser* p, Compiler* c, Token* name) {
     int local = resolveLocal(p, c->enclosing, name);
     if (local != -1) {
         c->enclosing->locals[local].isCaptured = true;
-        // Optimistic: Assume immutable unless already known to be modified.
-        // We will back-patch later if it becomes modified.
         return addUpvalue(c, (uint8_t) local, true, c->enclosing->locals[local].isModified);
     }
 
@@ -582,7 +566,7 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
             if (arg <= 7) emitByte(p, c, (uint8_t) (OP_GET_LOCAL_0 + arg));
             else emitBytes(p, c, OP_GET_LOCAL, (uint8_t) arg);
         }
-        return; // CRITICAL: Stop here!
+        return;
     }
 
     arg = resolveUpvalue(p, c, &name);
@@ -597,7 +581,7 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
         } else {
             emitUpvalue(p, c, (uint8_t) arg, false);
         }
-        return; // CRITICAL: Stop here!
+        return;
     }
 
     if (cc != NULL) {
@@ -612,12 +596,11 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
             } else {
                 emitBytes(p, c, OP_GET_FIELD_THIS, index);
             }
-            return; // Found a field, stop here!
+            return;
         }
     }
 
     // --- GLOBAL VARIABLE ---
-    // If it's not a local, upvalue, or field, it MUST be a global.
     arg = identifierConstant(c, &name);
     if (canAssign && match(p, s, TOKEN_EQUAL)) {
         expression(p, s, c, cc);
@@ -640,18 +623,16 @@ static void declareVariable(Parser* p, Compiler* c) {
         if (local->depth != -1 && local->depth < c->scopeDepth) break;
         if (identifiersEqual(name, &local->name)) errorAt(p, name, "Already a variable with this name in this scope.");
     }
-    Local* l = &c->locals[c->localCount++];
-    l->name = *name;
-    l->depth = -1;
-    l->isCaptured = false;
-    l->isModified = false;
+    addLocal(p, c, *name);
 }
+
+// --- Expression Parse Functions ---
 
 static void func(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    (void) canAssign; function(p, s, c, cc, TYPE_FUNCTION);
+    (void) canAssign;
+    function(p, s, c, cc, TYPE_FUNCTION);
 }
 
-// ... (binary, unary, literal, grouping, number, string, variable, list, subscript same as before) ...
 static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     TokenType opType = p->previous.type;
@@ -672,9 +653,13 @@ static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
             case TOKEN_PLUS:    res = a + b; break;
             case TOKEN_MINUS:   res = a - b; break;
             case TOKEN_STAR:    res = a * b; break;
-            case TOKEN_SLASH:   if (b == 0) {
-                errorAt(p, &p->previous, "Division by zero."); return;
-            } res = a / b; break;
+            case TOKEN_SLASH:
+                if (b == 0) {
+                    errorAt(p, &p->previous, "Division by zero.");
+                    return;
+                }
+                res = a / b;
+                break;
             case TOKEN_PERCENT: res = fmod(a, b); break;
             default: folded = false;
             }
@@ -722,6 +707,7 @@ static void grouping(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool
 static void number(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
     double value = strtod(p->previous.start, NULL);
+
     if (value == 0.0) {
         emitByte(p, c, OP_0);
     } else if (value == 1.0) {
@@ -762,7 +748,9 @@ static void subscript(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, boo
     if (canAssign && match(p, s, TOKEN_EQUAL)) {
         expression(p, s, c, cc);
         emitByte(p, c, OP_INDEX_SET);
-    } else emitByte(p, c, OP_INDEX_GET);
+    } else {
+        emitByte(p, c, OP_INDEX_GET);
+    }
 }
 
 static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
@@ -834,13 +822,11 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
                 writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
             }
             return;
-
         } else {
-            // Polymorphic call - GET_PROPERTY first, THEN args, THEN call
+            // Polymorphic call
             int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
             emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
 
-            // NOW parse arguments
             uint8_t args = 0;
             if (!check(p, TOKEN_RIGHT_PAREN)) {
                 do {
@@ -850,7 +836,6 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
             }
             consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
 
-            // Now call the bound method/function
             switch (args) {
             case 0: emitByte(p, c, OP_CALL_0); break;
             case 1: emitByte(p, c, OP_CALL_1); break;
@@ -914,24 +899,9 @@ static void and_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool can
 
 static void or_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    /*int elseJump = emitJump(p, c, OP_JUMP_IF_FALSE);
-    int endJump = emitJump(p, c, OP_JUMP);
-    patchJump(p, c, elseJump);
-    emitPopOrRemoveLoad(p, c);
-    parsePrecedence(p, s, c, cc, PREC_OR);
-    patchJump(p, c, endJump);*/
-
-    // The left operand is on the stack.
-    // If it is truthy, we short-circuit: jump over the right operand
-    // and keep the current value on the stack.
     int elseJump = emitJump(p, c, OP_JUMP_IF_TRUE);
-
-    // If we didn't jump, the left side was false. 
-    // Pop it and evaluate the right side.
-    //emitByte(p, c, OP_POP);
     emitPopOrRemoveLoad(p, c);
     parsePrecedence(p, s, c, cc, PREC_OR);
-
     patchJump(p, c, elseJump);
 }
 
@@ -940,7 +910,8 @@ static void call(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool can
     uint8_t args = 0;
     if (!check(p, TOKEN_RIGHT_PAREN)) {
         do {
-            expression(p, s, c, cc); args++;
+            expression(p, s, c, cc);
+            args++;
         } while (match(p, s, TOKEN_COMMA));
     }
     consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
@@ -961,15 +932,19 @@ static void call(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool can
 static void this_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     if (cc == NULL) {
-        errorAt(p, &p->previous, "Can't use 'this' outside of a class."); return;
+        errorAt(p, &p->previous, "Can't use 'this' outside of a class.");
+        return;
     }
     variable(p, s, c, cc, false);
 }
 
 static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    if (cc == NULL) errorAt(p, &p->previous, "Can't use 'super' outside of a class.");
-    else if (!cc->hasSuperclass) errorAt(p, &p->previous, "Can't use 'super' in a class with no superclass.");
+    if (cc == NULL) {
+        errorAt(p, &p->previous, "Can't use 'super' outside of a class.");
+    } else if (!cc->hasSuperclass) {
+        errorAt(p, &p->previous, "Can't use 'super' in a class with no superclass.");
+    }
 
     consume(p, s, TOKEN_DOT, "Expect '.'.");
     consume(p, s, TOKEN_IDENTIFIER, "Expect superclass method name.");
@@ -984,7 +959,8 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
         uint8_t args = 0;
         if (!check(p, TOKEN_RIGHT_PAREN)) {
             do {
-                expression(p, s, c, cc); args++;
+                expression(p, s, c, cc);
+                args++;
             } while (match(p, s, TOKEN_COMMA));
         }
         consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
@@ -1002,60 +978,80 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
     }
 }
 
+static void switch_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+    (void) canAssign;
+    switchStatement(p, s, c, cc);
+}
+
+// --- Parse Rules Table ---
+
 ParseRule rules [] = {
-  [TOKEN_LEFT_PAREN] = {grouping, call, PREC_CALL},
-  [TOKEN_LEFT_BRACKET] = {list, subscript, PREC_CALL},
-  [TOKEN_DOT] = {NULL, dot, PREC_CALL},
-  [TOKEN_MINUS] = {unary, binary, PREC_TERM},
-  [TOKEN_PLUS] = {NULL, binary, PREC_TERM},
-  [TOKEN_STAR] = {NULL, binary, PREC_FACTOR},
-  [TOKEN_SLASH] = {NULL, binary, PREC_FACTOR},
-  [TOKEN_PERCENT] = {NULL, binary, PREC_FACTOR},
-  [TOKEN_BANG_EQUAL] = {NULL, binary, PREC_EQUALITY},
-  [TOKEN_EQUAL_EQUAL] = {NULL, binary, PREC_EQUALITY},
-  [TOKEN_GREATER] = {NULL, binary, PREC_COMPARISON},
-  [TOKEN_GREATER_EQUAL] = {NULL, binary, PREC_COMPARISON},
-  [TOKEN_LESS] = {NULL, binary, PREC_COMPARISON},
-  [TOKEN_LESS_EQUAL] = {NULL, binary, PREC_COMPARISON},
-  [TOKEN_IDENTIFIER] = {variable, NULL, PREC_NONE},
-  [TOKEN_STRING] = {string, NULL, PREC_NONE},
-  [TOKEN_NUMBER] = {number, NULL, PREC_NONE},
-  [TOKEN_AND] = {NULL, and_, PREC_AND},
-  [TOKEN_OR] = {NULL, or_, PREC_OR},
-  [TOKEN_FALSE] = {literal, NULL, PREC_NONE},
-  [TOKEN_NIL] = {literal, NULL, PREC_NONE},
-  [TOKEN_TRUE] = {literal, NULL, PREC_NONE},
-  [TOKEN_SUPER] = {super_, NULL, PREC_NONE},
-  [TOKEN_THIS] = {this_, NULL, PREC_NONE},
-  [TOKEN_EOF] = {NULL, NULL, PREC_NONE},
-  [TOKEN_FUNC] = {func, NULL,   PREC_NONE},
+    [TOKEN_LEFT_PAREN] = {grouping, call,   PREC_CALL},
+    [TOKEN_LEFT_BRACKET] = {list,     subscript, PREC_CALL},
+    [TOKEN_DOT] = {NULL,     dot,    PREC_CALL},
+    [TOKEN_MINUS] = {unary,    binary, PREC_TERM},
+    [TOKEN_PLUS] = {NULL,     binary, PREC_TERM},
+    [TOKEN_STAR] = {NULL,     binary, PREC_FACTOR},
+    [TOKEN_SLASH] = {NULL,     binary, PREC_FACTOR},
+    [TOKEN_PERCENT] = {NULL,     binary, PREC_FACTOR},
+    [TOKEN_BANG] = {unary,    NULL,   PREC_NONE},
+    [TOKEN_BANG_EQUAL] = {NULL,     binary, PREC_EQUALITY},
+    [TOKEN_EQUAL_EQUAL] = {NULL,     binary, PREC_EQUALITY},
+    [TOKEN_GREATER] = {NULL,     binary, PREC_COMPARISON},
+    [TOKEN_GREATER_EQUAL] = {NULL,     binary, PREC_COMPARISON},
+    [TOKEN_LESS] = {NULL,     binary, PREC_COMPARISON},
+    [TOKEN_LESS_EQUAL] = {NULL,     binary, PREC_COMPARISON},
+    [TOKEN_IDENTIFIER] = {variable, NULL,   PREC_NONE},
+    [TOKEN_STRING] = {string,   NULL,   PREC_NONE},
+    [TOKEN_NUMBER] = {number,   NULL,   PREC_NONE},
+    [TOKEN_AND] = {NULL,     and_,   PREC_AND},
+    [TOKEN_OR] = {NULL,     or_,    PREC_OR},
+    [TOKEN_FALSE] = {literal,  NULL,   PREC_NONE},
+    [TOKEN_NIL] = {literal,  NULL,   PREC_NONE},
+    [TOKEN_TRUE] = {literal,  NULL,   PREC_NONE},
+    [TOKEN_SUPER] = {super_,   NULL,   PREC_NONE},
+    [TOKEN_THIS] = {this_,    NULL,   PREC_NONE},
+    [TOKEN_FUNC] = {func,     NULL,   PREC_NONE},
+    [TOKEN_SWITCH] = {switch_,  NULL,   PREC_NONE},
+    [TOKEN_COLON] = {NULL,     NULL,   PREC_NONE},
+    [TOKEN_EOF] = {NULL,     NULL,   PREC_NONE},
 };
 
 static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Precedence prec) {
     advance(p, s);
+
     ParseFn prefix = getRule(p->previous.type)->prefix;
     if (!prefix) {
-        errorAt(p, &p->previous, "Expect expression."); return;
+        errorAt(p, &p->previous, "Expect expression.");
+        return;
     }
     bool canAssign = prec <= PREC_ASSIGNMENT;
     prefix(p, s, c, cc, canAssign);
+
     while (prec <= getRule(p->current.type)->precedence) {
         advance(p, s);
         ParseFn infix = getRule(p->previous.type)->infix;
         infix(p, s, c, cc, canAssign);
     }
-    if (canAssign && match(p, s, TOKEN_EQUAL)) errorAt(p, &p->previous, "Invalid assignment target.");
+    if (canAssign && match(p, s, TOKEN_EQUAL)) {
+        errorAt(p, &p->previous, "Invalid assignment target.");
+    }
 }
 
 static ParseRule* getRule(TokenType type) {
     return &rules[type];
 }
+
 static void expression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     parsePrecedence(p, s, c, cc, PREC_ASSIGNMENT);
 }
 
+// --- Statement Functions ---
+
 static void block(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) declaration(p, s, c, cc);
+    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
+        declaration(p, s, c, cc);
+    }
     consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after block.");
 }
 
@@ -1080,20 +1076,15 @@ static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Func
     emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, index);
     pop(c->vm);
 
-    // Emit Upvalue Info + Mutability Flag
     for (int i = 0; i < f->upvalueCount; i++) {
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
 
         bool isMut = sub.upvalues[i].isMutable;
-
-        // CRITICAL FIX: If local variable is known to be modified, force mutable.
-        // Otherwise, track for back-patching.
         if (sub.upvalues[i].isLocal) {
             if (c->locals[sub.upvalues[i].index].isModified) {
                 isMut = true;
             } else if (!isMut) {
-                // Record the location of this byte so we can flip it to 1 later if needed
                 addPatch(c, sub.upvalues[i].index, currentChunk(c)->count);
             }
         }
@@ -1131,34 +1122,28 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (isInit && cc != NULL) {
         for (int i = 0; i < cc->fieldCount; i++) {
             if (cc->fieldInfos[i].hasInit) {
-                // Create a mini-scanner for the initializer expression
                 Scanner initScanner;
                 initScanner.start = cc->fieldInfos[i].initSource;
                 initScanner.current = cc->fieldInfos[i].initSource;
-                initScanner.line = 1;  // Line doesn't matter for initializers
+                initScanner.line = 1;
 
-                // Create a mini-parser
-                Parser initParser = *p;  // Copy current parser state
+                Parser initParser = *p;
                 initParser.hadError = false;
                 initParser.panicMode = false;
 
-                // Prime the scanner
                 advance(&initParser, &initScanner);
-
-                // Compile the expression
                 expression(&initParser, &initScanner, &sub, cc);
 
-                // Emit: this.fieldName = <expression>
                 emitBytes(p, &sub, OP_SET_FIELD_THIS, (uint8_t) i);
                 emitPopOrRemoveLoad(p, &sub);
 
-                // Check if there was an error
                 if (initParser.hadError) {
                     errorAt(p, &nameToken, "Error in field initializer.");
                 }
             }
         }
     }
+
     block(p, s, &sub, cc);
     ObjFunction* f = endCompiler(p, &sub);
 
@@ -1167,7 +1152,6 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, fnIdx);
     pop(c->vm);
 
-    // Emit upvalue info (unchanged)
     for (int i = 0; i < f->upvalueCount; i++) {
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
         writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
@@ -1182,17 +1166,14 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         writeChunk(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
     }
 
-    // Create signature and assign/lookup method index
     ObjString* signature = createMethodSignature(c, &nameToken, f->arity);
     push(c->vm, OBJ_VAL(signature));
 
     Value indexValue;
     int methodIndex;
     if (tableGet(&cc->methodIndices, OBJ_VAL(signature), &indexValue)) {
-        // Method override - use existing index
         methodIndex = (int) AS_NUMBER(indexValue);
     } else {
-        // New method - assign next index
         methodIndex = cc->nextMethodIndex++;
         tableSet(c->vm, &cc->methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
     }
@@ -1232,7 +1213,6 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     classC.fieldInfoCapacity = 8;
     classC.fieldInfos = ALLOCATE(c->vm, FieldInfo, classC.fieldInfoCapacity);
 
-    // Track if user defined init and if we have initializers
     bool userDefinedInit = false;
     bool hasFieldInitializers = false;
 
@@ -1240,19 +1220,14 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
         consume(p, s, TOKEN_IDENTIFIER, "Expect superclass name.");
         Token superClassName = p->previous;
 
-        // Look up parent's compilation info from module
         ObjString* parentName = copyString(c->vm, superClassName.start, superClassName.length);
         push(c->vm, OBJ_VAL(parentName));
 
         Value savedIndicesValue;
         if (tableGet(&c->module->classInfo, OBJ_VAL(parentName), &savedIndicesValue)) {
-            // Retrieve the saved table pointer
             Table* parentIndices = (Table*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-
-            // Copy parent's methodIndices to child
             tableAddAll(c->vm, parentIndices, &classC.methodIndices);
 
-            // Find max parent index
             int maxParentIndex = -1;
             for (int i = 0; i < parentIndices->capacity; i++) {
                 Entry* entry = &parentIndices->entries[i];
@@ -1300,7 +1275,6 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
                     fieldIndex = classC.fieldCount++;
                     tableSet(c->vm, &classC.fields, OBJ_VAL(name), NUMBER_VAL((double) fieldIndex));
 
-                    // Grow array if needed
                     if (fieldIndex >= classC.fieldInfoCapacity) {
                         int oldCap = classC.fieldInfoCapacity;
                         classC.fieldInfoCapacity *= 2;
@@ -1315,20 +1289,16 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
                     fieldIndex = (int) AS_NUMBER(dummy);
                 }
 
-                // Check for initializer
                 if (match(p, s, TOKEN_EQUAL)) {
-                    hasFieldInitializers = true;  // Mark that we have at least one initializer
+                    hasFieldInitializers = true;
 
-                    // Remember where the expression starts
                     const char* exprStart = p->current.start;
 
-                    // Parse the expression to validate it and find its end
                     int parenDepth = 0;
                     int braceDepth = 0;
                     int bracketDepth = 0;
 
                     while (!check(p, TOKEN_EOF)) {
-                        // Track nesting
                         if (check(p, TOKEN_LEFT_PAREN)) parenDepth++;
                         if (check(p, TOKEN_RIGHT_PAREN)) parenDepth--;
                         if (check(p, TOKEN_LEFT_BRACE)) braceDepth++;
@@ -1336,7 +1306,6 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
                         if (check(p, TOKEN_LEFT_BRACKET)) bracketDepth++;
                         if (check(p, TOKEN_RIGHT_BRACKET)) bracketDepth--;
 
-                        // Stop at comma or semicolon when not nested
                         if (parenDepth == 0 && braceDepth == 0 && bracketDepth == 0) {
                             if (check(p, TOKEN_COMMA) || check(p, TOKEN_SEMICOLON)) {
                                 break;
@@ -1346,11 +1315,9 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
                         advance(p, s);
                     }
 
-                    // Calculate length of expression
                     const char* exprEnd = p->previous.start + p->previous.length;
                     int exprLength = (int) (exprEnd - exprStart);
 
-                    // Store the source text
                     classC.fieldInfos[fieldIndex].initSource = exprStart;
                     classC.fieldInfos[fieldIndex].initLength = exprLength;
                     classC.fieldInfos[fieldIndex].hasInit = true;
@@ -1359,14 +1326,12 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
 
             consume(p, s, TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
         } else if (match(p, s, TOKEN_FUNC)) {
-            // Peek at the method name without consuming it
             if (check(p, TOKEN_IDENTIFIER) &&
                 p->current.length == 4 &&
                 memcmp(p->current.start, "init", 4) == 0) {
                 userDefinedInit = true;
             }
 
-            // Now let method() consume it normally
             method(p, s, c, &classC);
         } else {
             errorAt(p, &p->current, "Expect 'func' or 'var' in class body.");
@@ -1375,11 +1340,10 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     }
     consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
 
-    // AUTO-GENERATE init() if we have field initializers but no user-defined init
+    // AUTO-GENERATE init() if needed
     if (hasFieldInitializers && !userDefinedInit) {
         namedVariable(p, s, c, NULL, nameToken, false);
 
-        // Create synthetic init() method
         Token initToken;
         initToken.start = "init";
         initToken.length = 4;
@@ -1390,10 +1354,8 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
         initCompiler(p, &sub, c, TYPE_INITIALIZER, c->module);
         beginScope(&sub);
 
-        // No parameters for auto-generated init
         sub.function->arity = 0;
 
-        // Inject field initializers
         for (int i = 0; i < classC.fieldCount; i++) {
             if (classC.fieldInfos[i].hasInit) {
                 Scanner initScanner;
@@ -1417,7 +1379,6 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
             }
         }
 
-        // Return this
         emitBytes(p, &sub, OP_GET_LOCAL, 0);
         emitByte(p, &sub, OP_RETURN);
 
@@ -1428,7 +1389,6 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
         emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, fnIdx);
         pop(c->vm);
 
-        // Emit upvalue info
         for (int i = 0; i < f->upvalueCount; i++) {
             writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
             writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
@@ -1439,7 +1399,6 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
             writeChunk(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
         }
 
-        // Register the method
         ObjString* signature = createMethodSignature(c, &initToken, 0);
         push(c->vm, OBJ_VAL(signature));
 
@@ -1492,16 +1451,13 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
 
     freeTable(c->vm, &classC.fields);
 
-    // Save class compilation info for child classes to use
     ObjString* className = copyString(c->vm, nameToken.start, nameToken.length);
     push(c->vm, OBJ_VAL(className));
 
-    // Create a copy of the methodIndices table
     Table* savedIndices = ALLOCATE(c->vm, Table, 1);
     initTable(savedIndices);
     tableAddAll(c->vm, &classC.methodIndices, savedIndices);
 
-    // Store it in the module's classInfo table as a pointer
     tableSet(c->vm, &c->module->classInfo, OBJ_VAL(className),
         NUMBER_VAL((double) (uintptr_t) savedIndices));
 
@@ -1515,6 +1471,158 @@ static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc
     markInitialized(c);
     function(p, s, c, cc, TYPE_FUNCTION);
     defineVariable(p, c, global);
+}
+
+static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
+    consume(p, s, TOKEN_LEFT_PAREN, "Expect '(' after 'switch'.");
+    expression(p, s, c, cc);
+    consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')' after switch expression.");
+    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{' before switch body.");
+
+    SwitchContext switchCtx;
+    switchCtx.enclosing = c->currentSwitch;
+    switchCtx.caseJumpCount = 0;
+    switchCtx.caseJumpCapacity = 8;
+    switchCtx.caseJumps = ALLOCATE(c->vm, int, switchCtx.caseJumpCapacity);
+    switchCtx.breakCount = 0;
+    switchCtx.breakCapacity = 8;
+    switchCtx.breakJumps = ALLOCATE(c->vm, int, switchCtx.breakCapacity);
+    switchCtx.scopeDepth = c->scopeDepth;
+    switchCtx.hasDefault = false;
+    switchCtx.isExpression = false;
+
+    c->currentSwitch = &switchCtx;
+
+    int* fallthroughJumps = ALLOCATE(c->vm, int, 16);
+    int fallthroughCount = 0;
+    int fallthroughCapacity = 16;
+    bool lastCaseHadBreak = true;
+
+    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
+        if (match(p, s, TOKEN_CASE)) {
+            if (!lastCaseHadBreak) {
+                int fallthroughJump = emitJump(p, c, OP_JUMP);
+                if (fallthroughCount >= fallthroughCapacity) {
+                    int oldCap = fallthroughCapacity;
+                    fallthroughCapacity *= 2;
+                    fallthroughJumps = GROW_ARRAY(c->vm, int, fallthroughJumps, oldCap, fallthroughCapacity);
+                }
+                fallthroughJumps[fallthroughCount++] = fallthroughJump;
+            }
+
+            if (switchCtx.caseJumpCount > 0) {
+                patchJump(p, c, switchCtx.caseJumps[switchCtx.caseJumpCount - 1]);
+                emitByte(p, c, OP_POP);
+            }
+
+            emitByte(p, c, OP_DUP);
+            expression(p, s, c, cc);
+            consume(p, s, TOKEN_COLON, "Expect ':' after case value.");
+            emitByte(p, c, OP_EQUAL);
+
+            int caseJump = emitJump(p, c, OP_JUMP_IF_FALSE);
+            emitByte(p, c, OP_POP);
+
+            if (switchCtx.caseJumpCount >= switchCtx.caseJumpCapacity) {
+                int oldCap = switchCtx.caseJumpCapacity;
+                switchCtx.caseJumpCapacity *= 2;
+                switchCtx.caseJumps = GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
+            }
+            switchCtx.caseJumps[switchCtx.caseJumpCount++] = caseJump;
+
+            for (int i = 0; i < fallthroughCount; i++) {
+                patchJump(p, c, fallthroughJumps[i]);
+            }
+            fallthroughCount = 0;
+
+            int startBreakCount = switchCtx.breakCount;
+
+            while (!check(p, TOKEN_CASE) && !check(p, TOKEN_DEFAULT) &&
+                !check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
+                statement(p, s, c, cc);
+            }
+
+            lastCaseHadBreak = (switchCtx.breakCount > startBreakCount);
+
+        } else if (match(p, s, TOKEN_DEFAULT)) {
+            if (switchCtx.hasDefault) {
+                errorAt(p, &p->previous, "Switch can only have one default case.");
+            }
+            switchCtx.hasDefault = true;
+
+            if (!lastCaseHadBreak) {
+                int fallthroughJump = emitJump(p, c, OP_JUMP);
+                if (fallthroughCount >= fallthroughCapacity) {
+                    int oldCap = fallthroughCapacity;
+                    fallthroughCapacity *= 2;
+                    fallthroughJumps = GROW_ARRAY(c->vm, int, fallthroughJumps, oldCap, fallthroughCapacity);
+                }
+                fallthroughJumps[fallthroughCount++] = fallthroughJump;
+            }
+
+            if (switchCtx.caseJumpCount > 0) {
+                patchJump(p, c, switchCtx.caseJumps[switchCtx.caseJumpCount - 1]);
+                emitByte(p, c, OP_POP);
+            }
+
+            consume(p, s, TOKEN_COLON, "Expect ':' after 'default'.");
+
+            for (int i = 0; i < fallthroughCount; i++) {
+                patchJump(p, c, fallthroughJumps[i]);
+            }
+            fallthroughCount = 0;
+
+            int startBreakCount = switchCtx.breakCount;
+
+            while (!check(p, TOKEN_CASE) && !check(p, TOKEN_RIGHT_BRACE) &&
+                !check(p, TOKEN_EOF)) {
+                statement(p, s, c, cc);
+            }
+
+            lastCaseHadBreak = (switchCtx.breakCount > startBreakCount);
+
+        } else {
+            errorAt(p, &p->current, "Expect 'case' or 'default' in switch body.");
+            advance(p, s);
+        }
+    }
+
+    consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after switch body.");
+
+    if (switchCtx.caseJumpCount > 0 && !switchCtx.hasDefault) {
+        patchJump(p, c, switchCtx.caseJumps[switchCtx.caseJumpCount - 1]);
+        emitByte(p, c, OP_POP);
+    }
+
+    for (int i = 0; i < fallthroughCount; i++) {
+        patchJump(p, c, fallthroughJumps[i]);
+    }
+
+    if (switchCtx.isExpression) {
+        for (int i = 0; i < switchCtx.breakCount; i++) {
+            patchJump(p, c, switchCtx.breakJumps[i]);
+        }
+
+        if (switchCtx.breakCount == 0) {
+            emitByte(p, c, OP_NIL);
+        }
+        emitByte(p, c, OP_SWAP);
+        emitByte(p, c, OP_POP);
+    } else {
+        emitByte(p, c, OP_POP);
+
+        for (int i = 0; i < switchCtx.breakCount; i++) {
+            patchJump(p, c, switchCtx.breakJumps[i]);
+        }
+
+        // Push NIL so the expression statement handler can pop it
+        emitByte(p, c, OP_NIL);
+    }
+
+    FREE_ARRAY(c->vm, int, switchCtx.caseJumps, switchCtx.caseJumpCapacity);
+    FREE_ARRAY(c->vm, int, switchCtx.breakJumps, switchCtx.breakCapacity);
+    FREE_ARRAY(c->vm, int, fallthroughJumps, fallthroughCapacity);
+    c->currentSwitch = switchCtx.enclosing;
 }
 
 static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
@@ -1539,7 +1647,6 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
         expression(p, s, c, cc);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
         exitJump = emitJump(p, c, OP_POP_JUMP_IF_FALSE);
-        //emitPopOrRemoveLoad(p, c);
     }
 
     if (!match(p, s, TOKEN_RIGHT_PAREN)) {
@@ -1558,14 +1665,18 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     int loopVar = -1;
     for (int i = c->localCount - 1; i >= 0; i--) {
         if (c->locals[i].depth != -1 && c->locals[i].depth == c->scopeDepth) {
-            loopVar = i; break;
+            loopVar = i;
+            break;
         }
     }
     beginScope(c);
     if (loopVar != -1) {
         emitBytes(p, c, OP_GET_LOCAL, (uint8_t) loopVar);
         Local* shadow = &c->locals[c->localCount++];
-        shadow->name = c->locals[loopVar].name; shadow->depth = c->scopeDepth; shadow->isCaptured = false; shadow->isModified = false;
+        shadow->name = c->locals[loopVar].name;
+        shadow->depth = c->scopeDepth;
+        shadow->isCaptured = false;
+        shadow->isModified = false;
     }
     statement(p, s, c, cc);
     if (loopVar != -1) {
@@ -1577,7 +1688,6 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     emitLoop(p, c, loopStart);
     if (exitJump != -1) {
         patchJump(p, c, exitJump);
-        //emitPopOrRemoveLoad(p, c);
     }
     for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
     c->currentLoop = loop.enclosing;
@@ -1586,10 +1696,12 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
 
 static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     if (c->type == TYPE_SCRIPT) {
-        errorAt(p, &p->previous, "Can't return from top-level code."); return;
+        errorAt(p, &p->previous, "Can't return from top-level code.");
+        return;
     }
     if (match(p, s, TOKEN_SEMICOLON)) {
-        emitByte(p, c, OP_NIL); emitByte(p, c, OP_RETURN);
+        emitByte(p, c, OP_NIL);
+        emitByte(p, c, OP_RETURN);
     } else {
         if (c->type == TYPE_INITIALIZER) errorAt(p, &p->previous, "Can't return a value from an initializer.");
         expression(p, s, c, cc);
@@ -1671,22 +1783,64 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
         c->currentLoop = loop.enclosing;
     } else if (match(p, s, TOKEN_BREAK)) {
-        if (c->currentLoop == NULL) errorAt(p, &p->previous, "Lonely break.");
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        int i = c->localCount - 1;
+        bool hasValue = !check(p, TOKEN_SEMICOLON);
+
+        if (hasValue) {
+            if (c->currentSwitch == NULL) {
+                errorAt(p, &p->previous, "Can only use 'break <value>' in switch.");
+                return;
+            }
+            c->currentSwitch->isExpression = true;
+            expression(p, s, c, cc);
+        }
+
+        consume(p, s, TOKEN_SEMICOLON, "Expect ';' after break.");
+
+        if (c->currentLoop == NULL && c->currentSwitch == NULL) {
+            errorAt(p, &p->previous, "Can't use 'break' outside of loop or switch.");
+            return;
+        }
+
+        // Pop locals up to the target scope depth
+        // BUT DON'T CHANGE c->localCount if we're in a switch with a value
+        // because the switch cleanup will handle it
+        int targetDepth = c->currentLoop ? c->currentLoop->scopeDepth
+            : c->currentSwitch->scopeDepth;
+
         int popCount = 0;
-        while (i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth) {
+        for (int i = c->localCount - 1; i >= 0 && c->locals[i].depth > targetDepth; i--) {
             if (c->locals[i].isCaptured) {
                 if (popCount > 0) {
-                    emitPopN(p, c, (unsigned int) popCount); popCount = 0;
+                    emitPopN(p, c, popCount);
+                    popCount = 0;
                 }
                 emitByte(p, c, OP_CLOSE_UPVALUE);
-            } else popCount++;
-            i--; c->localCount--;
+            } else {
+                if (!hasValue || c->currentLoop) {  // Only pop if not break with value in switch
+                    popCount++;
+                }
+            }
         }
-        if (popCount > 0) emitPopN(p, c, (unsigned int) popCount);
+
+        if (popCount > 0) emitPopN(p, c, popCount);
+
         int jump = emitJump(p, c, OP_JUMP);
-        c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
+
+        if (c->currentLoop) {
+            c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
+        } else {
+            if (c->currentSwitch->breakCount >= c->currentSwitch->breakCapacity) {
+                int oldCap = c->currentSwitch->breakCapacity;
+                c->currentSwitch->breakCapacity *= 2;
+                c->currentSwitch->breakJumps = GROW_ARRAY(c->vm, int,
+                    c->currentSwitch->breakJumps,
+                    oldCap,
+                    c->currentSwitch->breakCapacity);
+            }
+            c->currentSwitch->breakJumps[c->currentSwitch->breakCount++] = jump;
+        }
+
+        // DON'T decrement c->localCount here - the switch end will handle it!
     } else if (match(p, s, TOKEN_LEFT_BRACE)) {
         beginScope(c);
         block(p, s, c, cc);
@@ -1697,9 +1851,7 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         Chunk* chunk = currentChunk(c);
         if (chunk->count > 0) {
             uint8_t lastOp = chunk->code[chunk->count - 1];
-            // Optimize Specialized Locals (0-7)
             if (lastOp >= OP_SET_LOCAL_0 && lastOp <= OP_SET_LOCAL_7) {
-                // Mutate OP_SET_LOCAL_n to OP_SET_LOCAL_n_POP
                 chunk->code[chunk->count - 1] = lastOp + (OP_SET_LOCAL_0_POP - OP_SET_LOCAL_0);
                 return;
             }
@@ -1708,29 +1860,29 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
                 return;
             }
         }
-
         emitPopOrRemoveLoad(p, c);
     }
 }
 
 static void defineVariable(Parser* p, Compiler* c, int global) {
     if (c->scopeDepth > 0) {
-        markInitialized(c); return;
+        markInitialized(c);
+        return;
     }
     emitLong(p, c, OP_DEFINE_GLOBAL, OP_DEFINE_GLOBAL_LONG, global);
 }
-
 static int parseVariable(Parser* p, Scanner* s, Compiler* c, const char* msg) {
     consume(p, s, TOKEN_IDENTIFIER, msg);
     declareVariable(p, c);
     if (c->scopeDepth > 0) return 0;
     return identifierConstant(c, &p->previous);
 }
-
 static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    if (match(p, s, TOKEN_CLASS)) classDeclaration(p, s, c, cc);
-    else if (match(p, s, TOKEN_FUNC)) funDeclaration(p, s, c, cc);
-    else if (match(p, s, TOKEN_VAR)) {
+    if (match(p, s, TOKEN_CLASS)) {
+        classDeclaration(p, s, c, cc);
+    } else if (match(p, s, TOKEN_FUNC)) {
+        funDeclaration(p, s, c, cc);
+    } else if (match(p, s, TOKEN_VAR)) {
         do {
             int global = parseVariable(p, s, c, "Expect name.");
             if (match(p, s, TOKEN_EQUAL)) {
@@ -1746,40 +1898,59 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         Token pathToken = p->previous;
         int file = makeConstant(p, c, OBJ_VAL(copyString(c->vm, pathToken.start + 1, pathToken.length - 2)));
         int alias;
-        if (match(p, s, TOKEN_AS)) alias = parseVariable(p, s, c, "Expect variable name after 'as'.");
-        else {
-            const char* path = pathToken.start + 1; int length = pathToken.length - 2;
+        if (match(p, s, TOKEN_AS)) {
+            alias = parseVariable(p, s, c, "Expect variable name after 'as'.");
+        } else {
+            const char* path = pathToken.start + 1;
+            int length = pathToken.length - 2;
             const char* filename = path;
-            for (int i = 0; i < length; i++) if (path[i] == '/' || path[i] == '\\') filename = path + i + 1;
+            for (int i = 0; i < length; i++) {
+                if (path[i] == '/' || path[i] == '\\') filename = path + i + 1;
+            }
             int nameLength = (int) (path + length - filename);
-            for (int i = 0; i < nameLength; i++) if (filename[i] == '.') {
-                nameLength = i; break;
+            for (int i = 0; i < nameLength; i++) {
+                if (filename[i] == '.') {
+                    nameLength = i;
+                    break;
+                }
             }
             Token nameToken = { .start = filename, .length = nameLength };
-            declareVariable(p, c); alias = identifierConstant(c, &nameToken);
+            declareVariable(p, c);
+            alias = identifierConstant(c, &nameToken);
         }
-        emitLong(p, c, OP_IMPORT, OP_IMPORT_LONG, file); defineVariable(p, c, alias);
+        emitLong(p, c, OP_IMPORT, OP_IMPORT_LONG, file);
+        defineVariable(p, c, alias);
         consume(p, s, TOKEN_SEMICOLON, "Expect ';' after import.");
-    } else statement(p, s, c, cc);
-
+    } else {
+        statement(p, s, c, cc);
+    }
     if (p->panicMode) {
         advance(p, s);
         while (p->current.type != TOKEN_EOF) {
             if (p->previous.type == TOKEN_SEMICOLON) {
-                p->panicMode = false; return;
+                p->panicMode = false;
+                return;
             }
             switch (p->current.type) {
-            case TOKEN_CLASS: case TOKEN_FUNC: case TOKEN_VAR: case TOKEN_FOR:
-            case TOKEN_IF: case TOKEN_WHILE: case TOKEN_PRINT: case TOKEN_RETURN: p->panicMode = false; return;
+            case TOKEN_CLASS:
+            case TOKEN_FUNC:
+            case TOKEN_VAR:
+            case TOKEN_FOR:
+            case TOKEN_IF:
+            case TOKEN_WHILE:
+            case TOKEN_PRINT:
+            case TOKEN_RETURN:
+                p->panicMode = false;
+                return;
             default:;
             }
             advance(p, s);
         }
     }
 }
-
 ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source) {
-    Scanner s; initScanner(&s, source);
+    Scanner s;
+    initScanner(&s, source);
     Parser p = { .vm = vm, .hadError = false, .panicMode = false };
     Compiler c;
     initCompiler(&p, &c, NULL, TYPE_SCRIPT, module);
@@ -1788,7 +1959,6 @@ ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source) {
     ObjFunction* function = endCompiler(&p, &c);
     return p.hadError ? NULL : function;
 }
-
 void markCompilerRoots(struct VM* vm) {
     Compiler* c = (Compiler*) vm->compiler;
     while (c) {

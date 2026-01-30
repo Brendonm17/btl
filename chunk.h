@@ -15,6 +15,8 @@ typedef enum {
     OP_2,
     OP_POP,
     OP_POP_N,
+    OP_DUP,
+    OP_SWAP,
     OP_GET_LOCAL,
     OP_GET_LOCAL_0,
     OP_GET_LOCAL_1,
