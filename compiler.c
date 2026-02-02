@@ -385,6 +385,37 @@ static void patchJump(Parser* p, Compiler* c, int offset) {
     currentChunk(c)->code[offset + 1] = jump & 0xff;
 }
 
+static void emitGetPropertyIC(Parser* p, Compiler* c, int nameIdx) {
+    if (nameIdx > 255 || c->fieldICCount > 255) {
+        errorAt(p, &p->previous, "Too many property accesses in function.");
+        return;
+    }
+    emitByte(p, c, OP_GET_PROPERTY_IC);
+    writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+    writeChunk(c->vm, currentChunk(c), (uint8_t) c->fieldICCount++, p->previous.line);
+}
+
+static void emitSetPropertyIC(Parser* p, Compiler* c, int nameIdx) {
+    if (nameIdx > 255 || c->fieldICCount > 255) {
+        errorAt(p, &p->previous, "Too many property accesses in function.");
+        return;
+    }
+    emitByte(p, c, OP_SET_PROPERTY_IC);
+    writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+    writeChunk(c->vm, currentChunk(c), (uint8_t) c->fieldICCount++, p->previous.line);
+}
+
+static void emitInvokeIC(Parser* p, Compiler* c, int nameIdx, int argCount) {
+    if (nameIdx > 255 || c->methodICCount > 255) {
+        errorAt(p, &p->previous, "Too many method calls in function.");
+        return;
+    }
+    emitByte(p, c, OP_INVOKE_IC);
+    writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+    writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+    writeChunk(c->vm, currentChunk(c), (uint8_t) c->methodICCount++, p->previous.line);
+}
+
 static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionType type, ObjModule* module) {
     c->enclosing = enclosing;
     c->function = NULL;
@@ -399,6 +430,8 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
     initTable(&c->constants);
     c->currentLoop = NULL;
     c->currentSwitch = NULL;
+    c->fieldICCount = 0;
+    c->methodICCount = 0;
     c->function = newFunction(p->vm, module);
     c->vm->compiler = (void*) c;
 
@@ -433,6 +466,8 @@ static ObjFunction* endCompiler(Parser* p, Compiler* c) {
     }
     emitByte(p, c, OP_RETURN);
     ObjFunction* function = c->function;
+    function->fieldICCount = c->fieldICCount;
+    function->methodICCount = c->methodICCount;
 #ifdef DEBUG_PRINT_CODE
     if (!p->hadError) disassembleChunk(currentChunk(c), function->name != NULL ? function->name->chars : "<script>");
 #endif
@@ -922,10 +957,10 @@ static void prefixIncDec(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, 
                 // ++obj.prop
                 namedVariable(p, s, c, cc, possibleObj, false);
                 int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, propName.start, propName.length)));
-                emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+                emitGetPropertyIC(p, c, nameIdx);
                 emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
                 emitByte(p, c, OP_DUP);
-                emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
+                emitSetPropertyIC(p, c, nameIdx);
                 emitByte(p, c, OP_POP);
             }
             return;
@@ -1020,7 +1055,6 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
     Token name = p->previous;
     ObjString* fieldName = copyString(c->vm, name.start, name.length);
 
-    // Check if receiver is 'this'
     bool isThis = false;
     if (cc != NULL && c->lastInstruction != -1) {
         uint8_t lastOp = currentChunk(c)->code[c->lastInstruction];
@@ -1059,8 +1093,6 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
         } else if (match(p, s, TOKEN_PLUS_PLUS) || match(p, s, TOKEN_MINUS_MINUS)) {
             TokenType op = p->previous.type;
             bool isInc = (op == TOKEN_PLUS_PLUS);
-
-            // Postfix: get, dup, inc/dec, set, pop (leaves old value)
             emitBytes(p, c, OP_GET_FIELD_THIS, index);
             emitByte(p, c, OP_DUP);
             emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
@@ -1092,28 +1124,10 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
             }
 
             int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
-
-            if (args <= 8 && nameIdx < 256) {
-                emitBytes(p, c, (uint8_t) (OP_INVOKE_0 + args), 0xFF);
-                writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
-            } else if (nameIdx < 256) {
-                emitByte(p, c, OP_INVOKE);
-                writeChunk(c->vm, currentChunk(c), 0xFF, p->previous.line);
-                writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
-                writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
-            } else {
-                emitByte(p, c, OP_INVOKE_LONG);
-                writeChunk(c->vm, currentChunk(c), 0xFF, p->previous.line);
-                writeChunk(c->vm, currentChunk(c), 0xFF, p->previous.line);
-                writeChunk(c->vm, currentChunk(c), (uint8_t) (nameIdx & 0xff), p->previous.line);
-                writeChunk(c->vm, currentChunk(c), (uint8_t) ((nameIdx >> 8) & 0xff), p->previous.line);
-                writeChunk(c->vm, currentChunk(c), (uint8_t) args, p->previous.line);
-            }
+            emitInvokeIC(p, c, nameIdx, args);
             return;
         } else {
-            // Polymorphic call
             int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
-            emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
 
             uint8_t args = 0;
             if (!check(p, TOKEN_RIGHT_PAREN)) {
@@ -1124,30 +1138,19 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
             }
             consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
 
-            switch (args) {
-            case 0: emitByte(p, c, OP_CALL_0); break;
-            case 1: emitByte(p, c, OP_CALL_1); break;
-            case 2: emitByte(p, c, OP_CALL_2); break;
-            case 3: emitByte(p, c, OP_CALL_3); break;
-            case 4: emitByte(p, c, OP_CALL_4); break;
-            case 5: emitByte(p, c, OP_CALL_5); break;
-            case 6: emitByte(p, c, OP_CALL_6); break;
-            case 7: emitByte(p, c, OP_CALL_7); break;
-            case 8: emitByte(p, c, OP_CALL_8); break;
-            default: emitBytes(p, c, OP_CALL, args); break;
-            }
+            emitInvokeIC(p, c, nameIdx, args);
         }
     } else {
-        // Property access
         int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
+
         if (canAssign && match(p, s, TOKEN_EQUAL)) {
             expression(p, s, c, cc);
-            emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
+            emitSetPropertyIC(p, c, nameIdx);
         } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
             match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
             match(p, s, TOKEN_PERCENT_EQUAL))) {
             TokenType assignOp = p->previous.type;
-            emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+            emitGetPropertyIC(p, c, nameIdx);
             expression(p, s, c, cc);
             switch (assignOp) {
             case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
@@ -1157,19 +1160,16 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
             case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
             default: break;
             }
-            emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
+            emitSetPropertyIC(p, c, nameIdx);
         } else if (match(p, s, TOKEN_PLUS_PLUS) || match(p, s, TOKEN_MINUS_MINUS)) {
             TokenType op = p->previous.type;
             bool isInc = (op == TOKEN_PLUS_PLUS);
-
-            // Postfix on property
-            emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+            emitGetPropertyIC(p, c, nameIdx);
             emitByte(p, c, OP_DUP);
             emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
-            emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
-            //emitByte(p, c, OP_POP);
+            emitSetPropertyIC(p, c, nameIdx);
         } else {
-            emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+            emitGetPropertyIC(p, c, nameIdx);
         }
     }
 }
@@ -2126,6 +2126,7 @@ static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
             case OP_INVOKE_6: *opcode = OP_TAIL_INVOKE_6; break;
             case OP_INVOKE_7: *opcode = OP_TAIL_INVOKE_7; break;
             case OP_INVOKE_8: *opcode = OP_TAIL_INVOKE_8; break;
+            case OP_INVOKE_IC: *opcode = OP_TAIL_INVOKE_IC; break;  // NEW
             case OP_SUPER_INVOKE: *opcode = OP_TAIL_SUPER_INVOKE; break;
             case OP_SUPER_INVOKE_LONG: *opcode = OP_TAIL_SUPER_INVOKE_LONG; break;
             case OP_SUPER_INVOKE_0: *opcode = OP_TAIL_SUPER_INVOKE_0; break;
