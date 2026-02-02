@@ -24,6 +24,7 @@ typedef struct ObjModule ObjModule;
 #define IS_NATIVE(v)       isObjType(v, OBJ_NATIVE)
 #define IS_STRING(v)       isObjType(v, OBJ_STRING)
 #define IS_UPVALUE_BOX(v)  isObjType(v, OBJ_UPVALUE)
+#define IS_TABLE(value)     isObjType(value, OBJ_TABLE)
 
 #define AS_BOUND_METHOD(v) ((ObjBoundMethod*)AS_OBJ(v))
 #define AS_CLASS(v)        ((ObjClass*)AS_OBJ(v))
@@ -35,11 +36,12 @@ typedef struct ObjModule ObjModule;
 #define AS_NATIVE(v)       (((ObjNative*)AS_OBJ(v))->function)
 #define AS_STRING(v)       ((ObjString*)AS_OBJ(v))
 #define AS_CSTRING(v)      (((ObjString*)AS_OBJ(v))->chars)
+#define AS_TABLE(value)     ((ObjTable*)AS_OBJ(value))
 
 typedef enum {
     OBJ_BOUND_METHOD, OBJ_CLASS, OBJ_CLOSURE, OBJ_FUNCTION,
     OBJ_INSTANCE, OBJ_LIST, OBJ_MODULE, OBJ_NATIVE, OBJ_STRING,
-    OBJ_UPVALUE
+    OBJ_UPVALUE, OBJ_TABLE
 } ObjType;
 
 struct Obj {
@@ -131,6 +133,11 @@ typedef struct ObjInstance {
     Value* fields;
 } ObjInstance;
 
+typedef struct ObjTable {
+    Obj obj;
+    Table table;
+} ObjTable;
+
 typedef struct ObjList {
     Obj obj;
     ValueArray items;
@@ -155,6 +162,7 @@ ObjModule* newModule(struct VM* vm, ObjString* name);
 ObjNative* newNative(struct VM* vm, NativeFn function);
 ObjString* takeString(struct VM* vm, char* chars, int length);
 ObjString* copyString(struct VM* vm, const char* chars, int length);
+ObjTable* newTable(struct VM* vm);
 
 void printObject(Value value);
 

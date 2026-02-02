@@ -1,0 +1,85 @@
+// Basic table creation
+var empty = [:];
+print empty;  // expect: <table>
+
+var t = ["name": "Alice", "age": 30, "active": true];
+print t;  // expect: <table>
+
+// Get values
+print t["name"];   // expect: Alice
+print t["age"];    // expect: 30
+print t["active"]; // expect: true
+
+// Non-existent key returns nil
+print t["missing"];  // expect: nil
+
+// Set values
+t["city"] = "Seattle";
+print t["city"];  // expect: Seattle
+
+// Update existing
+t["age"] = 99;
+print t["age"];  // expect: 99
+
+// Any type as key
+var numKeys = [:];
+numKeys[1] = "one";
+numKeys[2.5] = "two point five";
+numKeys[42] = "answer";
+print numKeys[1];    // expect: one
+print numKeys[2.5];  // expect: two point five
+print numKeys[42];   // expect: answer
+
+// Bool and nil keys
+var mixed = [:];
+mixed[true] = "yes";
+mixed[false] = "no";
+mixed[nil] = "nothing";
+print mixed[true];   // expect: yes
+print mixed[false];  // expect: no
+print mixed[nil];    // expect: nothing
+
+// Nested tables
+var users = [:];
+users["alice"] = ["name": "Alice", "score": 100];
+users["bob"] = ["name": "Bob", "score": 85];
+print users["alice"]["name"];   // expect: Alice
+print users["alice"]["score"];  // expect: 100
+print users["bob"]["name"];     // expect: Bob
+
+// Tables in lists
+var data = [
+    ["id": 1, "name": "first"],
+    ["id": 2, "name": "second"]
+];
+print data[0]["id"];    // expect: 1
+print data[0]["name"];  // expect: first
+print data[1]["id"];    // expect: 2
+
+// Lists as keys (identity-based)
+var listKeys = [:];
+var key1 = [1, 2, 3];
+var key2 = [1, 2, 3];  // different object, same content
+listKeys[key1] = "first";
+listKeys[key2] = "second";
+print listKeys[key1];  // expect: first
+print listKeys[key2];  // expect: second
+
+// Using variables as keys
+var keyName = "dynamic";
+var t2 = [:];
+t2[keyName] = "value";
+print t2["dynamic"];  // expect: value
+print t2[keyName];    // expect: value
+
+// Overwrite values
+var counter = ["count": 0];
+counter["count"] = counter["count"] + 1;
+counter["count"] = counter["count"] + 1;
+print counter["count"];  // expect: 2
+
+// Empty table stays empty
+var e = [:];
+print e["anything"];  // expect: nil
+
+print "All table tests passed!";  // expect: All table tests passed!

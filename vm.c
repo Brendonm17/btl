@@ -215,24 +215,32 @@ static bool callValue(VM* vm, Value callee, int argCount) {
         case OBJ_CLASS: {
             ObjClass* klass = AS_CLASS(callee);
             vm->stackTop[-argCount - 1] = OBJ_VAL(newInstance(vm, klass));
-            // Look for init method with matching arity
-            for (int i = 0; i < klass->methodCount; i++) {
-                if (klass->methods[i].closure == NULL) {
-                    continue;
-                }
-                if (klass->methods[i].name == NULL) {
-                    continue;
-                }
-                if (klass->methods[i].arity == argCount) {
-                    // Check if this is the init method
-                    if (klass->methods[i].name->length == 4 &&
-                        memcmp(klass->methods[i].name->chars, "init", 4) == 0) {
-                        return call(vm, klass->methods[i].closure, argCount);
+
+            // Create the init signature: "init" + arity byte
+            char initSig[6];
+            memcpy(initSig, "init", 4);
+            initSig[4] = (char) argCount;
+            initSig[5] = '\0';
+
+            ObjString* initSignature = copyString(vm, initSig, 5);
+            push(vm, OBJ_VAL(initSignature));
+
+            // Look for init method with matching signature
+            Value indexValue;
+            if (tableGet(&klass->methodIndices, OBJ_VAL(initSignature), &indexValue)) {
+                int methodIndex = (int) AS_NUMBER(indexValue);
+                pop(vm);
+
+                if (methodIndex >= 0 && methodIndex < klass->methodCount) {
+                    ObjClosure* initializer = klass->methods[methodIndex].closure;
+                    if (initializer != NULL) {
+                        return call(vm, initializer, argCount);
                     }
                 }
             }
+            pop(vm);
 
-            // No init method
+            // No init method found
             if (argCount != 0) {
                 runtimeError(vm, "Expected 0 arguments but got %d.", argCount);
                 return false;
@@ -384,7 +392,7 @@ static InterpretResult run(VM* vm) {
         && L_OP_SET_LOCAL_4,&& L_OP_SET_LOCAL_5,&& L_OP_SET_LOCAL_6,&& L_OP_SET_LOCAL_7,
         && L_OP_SET_LOCAL_0_POP,&& L_OP_SET_LOCAL_1_POP,&& L_OP_SET_LOCAL_2_POP,&& L_OP_SET_LOCAL_3_POP,
         && L_OP_SET_LOCAL_4_POP,&& L_OP_SET_LOCAL_5_POP,&& L_OP_SET_LOCAL_6_POP,&& L_OP_SET_LOCAL_7_POP,
-        && L_OP_INC_LOCAL_POP,&& L_OP_INC_LOCAL,
+        && L_OP_INC_LOCAL_POP,&& L_OP_INC_LOCAL,&& L_OP_INCREMENT,&& L_OP_DECREMENT,
         && L_OP_GET_GLOBAL,&& L_OP_GET_GLOBAL_LONG,
         && L_OP_DEFINE_GLOBAL,&& L_OP_DEFINE_GLOBAL_LONG,&& L_OP_SET_GLOBAL,&& L_OP_SET_GLOBAL_LONG,
         && L_OP_GET_UPVALUE,&& L_OP_GET_UPVALUE_OPEN,&& L_OP_GET_UPVALUE_CLOSED,&& L_OP_GET_UPVALUE_IMMUTABLE,
@@ -423,7 +431,7 @@ static InterpretResult run(VM* vm) {
         && L_OP_SUPER_INVOKE,&& L_OP_SUPER_INVOKE_LONG,&& L_OP_TAIL_SUPER_INVOKE,&& L_OP_TAIL_SUPER_INVOKE_LONG,
         && L_OP_CLOSURE,&& L_OP_CLOSURE_LONG,&& L_OP_CLOSE_UPVALUE,&& L_OP_RETURN,
         && L_OP_CLASS,&& L_OP_CLASS_LONG,&& L_OP_INHERIT,&& L_OP_METHOD,&& L_OP_METHOD_LONG,
-        && L_OP_BUILD_LIST,&& L_OP_INDEX_GET,&& L_OP_INDEX_SET,&& L_OP_IMPORT,&& L_OP_IMPORT_LONG
+        && L_OP_BUILD_LIST,&& L_OP_BUILD_TABLE,&& L_OP_INDEX_GET,&& L_OP_INDEX_SET,&& L_OP_IMPORT,&& L_OP_IMPORT_LONG
     };
 
 
@@ -509,6 +517,25 @@ static InterpretResult run(VM* vm) {
                 num += 1.0;
                 frame->slots[slot] = NUMBER_VAL(num);
                 push(vm, NUMBER_VAL(num));
+                DISPATCH();
+            }
+            OPCODE(OP_INCREMENT) : {
+                if (!IS_NUMBER(peek(vm, 0))) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Operand must be a number.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                push(vm, NUMBER_VAL(AS_NUMBER(pop(vm)) + 1));
+                DISPATCH();
+            }
+
+            OPCODE(OP_DECREMENT) : {
+                if (!IS_NUMBER(peek(vm, 0))) {
+                    STORE_FRAME();
+                    runtimeError(vm, "Operand must be a number.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                push(vm, NUMBER_VAL(AS_NUMBER(pop(vm)) - 1));
                 DISPATCH();
             }
             OPCODE(OP_GET_GLOBAL) : {
@@ -1615,7 +1642,6 @@ OPCODE(OP_SUPER_INVOKE_LONG) : {
     REFRESH_FRAME();
     DISPATCH();
 }
-
 OPCODE(OP_TAIL_SUPER_INVOKE_0) : argCount = 0; goto do_tail_super_invoke_indexed;
 OPCODE(OP_TAIL_SUPER_INVOKE_1) : argCount = 1; goto do_tail_super_invoke_indexed;
 OPCODE(OP_TAIL_SUPER_INVOKE_2) : argCount = 2; goto do_tail_super_invoke_indexed;
@@ -1625,21 +1651,16 @@ OPCODE(OP_TAIL_SUPER_INVOKE_5) : argCount = 5; goto do_tail_super_invoke_indexed
 OPCODE(OP_TAIL_SUPER_INVOKE_6) : argCount = 6; goto do_tail_super_invoke_indexed;
 OPCODE(OP_TAIL_SUPER_INVOKE_7) : argCount = 7; goto do_tail_super_invoke_indexed;
 OPCODE(OP_TAIL_SUPER_INVOKE_8) : argCount = 8; goto do_tail_super_invoke_indexed;
-
 do_tail_super_invoke_indexed: {
 uint8_t methodIndex = READ_BYTE();
 ObjClass* superclass = AS_CLASS(pop(vm));
-
 if (methodIndex >= superclass->methodCount || superclass->methods[methodIndex].closure == NULL) {
     STORE_FRAME();
     runtimeError(vm, "Undefined method in superclass.");
     return INTERPRET_RUNTIME_ERROR;
 }
-
 MethodEntry* entry = &superclass->methods[methodIndex];
-
 ObjClosure* method = entry->closure;
-
 closeUpvalues(vm, frame);
 memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
 vm->stackTop = frame->slots + (argCount + 1);
@@ -1649,42 +1670,34 @@ frame->openUpvalues = NULL;
 ip = frame->ip;
 DISPATCH();
 }
-
 OPCODE(OP_TAIL_SUPER_INVOKE) : {
     uint8_t methodIndex = READ_BYTE();
     argCount = READ_BYTE();
-
     ObjClass* superclass = AS_CLASS(pop(vm));
-
     if (methodIndex == 0xFF) {
         // Name-based tail super invoke
         uint8_t nameIdx = READ_BYTE();
         ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
         ObjClosure* method = NULL;
-
         for (int i = 0; i < superclass->methodCount; i++) {
             if (superclass->methods[i].closure != NULL &&
                 superclass->methods[i].name != NULL &&
                 superclass->methods[i].name == name) {
-
                 if (argCount != superclass->methods[i].arity) {
                     STORE_FRAME();
                     runtimeError(vm, "Expected %d arguments but got %d.",
                         superclass->methods[i].arity, argCount);
                     return INTERPRET_RUNTIME_ERROR;
                 }
-
                 method = superclass->methods[i].closure;
                 break;
             }
         }
-
         if (method == NULL) {
             STORE_FRAME();
             runtimeError(vm, "Undefined method '%s' in superclass.", name->chars);
             return INTERPRET_RUNTIME_ERROR;
         }
-
         closeUpvalues(vm, frame);
         memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
         vm->stackTop = frame->slots + (argCount + 1);
@@ -1694,7 +1707,6 @@ OPCODE(OP_TAIL_SUPER_INVOKE) : {
         ip = frame->ip;
         DISPATCH();
     }
-
     // Normal indexed tail super invoke
     goto do_tail_super_invoke_indexed;
 }
@@ -1702,38 +1714,31 @@ OPCODE(OP_TAIL_SUPER_INVOKE) : {
 OPCODE(OP_TAIL_SUPER_INVOKE_LONG) : {
     uint16_t methodIndex = READ_SHORT();
     argCount = READ_BYTE();
-
     ObjClass* superclass = AS_CLASS(pop(vm));
-
     if (methodIndex == 0xFFFF) {
         // Name-based tail super invoke
         uint16_t nameIdx = READ_SHORT();
         ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
         ObjClosure* method = NULL;
-
         for (int i = 0; i < superclass->methodCount; i++) {
             if (superclass->methods[i].closure != NULL &&
                 superclass->methods[i].name != NULL &&
                 superclass->methods[i].name == name) {
-
                 if (argCount != superclass->methods[i].arity) {
                     STORE_FRAME();
                     runtimeError(vm, "Expected %d arguments but got %d.",
                         superclass->methods[i].arity, argCount);
                     return INTERPRET_RUNTIME_ERROR;
                 }
-
                 method = superclass->methods[i].closure;
                 break;
             }
         }
-
         if (method == NULL) {
             STORE_FRAME();
             runtimeError(vm, "Undefined method '%s' in superclass.", name->chars);
             return INTERPRET_RUNTIME_ERROR;
         }
-
         closeUpvalues(vm, frame);
         memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value) * (argCount + 1));
         vm->stackTop = frame->slots + (argCount + 1);
@@ -1743,18 +1748,14 @@ OPCODE(OP_TAIL_SUPER_INVOKE_LONG) : {
         ip = frame->ip;
         DISPATCH();
     }
-
     // Normal indexed tail super invoke
     if (methodIndex >= superclass->methodCount || superclass->methods[methodIndex].closure == NULL) {
         STORE_FRAME();
         runtimeError(vm, "Undefined method in superclass.");
         return INTERPRET_RUNTIME_ERROR;
     }
-
     MethodEntry* entry = &superclass->methods[methodIndex];
-
     ObjClosure* method = entry->closure;
-
     closeUpvalues(vm, frame);
     memmove(frame->slots, vm->stackTop - (argCount + 1), sizeof(Value)* (argCount + 1));
     vm->stackTop = frame->slots + (argCount + 1);
@@ -1764,24 +1765,41 @@ OPCODE(OP_TAIL_SUPER_INVOKE_LONG) : {
     ip = frame->ip;
     DISPATCH();
 }
-
 OPCODE(OP_CLOSE_UPVALUE) : {
     closeUpvalues(vm, frame);
     pop(vm);
     DISPATCH();
 }
-
 OPCODE(OP_CLASS) : {
     ObjString* name = READ_STRING();
     ObjClass* klass = newClass(vm, name);
+
+    // Look up saved method indices from compile time
+    Value savedIndicesValue;
+    if (tableGet(&vm->rootModule->classInfo, OBJ_VAL(name), &savedIndicesValue)) {
+        Table* savedIndices = (Table*) (uintptr_t) AS_NUMBER(savedIndicesValue);
+        // Copy saved indices into the new class
+        tableAddAll(vm, savedIndices, &klass->methodIndices);
+    }
+
     push(vm, OBJ_VAL(klass));
-    DISPATCH(); }
+    DISPATCH();
+}
 OPCODE(OP_CLASS_LONG) : {
     ObjString* name = READ_STRING_LONG();
     ObjClass* klass = newClass(vm, name);
-    push(vm, OBJ_VAL(klass));
-    DISPATCH();}
 
+    // Look up saved method indices from compile time
+    Value savedIndicesValue;
+    if (tableGet(&vm->rootModule->classInfo, OBJ_VAL(name), &savedIndicesValue)) {
+        Table* savedIndices = (Table*) (uintptr_t) AS_NUMBER(savedIndicesValue);
+        // Copy saved indices into the new class
+        tableAddAll(vm, savedIndices, &klass->methodIndices);
+    }
+
+    push(vm, OBJ_VAL(klass));
+    DISPATCH();
+}
 OPCODE(OP_INHERIT) : {
     Value superclassVal = peek(vm, 1);
     if (!IS_CLASS(superclassVal)) {
@@ -1789,50 +1807,37 @@ OPCODE(OP_INHERIT) : {
         runtimeError(vm, "Superclass must be a class.");
         return INTERPRET_RUNTIME_ERROR;
     }
-
     ObjClass* superclass = AS_CLASS(superclassVal);
     ObjClass* subclass = AS_CLASS(peek(vm, 0));
-
     // Copy vtable array
     if (superclass->methodCount > 0) {
         subclass->methodCapacity = superclass->methodCapacity;
         subclass->methodCount = superclass->methodCount;
         subclass->methods = ALLOCATE(vm, MethodEntry, subclass->methodCapacity);
-
-        memcpy(subclass->methods, superclass->methods,
-            sizeof(MethodEntry) * superclass->methodCount);
-
+        memcpy(subclass->methods, superclass->methods, sizeof(MethodEntry) * superclass->methodCount);
         tableAddAll(vm, &superclass->methodIndices, &subclass->methodIndices);
     }
-
     // Inherit field layout
     tableAddAll(vm, &superclass->fieldIndices, &subclass->fieldIndices);
     subclass->fieldCount = superclass->fieldCount;
-
     pop(vm);
     pop(vm);
     DISPATCH();
 }
-
 OPCODE(OP_METHOD) : {
     uint8_t methodIndex = READ_BYTE();
     uint8_t arity = READ_BYTE();
-
     ObjClosure* method = AS_CLOSURE(peek(vm, 0));
     ObjClass* klass = AS_CLASS(peek(vm, 1));
-
     if (methodIndex >= klass->methodCapacity) {
         growMethodTable(vm, klass, methodIndex);
     }
-
     klass->methods[methodIndex].closure = method;
     klass->methods[methodIndex].arity = arity;
     klass->methods[methodIndex].name = method->function->name;
-
     if (methodIndex >= klass->methodCount) {
         klass->methodCount = methodIndex + 1;
     }
-
     // Also store in methodIndices table for inheritance
     ObjString* name = method->function->name;
     int nameLen = name->length;
@@ -1842,34 +1847,26 @@ OPCODE(OP_METHOD) : {
     buffer[nameLen + 1] = '\0';
     ObjString* signature = copyString(vm, buffer, nameLen + 1);
     FREE_ARRAY(vm, char, buffer, nameLen + 2);
-
     push(vm, OBJ_VAL(signature));
     tableSet(vm, &klass->methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
     pop(vm);
-
     pop(vm);
     DISPATCH();
 }
-
 OPCODE(OP_METHOD_LONG) : {
     uint16_t methodIndex = READ_SHORT();
     uint8_t arity = READ_BYTE();
-
     ObjClosure* method = AS_CLOSURE(peek(vm, 0));
     ObjClass* klass = AS_CLASS(peek(vm, 1));
-
     if (methodIndex >= klass->methodCapacity) {
         growMethodTable(vm, klass, methodIndex);
     }
-
     klass->methods[methodIndex].closure = method;
     klass->methods[methodIndex].arity = arity;
     klass->methods[methodIndex].name = method->function->name;
-
     if (methodIndex >= klass->methodCount) {
         klass->methodCount = methodIndex + 1;
     }
-
     // Also store in methodIndices table for inheritance
     ObjString* name = method->function->name;
     int nameLen = name->length;
@@ -1879,45 +1876,129 @@ OPCODE(OP_METHOD_LONG) : {
     buffer[nameLen + 1] = '\0';
     ObjString* signature = copyString(vm, buffer, nameLen + 1);
     FREE_ARRAY(vm, char, buffer, nameLen + 2);
-
     push(vm, OBJ_VAL(signature));
     tableSet(vm, &klass->methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
     pop(vm);
-
     pop(vm);
     DISPATCH();
 }
-
-
 OPCODE(OP_BUILD_LIST) : {
-    uint8_t count = READ_BYTE(); ObjList* l = newList(vm); push(vm, OBJ_VAL(l));
-    for (int i = 0; i < count; i++) writeValueArray(vm, &l->items, peek(vm, count - i));
-    vm->stackTop -= (count + 1); push(vm, OBJ_VAL(l)); DISPATCH();
+    uint8_t count = READ_BYTE();
+    ObjList* l = newList(vm);
+    push(vm, OBJ_VAL(l));
+    for (int i = 0; i < count; i++)
+        writeValueArray(vm, &l->items, peek(vm, count - i));
+    vm->stackTop -= (count + 1);
+    push(vm, OBJ_VAL(l));
+    DISPATCH();
+}
+OPCODE(OP_BUILD_TABLE) : {
+    uint8_t count = READ_BYTE();
+    ObjTable* table = newTable(vm);
+    push(vm, OBJ_VAL(table));
+    // Stack has: [..., k1, v1, k2, v2, ..., kN, vN, table]
+    // Pairs start at stackTop - (count * 2) - 1
+    Value* pairs = vm->stackTop - (count * 2) - 1;
+
+    for (int i = 0; i < count; i++) {
+        Value key = pairs[i * 2];
+        Value value = pairs[i * 2 + 1];
+        tableSet(vm, &table->table, key, value);
+    }
+    // Remove all pairs and the table, then push table back
+    vm->stackTop -= (count * 2 + 1);
+    push(vm, OBJ_VAL(table));
+    DISPATCH();
 }
 OPCODE(OP_INDEX_GET) : {
-    Value iVal = pop(vm); Value lVal = pop(vm);
-    if (!IS_LIST(lVal)) {
-        STORE_FRAME(); runtimeError(vm, "Only lists indexed."); return INTERPRET_RUNTIME_ERROR;
+    Value key = pop(vm);
+    Value obj = pop(vm);
+
+    if (IS_LIST(obj)) {
+        if (!IS_NUMBER(key)) {
+            STORE_FRAME();
+            runtimeError(vm, "List index must be a number.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        ObjList* l = AS_LIST(obj);
+        int idx = (int) AS_NUMBER(key);
+        if (idx < 0 || idx >= l->items.count) {
+            STORE_FRAME();
+            runtimeError(vm, "List index out of bounds.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        push(vm, l->items.values[idx]);
+    } else if (IS_TABLE(obj)) {
+        ObjTable* table = AS_TABLE(obj);
+        Value value;
+        if (!tableGet(&table->table, key, &value)) {
+            push(vm, NIL_VAL);
+        } else {
+            push(vm, value);
+        }
+    } else if (IS_STRING(obj)) {
+        if (!IS_NUMBER(key)) {
+            STORE_FRAME();
+            runtimeError(vm, "String index must be a number.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        ObjString* str = AS_STRING(obj);
+        int idx = (int) AS_NUMBER(key);
+        if (idx < 0 || idx >= str->length) {
+            STORE_FRAME();
+            runtimeError(vm, "String index out of bounds.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        // Return single character as a new string
+        char c = str->chars[idx];
+        ObjString* result = copyString(vm, &c, 1);
+        push(vm, OBJ_VAL(result));
+    } else {
+        STORE_FRAME();
+        runtimeError(vm, "Only lists, tables, and strings can be indexed.");
+        return INTERPRET_RUNTIME_ERROR;
     }
-    ObjList* l = AS_LIST(lVal); int idx = (int) AS_NUMBER(iVal);
-    if (idx < 0 || idx >= l->items.count) {
-        STORE_FRAME(); runtimeError(vm, "Index out of bounds."); return INTERPRET_RUNTIME_ERROR;
-    }
-    push(vm, l->items.values[idx]); DISPATCH();
+    DISPATCH();
 }
 OPCODE(OP_INDEX_SET) : {
-    Value v = pop(vm); Value iVal = pop(vm); Value lVal = pop(vm);
-    if (!IS_LIST(lVal)) {
-        STORE_FRAME(); runtimeError(vm, "Only lists indexed."); return INTERPRET_RUNTIME_ERROR;
-    }
-    ObjList* l = AS_LIST(lVal); int idx = (int) AS_NUMBER(iVal);
-    if (idx < 0 || idx > l->items.count) {
-        STORE_FRAME(); runtimeError(vm, "Index out of bounds."); return INTERPRET_RUNTIME_ERROR;
-    }
-    if (idx == l->items.count) writeValueArray(vm, &l->items, v); else l->items.values[idx] = v;
-    push(vm, v); DISPATCH();
-}
+    Value value = pop(vm);
+    Value key = pop(vm);
+    Value obj = pop(vm);
 
+    if (IS_LIST(obj)) {
+        if (!IS_NUMBER(key)) {
+            STORE_FRAME();
+            runtimeError(vm, "List index must be a number.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        ObjList* l = AS_LIST(obj);
+        int idx = (int) AS_NUMBER(key);
+        if (idx < 0 || idx > l->items.count) {
+            STORE_FRAME();
+            runtimeError(vm, "List index out of bounds.");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        if (idx == l->items.count) {
+            writeValueArray(vm, &l->items, value);
+        } else {
+            l->items.values[idx] = value;
+        }
+        push(vm, value);
+    } else if (IS_TABLE(obj)) {
+        ObjTable* table = AS_TABLE(obj);
+        tableSet(vm, &table->table, key, value);
+        push(vm, value);
+    } else if (IS_STRING(obj)) {
+        STORE_FRAME();
+        runtimeError(vm, "Strings are immutable.");
+        return INTERPRET_RUNTIME_ERROR;
+    } else {
+        STORE_FRAME();
+        runtimeError(vm, "Only lists and tables can be indexed for assignment.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+    DISPATCH();
+}
 OPCODE(OP_IMPORT) : {
     ObjString* fName = READ_STRING();
     Value mVal;
