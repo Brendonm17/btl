@@ -45,6 +45,8 @@ typedef enum {
     OP_SET_LOCAL_7_POP,
     OP_INC_LOCAL_POP,
     OP_INC_LOCAL,
+    OP_INCREMENT,    // Pop value, add 1, push result
+    OP_DECREMENT,
     OP_GET_GLOBAL,
     OP_GET_GLOBAL_LONG,
     OP_DEFINE_GLOBAL,
@@ -190,6 +192,7 @@ typedef enum {
     OP_METHOD,
     OP_METHOD_LONG,
     OP_BUILD_LIST,
+    OP_BUILD_TABLE,
     OP_INDEX_GET,
     OP_INDEX_SET,
     OP_IMPORT,

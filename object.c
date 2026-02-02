@@ -17,6 +17,12 @@ static struct Obj* allocateObject(struct VM* vm, size_t size, ObjType type) {
     return object;
 }
 
+ObjTable* newTable(struct VM* vm) {
+    ObjTable* table = ALLOCATE_OBJ(vm, ObjTable, OBJ_TABLE);
+    initTable(&table->table);
+    return table;
+}
+
 ObjBoundMethod* newBoundMethod(struct VM* vm, Value receiver, ObjClosure* method) {
     ObjBoundMethod* bound = ALLOCATE_OBJ(vm, ObjBoundMethod, OBJ_BOUND_METHOD);
     bound->receiver = receiver;
@@ -175,6 +181,9 @@ void printObject(Value value) {
         printf("]");
         break;
     }
+    case OBJ_TABLE:
+        printf("<table>");
+        break;
     case OBJ_MODULE:
         printf("<module %s>", AS_MODULE(value)->name->chars);
         break;

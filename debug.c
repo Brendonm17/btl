@@ -196,6 +196,8 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_SET_LOCAL_7_POP: return simpleInstruction("OP_SET_LOCAL_7_POP", offset);
     case OP_INC_LOCAL_POP: return byteInstruction("OP_INC_LOCAL_POP", chunk, offset);
     case OP_INC_LOCAL: return byteInstruction("OP_INC_LOCAL", chunk, offset);
+    case OP_INCREMENT: return simpleInstruction("OP_INCREMENT", offset);
+    case OP_DECREMENT: return simpleInstruction("OP_DECREMENT", offset);
     case OP_GET_GLOBAL: return byteInstruction("OP_GET_GLOBAL", chunk, offset);
     case OP_GET_GLOBAL_LONG: return shortInstruction("OP_GET_GLOBAL_LONG", chunk, offset);
     case OP_DEFINE_GLOBAL: return byteInstruction("OP_DEFINE_GLOBAL", chunk, offset);
@@ -373,6 +375,7 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_METHOD: return methodIndexedInstruction("OP_METHOD", chunk, offset);
     case OP_METHOD_LONG: return methodIndexedLongInstruction("OP_METHOD_L", chunk, offset);
     case OP_BUILD_LIST: return byteInstruction("OP_BUILD_LIST", chunk, offset);
+    case OP_BUILD_TABLE: return byteInstruction("OP_BUILD_TABLE", chunk, offset);
     case OP_INDEX_GET: return simpleInstruction("OP_INDEX_GET", offset);
     case OP_INDEX_SET: return simpleInstruction("OP_INDEX_SET", offset);
     case OP_IMPORT: return constantInstruction("OP_IMPORT", chunk, offset);

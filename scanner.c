@@ -200,11 +200,16 @@ Token scanToken(Scanner* scanner) {
     case ',': return makeToken(scanner, TOKEN_COMMA);
     case '.': return makeToken(scanner, TOKEN_DOT);
     case ':': return makeToken(scanner, TOKEN_COLON);
-    case '-': return makeToken(scanner, TOKEN_MINUS);
-    case '+': return makeToken(scanner, TOKEN_PLUS);
-    case '/': return makeToken(scanner, TOKEN_SLASH);
-    case '*': return makeToken(scanner, TOKEN_STAR);
-    case '%': return makeToken(scanner, TOKEN_PERCENT);
+    case '+':
+        return makeToken(scanner, match(scanner, '+') ? TOKEN_PLUS_PLUS : match(scanner, '=') ? TOKEN_PLUS_EQUAL : TOKEN_PLUS);
+    case '-':
+        return makeToken(scanner, match(scanner, '-') ? TOKEN_MINUS_MINUS : match(scanner, '=') ? TOKEN_MINUS_EQUAL : TOKEN_MINUS);
+    case '*':
+        return makeToken(scanner, match(scanner, '=') ? TOKEN_STAR_EQUAL : TOKEN_STAR);
+    case '/':
+        return makeToken(scanner, match(scanner, '=') ? TOKEN_SLASH_EQUAL : TOKEN_SLASH);
+    case '%':
+        return makeToken(scanner, match(scanner, '=') ? TOKEN_PERCENT_EQUAL : TOKEN_PERCENT);
     case '!':
         return makeToken(scanner, match(scanner, '=') ? TOKEN_BANG_EQUAL : TOKEN_BANG);
     case '=':

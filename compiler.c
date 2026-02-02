@@ -67,6 +67,8 @@ static int makeConstant(Parser* p, Compiler* c, Value value);
 static void emitConstant(Parser* p, Compiler* c, Value value);
 static int resolveLocal(Parser* p, Compiler* c, Token* name);
 static int resolveUpvalue(Parser* p, Compiler* c, Token* name);
+static void emitVariableSet(Parser* p, Compiler* c, ClassCompiler* cc, Token name);
+static void prefixIncDec(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign);
 
 // --- Chunk Management ---
 
@@ -534,6 +536,42 @@ static void emitUpvalue(Parser* p, Compiler* c, uint8_t arg, bool isSet) {
     }
 }
 
+static void emitVariableSet(Parser* p, Compiler* c, ClassCompiler* cc, Token name) {
+    int arg = resolveLocal(p, c, &name);
+
+    if (arg != -1) {
+        markLocalAsModified(c, arg);
+        if (arg <= 7) {
+            emitByte(p, c, (uint8_t) (OP_SET_LOCAL_0 + arg));
+        } else {
+            emitBytes(p, c, OP_SET_LOCAL, (uint8_t) arg);
+        }
+        return;
+    }
+
+    arg = resolveUpvalue(p, c, &name);
+    if (arg != -1) {
+        if (c->upvalues[arg].isLocal && c->enclosing != NULL) {
+            markLocalAsModified(c->enclosing, c->upvalues[arg].index);
+        }
+        emitUpvalue(p, c, (uint8_t) arg, true);
+        return;
+    }
+
+    if (cc != NULL) {
+        ObjString* fieldName = copyString(c->vm, name.start, name.length);
+        Value indexVal;
+        if (tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+            uint8_t index = (uint8_t) AS_NUMBER(indexVal);
+            emitBytes(p, c, OP_SET_FIELD_THIS, index);
+            return;
+        }
+    }
+
+    arg = identifierConstant(c, &name);
+    emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
+}
+
 static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Token name, bool canAssign) {
     int arg = resolveLocal(p, c, &name);
 
@@ -562,6 +600,34 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
             markLocalAsModified(c, arg);
             if (arg <= 7) emitByte(p, c, (uint8_t) (OP_SET_LOCAL_0 + arg));
             else emitBytes(p, c, OP_SET_LOCAL, (uint8_t) arg);
+        } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
+            match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
+            match(p, s, TOKEN_PERCENT_EQUAL))) {
+
+            TokenType assignOp = p->previous.type;
+
+            // Load current value
+            if (arg <= 7) {
+                emitByte(p, c, (uint8_t) (OP_GET_LOCAL_0 + arg));
+            } else {
+                emitBytes(p, c, OP_GET_LOCAL, (uint8_t) arg);
+            }
+
+            expression(p, s, c, cc);
+
+            // Apply the operation
+            switch (assignOp) {
+            case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
+            case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
+            case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
+            case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
+            case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+            default: break;
+            }
+
+            markLocalAsModified(c, arg);
+            if (arg <= 7) emitByte(p, c, (uint8_t) (OP_SET_LOCAL_0 + arg));
+            else emitBytes(p, c, OP_SET_LOCAL, (uint8_t) arg);
         } else {
             if (arg <= 7) emitByte(p, c, (uint8_t) (OP_GET_LOCAL_0 + arg));
             else emitBytes(p, c, OP_GET_LOCAL, (uint8_t) arg);
@@ -578,6 +644,31 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
             }
             expression(p, s, c, cc);
             emitUpvalue(p, c, (uint8_t) arg, true);
+        } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
+            match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
+            match(p, s, TOKEN_PERCENT_EQUAL))) {
+
+            TokenType assignOp = p->previous.type;
+
+            if (c->upvalues[arg].isLocal && c->enclosing != NULL) {
+                markLocalAsModified(c->enclosing, c->upvalues[arg].index);
+            }
+
+            // Load current value
+            emitUpvalue(p, c, (uint8_t) arg, false);
+
+            expression(p, s, c, cc);
+
+            switch (assignOp) {
+            case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
+            case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
+            case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
+            case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
+            case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+            default: break;
+            }
+
+            emitUpvalue(p, c, (uint8_t) arg, true);
         } else {
             emitUpvalue(p, c, (uint8_t) arg, false);
         }
@@ -593,6 +684,27 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
             if (canAssign && match(p, s, TOKEN_EQUAL)) {
                 expression(p, s, c, cc);
                 emitBytes(p, c, OP_SET_FIELD_THIS, index);
+            } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
+                match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
+                match(p, s, TOKEN_PERCENT_EQUAL))) {
+
+                TokenType assignOp = p->previous.type;
+
+                // Load current value
+                emitBytes(p, c, OP_GET_FIELD_THIS, index);
+
+                expression(p, s, c, cc);
+
+                switch (assignOp) {
+                case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
+                case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
+                case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
+                case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
+                case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+                default: break;
+                }
+
+                emitBytes(p, c, OP_SET_FIELD_THIS, index);
             } else {
                 emitBytes(p, c, OP_GET_FIELD_THIS, index);
             }
@@ -604,6 +716,27 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
     arg = identifierConstant(c, &name);
     if (canAssign && match(p, s, TOKEN_EQUAL)) {
         expression(p, s, c, cc);
+        emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
+    } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
+        match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
+        match(p, s, TOKEN_PERCENT_EQUAL))) {
+
+        TokenType assignOp = p->previous.type;
+
+        // Load current value
+        emitLong(p, c, OP_GET_GLOBAL, OP_GET_GLOBAL_LONG, arg);
+
+        expression(p, s, c, cc);
+
+        switch (assignOp) {
+        case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
+        case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
+        case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
+        case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
+        case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+        default: break;
+        }
+
         emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
     } else {
         emitLong(p, c, OP_GET_GLOBAL, OP_GET_GLOBAL_LONG, arg);
@@ -725,19 +858,148 @@ static void string(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
 }
 
 static void variable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    namedVariable(p, s, c, cc, p->previous, canAssign);
+    Token name = p->previous;
+    namedVariable(p, s, c, cc, name, canAssign);
+
+    // Check for postfix ++ or --
+    if (match(p, s, TOKEN_PLUS_PLUS) || match(p, s, TOKEN_MINUS_MINUS)) {
+        TokenType op = p->previous.type;
+        bool isInc = (op == TOKEN_PLUS_PLUS);
+
+        // Value is already on stack from namedVariable
+        // Duplicate it (this will be the return value - old value)
+        emitByte(p, c, OP_DUP);
+
+        // Increment/decrement the top copy
+        emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+
+        // Store the new value back to the variable
+        emitVariableSet(p, c, cc, name);
+
+        // Pop the result of the set operation
+        emitByte(p, c, OP_POP);
+
+        // Stack now has the old value (what we dup'd earlier)
+    }
+}
+
+static void prefixIncDec(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+    (void) canAssign;
+    TokenType op = p->previous.type;
+    bool isInc = (op == TOKEN_PLUS_PLUS);
+
+    // Check if this is a property access (++this.field or ++obj.prop)
+    if (check(p, TOKEN_THIS) || check(p, TOKEN_IDENTIFIER)) {
+        Token possibleObj = p->current;
+        advance(p, s);
+
+        if (match(p, s, TOKEN_DOT)) {
+            // It's a property access: ++this.field or ++obj.prop
+            consume(p, s, TOKEN_IDENTIFIER, "Expect property name after '.'.");
+            Token propName = p->previous;
+
+            // Check if it's 'this'
+            bool isThis = (possibleObj.length == 4 && memcmp(possibleObj.start, "this", 4) == 0);
+
+            if (isThis && cc != NULL) {
+                // ++this.field
+                ObjString* fieldName = copyString(c->vm, propName.start, propName.length);
+                Value indexVal;
+                if (!tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+                    indexVal = NUMBER_VAL((double) cc->fieldCount);
+                    tableSet(c->vm, &cc->fields, OBJ_VAL(fieldName), indexVal);
+                    cc->fieldCount++;
+                }
+                uint8_t index = (uint8_t) AS_NUMBER(indexVal);
+
+                // Get, increment, dup, set, pop (leaves new value on stack)
+                emitBytes(p, c, OP_GET_FIELD_THIS, index);
+                emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+                emitByte(p, c, OP_DUP);
+                emitBytes(p, c, OP_SET_FIELD_THIS, index);
+                emitByte(p, c, OP_POP);
+            } else {
+                // ++obj.prop
+                namedVariable(p, s, c, cc, possibleObj, false);
+                int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, propName.start, propName.length)));
+                emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+                emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+                emitByte(p, c, OP_DUP);
+                emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
+                emitByte(p, c, OP_POP);
+            }
+            return;
+        } else {
+            // Not a property access, it's a simple variable
+            // possibleObj is the variable name
+            Token name = possibleObj;
+
+            // Special optimization for local variables
+            int arg = resolveLocal(p, c, &name);
+            if (arg != -1 && isInc) {
+                // Use optimized OP_INC_LOCAL
+                markLocalAsModified(c, arg);
+                emitBytes(p, c, OP_INC_LOCAL, (uint8_t) arg);
+                return;
+            }
+
+            // General case: get, modify, dup, set, pop
+            namedVariable(p, s, c, cc, name, false);
+            emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+            emitByte(p, c, OP_DUP);
+            emitVariableSet(p, c, cc, name);
+            emitByte(p, c, OP_POP);
+            return;
+        }
+    }
+
+    errorAt(p, &p->previous, "Expect variable or property after '++' or '--'.");
 }
 
 static void list(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
     (void) canAssign;
+
+    // Check for empty dictionary [:] 
+    if (check(p, TOKEN_COLON)) {
+        advance(p, s);
+        consume(p, s, TOKEN_RIGHT_BRACKET, "Expect ']' after '[:'.");
+        emitBytes(p, c, OP_BUILD_TABLE, 0);
+        return;
+    }
+
     int count = 0;
     if (!check(p, TOKEN_RIGHT_BRACKET)) {
         do {
             expression(p, s, c, cc);
+
+            // After first expression, check for colon (dictionary)
+            if (count == 0 && check(p, TOKEN_COLON)) {
+                // This is a dictionary, not a list
+                // The first key is already on the stack
+                consume(p, s, TOKEN_COLON, "Expect ':'.");
+                expression(p, s, c, cc);
+                count = 1;
+
+                // Continue parsing remaining key:value pairs
+                while (match(p, s, TOKEN_COMMA)) {
+                    parsePrecedence(p, s, c, cc, PREC_COMPARISON);
+                    consume(p, s, TOKEN_COLON, "Expect ':' after dictionary key.");
+                    expression(p, s, c, cc);
+
+                    if (count == 255) errorAt(p, &p->previous, "Dictionary too large.");
+                    count++;
+                }
+
+                consume(p, s, TOKEN_RIGHT_BRACKET, "Expect ']'.");
+                emitBytes(p, c, OP_BUILD_TABLE, (uint8_t) count);
+                return;
+            }
+
             if (count == 255) errorAt(p, &p->previous, "List too large.");
             count++;
         } while (match(p, s, TOKEN_COMMA));
     }
+
     consume(p, s, TOKEN_RIGHT_BRACKET, "Expect ']'.");
     emitBytes(p, c, OP_BUILD_LIST, (uint8_t) count);
 }
@@ -775,9 +1037,35 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
         }
         uint8_t index = (uint8_t) AS_NUMBER(indexVal);
         removeChunkTail(currentChunk(c), 1);
+
         if (canAssign && match(p, s, TOKEN_EQUAL)) {
             expression(p, s, c, cc);
             emitBytes(p, c, OP_SET_FIELD_THIS, index);
+        } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
+            match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
+            match(p, s, TOKEN_PERCENT_EQUAL))) {
+            TokenType assignOp = p->previous.type;
+            emitBytes(p, c, OP_GET_FIELD_THIS, index);
+            expression(p, s, c, cc);
+            switch (assignOp) {
+            case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
+            case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
+            case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
+            case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
+            case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+            default: break;
+            }
+            emitBytes(p, c, OP_SET_FIELD_THIS, index);
+        } else if (match(p, s, TOKEN_PLUS_PLUS) || match(p, s, TOKEN_MINUS_MINUS)) {
+            TokenType op = p->previous.type;
+            bool isInc = (op == TOKEN_PLUS_PLUS);
+
+            // Postfix: get, dup, inc/dec, set, pop (leaves old value)
+            emitBytes(p, c, OP_GET_FIELD_THIS, index);
+            emitByte(p, c, OP_DUP);
+            emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+            emitBytes(p, c, OP_SET_FIELD_THIS, index);
+            emitByte(p, c, OP_POP);
         } else {
             emitBytes(p, c, OP_GET_FIELD_THIS, index);
         }
@@ -855,6 +1143,31 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
         if (canAssign && match(p, s, TOKEN_EQUAL)) {
             expression(p, s, c, cc);
             emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
+        } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
+            match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
+            match(p, s, TOKEN_PERCENT_EQUAL))) {
+            TokenType assignOp = p->previous.type;
+            emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+            expression(p, s, c, cc);
+            switch (assignOp) {
+            case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
+            case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
+            case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
+            case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
+            case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+            default: break;
+            }
+            emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
+        } else if (match(p, s, TOKEN_PLUS_PLUS) || match(p, s, TOKEN_MINUS_MINUS)) {
+            TokenType op = p->previous.type;
+            bool isInc = (op == TOKEN_PLUS_PLUS);
+
+            // Postfix on property
+            emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
+            emitByte(p, c, OP_DUP);
+            emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+            emitLong(p, c, OP_SET_PROPERTY, OP_SET_PROPERTY_LONG, nameIdx);
+            //emitByte(p, c, OP_POP);
         } else {
             emitLong(p, c, OP_GET_PROPERTY, OP_GET_PROPERTY_LONG, nameIdx);
         }
@@ -1014,6 +1327,8 @@ ParseRule rules [] = {
     [TOKEN_FUNC] = {func,     NULL,   PREC_NONE},
     [TOKEN_SWITCH] = {switch_,  NULL,   PREC_NONE},
     [TOKEN_COLON] = {NULL,     NULL,   PREC_NONE},
+    [TOKEN_PLUS_PLUS] = {prefixIncDec, NULL, PREC_NONE},
+[TOKEN_MINUS_MINUS] = {prefixIncDec, NULL, PREC_NONE},
     [TOKEN_EOF] = {NULL,     NULL,   PREC_NONE},
 };
 
@@ -1340,7 +1655,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
     }
     consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
 
-    // AUTO-GENERATE init() if needed
+    // AUTO-GENERATE empty init() if field initializers exist but no user init
     if (hasFieldInitializers && !userDefinedInit) {
         namedVariable(p, s, c, NULL, nameToken, false);
 
@@ -1356,6 +1671,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
 
         sub.function->arity = 0;
 
+        // Inject field initializers
         for (int i = 0; i < classC.fieldCount; i++) {
             if (classC.fieldInfos[i].hasInit) {
                 Scanner initScanner;
@@ -1451,6 +1767,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
 
     freeTable(c->vm, &classC.fields);
 
+    // Save method indices AFTER auto-generated init is added
     ObjString* className = copyString(c->vm, nameToken.start, nameToken.length);
     push(c->vm, OBJ_VAL(className));
 

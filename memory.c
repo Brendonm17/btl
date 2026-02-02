@@ -116,6 +116,9 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
     case OBJ_UPVALUE:
         markValue(vm, ((ObjUpvalue*) object)->closed);
         break;
+    case OBJ_TABLE:
+        markTable(vm, &((ObjTable*) object)->table);
+        break;
     case OBJ_NATIVE:
     case OBJ_STRING:
         break;
@@ -195,6 +198,12 @@ static void freeObject(struct VM* vm, struct Obj* object) {
     case OBJ_UPVALUE:
         FREE(vm, ObjUpvalue, object);
         break;
+    case OBJ_TABLE: {
+        ObjTable* table = (ObjTable*) object;
+        freeTable(vm, &table->table);
+        FREE(vm, ObjTable, object);
+        break;
+    }
     }
 }
 
