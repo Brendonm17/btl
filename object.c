@@ -59,6 +59,21 @@ ObjClosure* newClosure(VM* vm, ObjFunction* function) {
         closure->upvalues[i].isOpen = true;
         closure->upvalues[i].next = NULL;
     }
+    // Allocate and initialize IC arrays
+    if (function->fieldICCount > 0) {
+        closure->fieldICs = ALLOCATE(vm, FieldIC, function->fieldICCount);
+        initFieldICs(closure->fieldICs, function->fieldICCount);
+    } else {
+        closure->fieldICs = NULL;
+    }
+
+    if (function->methodICCount > 0) {
+        closure->methodICs = ALLOCATE(vm, MethodIC, function->methodICCount);
+        initMethodICs(closure->methodICs, function->methodICCount);
+    } else {
+        closure->methodICs = NULL;
+    }
+
     return closure;
 }
 
@@ -68,6 +83,8 @@ ObjFunction* newFunction(struct VM* vm, ObjModule* module) {
     function->upvalueCount = 0;
     function->name = NULL;
     function->module = module;
+    function->fieldICCount = 0;
+    function->methodICCount = 0;
     initChunk(&function->chunk);
     return function;
 }

@@ -73,6 +73,9 @@ typedef struct Compiler {
     Table constants;
     struct Loop* currentLoop;
     SwitchContext* currentSwitch;
+    // IC slot counters for current function
+    int fieldICCount;
+    int methodICCount;
 } Compiler;
 
 typedef struct {

@@ -147,6 +147,16 @@ static void freeObject(struct VM* vm, struct Obj* object) {
     }
     case OBJ_CLOSURE: {
         ObjClosure* closure = (ObjClosure*) object;
+        // Free IC arrays
+        if (closure->fieldICs != NULL) {
+            FREE_ARRAY(vm, FieldIC, closure->fieldICs,
+                closure->function->fieldICCount);
+        }
+        if (closure->methodICs != NULL) {
+            FREE_ARRAY(vm, MethodIC, closure->methodICs,
+                closure->function->methodICCount);
+        }
+
         size_t size = sizeof(ObjClosure) + sizeof(RuntimeUpvalue) * closure->upvalueCount;
         reallocate(vm, object, size, 0);
         break;

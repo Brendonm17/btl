@@ -5,6 +5,7 @@
 #include "chunk.h"
 #include "table.h"
 #include "value.h"
+#include "ic.h"
 
 // --- Forward Declarations ---
 typedef struct ObjUpvalue ObjUpvalue;
@@ -70,6 +71,9 @@ typedef struct ObjClosure {
     Obj obj;
     struct ObjFunction* function;
     int upvalueCount;
+    // Inline caches
+    FieldIC* fieldICs;
+    MethodIC* methodICs;
     RuntimeUpvalue upvalues [];
 } ObjClosure;
 
@@ -95,6 +99,10 @@ typedef struct ObjFunction {
     Chunk chunk;
     ObjString* name;
     ObjModule* module;
+
+    // IC slot counts (set by compiler)
+    int fieldICCount;
+    int methodICCount;
 } ObjFunction;
 
 typedef Value (*NativeFn)(int argCount, Value* args);

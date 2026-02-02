@@ -1,4 +1,3 @@
-
 #ifndef btl_debug_h
 #define btl_debug_h
 
