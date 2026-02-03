@@ -17,6 +17,58 @@ static struct Obj* allocateObject(struct VM* vm, size_t size, ObjType type) {
     return object;
 }
 
+ObjNativeMethod* newNativeMethod(VM* vm, NativeMethodFn fn, const char* name, int arity) {
+    ObjNativeMethod* method = ALLOCATE_OBJ(vm, ObjNativeMethod, OBJ_NATIVE_METHOD);
+    method->function = fn;
+    method->name = copyString(vm, name, (int) strlen(name));
+    method->arity = arity;
+    return method;
+}
+
+ObjNativeClass* newNativeClass(VM* vm, const char* name) {
+    ObjNativeClass* klass = ALLOCATE_OBJ(vm, ObjNativeClass, OBJ_NATIVE_CLASS);
+    klass->name = copyString(vm, name, (int) strlen(name));
+    initTable(&klass->methods);
+    return klass;
+}
+
+ObjNativeModule* newNativeModule(VM* vm, const char* name) {
+    ObjNativeModule* module = ALLOCATE_OBJ(vm, ObjNativeModule, OBJ_NATIVE_MODULE);
+    module->name = copyString(vm, name, (int) strlen(name));
+    initTable(&module->globals);
+    return module;
+}
+
+void defineNativeMethod(VM* vm, ObjNativeClass* klass, const char* name, NativeMethodFn fn, int arity) {
+    ObjNativeMethod* method = newNativeMethod(vm, fn, name, arity);
+    push(vm, OBJ_VAL(method));
+    ObjString* nameStr = copyString(vm, name, (int) strlen(name));
+    push(vm, OBJ_VAL(nameStr));
+    tableSet(vm, &klass->methods, OBJ_VAL(nameStr), OBJ_VAL(method));
+    pop(vm);
+    pop(vm);
+}
+
+void defineNativeModuleValue(VM* vm, ObjNativeModule* module, const char* name, Value value) {
+    push(vm, value);
+    ObjString* nameStr = copyString(vm, name, (int) strlen(name));
+    push(vm, OBJ_VAL(nameStr));
+    tableSet(vm, &module->globals, OBJ_VAL(nameStr), value);
+    pop(vm);
+    pop(vm);
+}
+
+void defineNativeModuleFn(VM* vm, ObjNativeModule* module, const char* name, NativeFn fn, int arity) {
+    (void) arity;
+    ObjNative* native = newNative(vm, fn);
+    push(vm, OBJ_VAL(native));
+    ObjString* nameStr = copyString(vm, name, (int) strlen(name));
+    push(vm, OBJ_VAL(nameStr));
+    tableSet(vm, &module->globals, OBJ_VAL(nameStr), OBJ_VAL(native));
+    pop(vm);
+    pop(vm);
+}
+
 ObjTable* newTable(struct VM* vm) {
     ObjTable* table = ALLOCATE_OBJ(vm, ObjTable, OBJ_TABLE);
     initTable(&table->table);
@@ -99,7 +151,7 @@ ObjInstance* newInstance(struct VM* vm, ObjClass* klass) {
     instance->fields = ALLOCATE(vm, Value, size);
 
     for (int i = 0; i < klass->fieldCount; i++) {
-        instance->fields[i] = NIL_VAL;
+        instance->fields[i] = NULL_VAL;
     }
     return instance;
 }
@@ -131,7 +183,7 @@ static struct ObjString* allocateString(struct VM* vm, char* chars, int length, 
     string->chars = chars;
     string->hash = hash;
     push(vm, OBJ_VAL(string));
-    tableSet(vm, &vm->strings, OBJ_VAL(string), NIL_VAL);
+    tableSet(vm, &vm->strings, OBJ_VAL(string), NULL_VAL);
     pop(vm);
     return string;
 }
@@ -212,6 +264,15 @@ void printObject(Value value) {
         break;
     case OBJ_UPVALUE:
         printf("<upvalue>");
+        break;
+    case OBJ_NATIVE_METHOD:
+        printf("<native method %s>", AS_NATIVE_METHOD(value)->name->chars);
+        break;
+    case OBJ_NATIVE_CLASS:
+        printf("<native class %s>", AS_NATIVE_CLASS(value)->name->chars);
+        break;
+    case OBJ_NATIVE_MODULE:
+        printf("<native module %s>", AS_NATIVE_MODULE(value)->name->chars);
         break;
     default:
         printf("<obj>");

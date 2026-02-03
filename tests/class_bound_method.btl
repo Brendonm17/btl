@@ -1,6 +1,8 @@
+import "system";
+
 class Person {
   func init(name) { this.name = name; }
-  func sayName() { print this.name; }
+  func sayName() { system.println(this.name); }
 }
 
 var p = Person("Alice");

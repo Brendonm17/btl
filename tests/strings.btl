@@ -1,35 +1,37 @@
+import "system";
+
 var a = "hello";
 var b = "he" + "llo";
-print a == b;   // expect: true
-print a == "hi"; // expect: false
+system.println(a == b);   // expect: true
+system.println(a == "hi"); // expect: false
 
 // Basic string indexing
 var str = "hello";
-print str[0];  // expect: h
-print str[1];  // expect: e
-print str[4];  // expect: o
+system.println(str[0]);  // expect: h
+system.println(str[1]);  // expect: e
+system.println(str[4]);  // expect: o
 
 // String length
 var word = "test";
-print word[0];  // expect: t
-print word[1];  // expect: e
-print word[2];  // expect: s
-print word[3];  // expect: t
+system.println(word[0]);  // expect: t
+system.println(word[1]);  // expect: e
+system.println(word[2]);  // expect: s
+system.println(word[3]);  // expect: t
 
 // Single character strings
 var a = "a";
-print a[0];  // expect: a
+system.println(a[0]);  // expect: a
 
 // Strings in expressions
 var greeting = "Hi!";
 var first = greeting[0];
-print first;  // expect: H
+system.println(first);  // expect: H
 
 // Strings in loops
 var name = "Bob";
 var i = 0;
 while (i < 3) {
-    print name[i];
+    system.println(name[i]);
     i = i + 1;
 }
 // expect: B
@@ -38,33 +40,31 @@ while (i < 3) {
 
 // Strings with spaces
 var phrase = "a b c";
-print phrase[0];  // expect: a
-print phrase[1];  // expect:  
-print phrase[2];  // expect: b
-print phrase[4];  // expect: c
+system.println(phrase[0]);  // expect: a
+system.println(phrase[1]);  // expect:  
+system.println(phrase[2]);  // expect: b
+system.println(phrase[4]);  // expect: c
 
 // Strings in tables
 var data = ["msg": "test"];
-print data["msg"][0];  // expect: t
-print data["msg"][1];  // expect: e
+system.println(data["msg"][0]);  // expect: t
+system.println(data["msg"][1]);  // expect: e
 
 // Strings in lists
 var words = ["cat", "dog", "rat"];
-print words[0][0];  // expect: c
-print words[1][0];  // expect: d
-print words[2][0];  // expect: r
+system.println(words[0][0]);  // expect: c
+system.println(words[1][0]);  // expect: d
+system.println(words[2][0]);  // expect: r
 
 // Comparison of indexed chars
 var s1 = "abc";
 var s2 = "xyz";
 if (s1[0] == "a") {
-    print "first char is a";  // expect: first char is a
+    system.println("first char is a");  // expect: first char is a
 }
 
-// Using indexed char in concatenation would need + operator
-// For now just verify indexing works
 var text = "hello world";
-print text[0];   // expect: h
-print text[6];   // expect: w
+system.println(text[0]);   // expect: h
+system.println(text[6]);   // expect: w
 
-print "String indexing tests passed!";  // expect: String indexing tests passed!
+system.println("String indexing tests passed!");  // expect: String indexing tests passed!

@@ -1,1 +1,3 @@
-print unknownVar; // expect error: Undefined variable 'unknownVar'
+import "system";
+
+system.println(unknownVar); // expect error: Undefined variable 'unknownVar'

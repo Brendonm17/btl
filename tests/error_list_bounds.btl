@@ -1,2 +1,4 @@
+import "system";
+
 var list = [1, 2];
-print list[5]; // expect error: Index out of bounds
+system.println(list[5]); // expect error: Index out of bounds

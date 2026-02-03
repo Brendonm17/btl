@@ -1,0 +1,70 @@
+import "system";
+
+// String methods
+var s = "  Hello World  ";
+system.println(s.trim());                   // expect: Hello World
+system.println(s.trim().upper());           // expect: HELLO WORLD
+system.println(s.trim().lower());           // expect: hello world
+system.println(s.length());                 // expect: 15
+system.println("hello".contains("ell"));    // expect: true
+system.println("hello".startsWith("he"));   // expect: true
+system.println("hello".endsWith("lo"));     // expect: true
+system.println("hello".indexOf("l"));       // expect: 2
+system.println("hello".substring(1, 4));    // expect: ell
+system.println("a,b,c".split(",").length()); // expect: 3
+system.println("hello".replace("l", "L"));  // expect: heLLo
+
+// Number methods
+system.println((42).abs());         // expect: 42
+system.println((-5).abs());         // expect: 5
+system.println((3.7).floor());      // expect: 3
+system.println((3.2).ceil());       // expect: 4
+system.println((3.5).round());      // expect: 4
+system.println((9).sqrt());         // expect: 3
+system.println((2).pow(10));        // expect: 1024
+system.println((100).clamp(0, 50)); // expect: 50
+system.println((0.5).lerp(0, 100)); // expect: 50
+system.println((65).chr());         // expect: A
+
+// List methods
+var list = [1, 2, 3];
+system.println(list.length());      // expect: 3
+list.push(4);
+system.println(list.length());      // expect: 4
+system.println(list.pop());         // expect: 4
+system.println(list.contains(2));   // expect: true
+system.println(list.indexOf(3));    // expect: 2
+list.reverse();
+system.println(list[0]);            // expect: 3
+
+// Table methods
+var t = ["a": 1, "b": 2];
+system.println(t.length());         // expect: 2
+system.println(t.has("a"));         // expect: true
+system.println(t.has("c"));         // expect: false
+system.println(t.keys().length());  // expect: 2
+t.remove("a");
+system.println(t.length());         // expect: 1
+
+// Math module
+import "math" as math;
+system.println(math.PI);            // expect: 3.14159
+system.println(math.abs(-42));      // expect: 42
+system.println(math.floor(3.7));    // expect: 3
+system.println(math.ceil(3.2));     // expect: 4
+system.println(math.max(5, 10));    // expect: 10
+system.println(math.min(5, 10));    // expect: 5
+system.println(math.sqrt(16));      // expect: 4
+system.println(math.pow(2, 8));     // expect: 256
+
+// Random module
+import "random" as rand;
+var r = rand.random();
+system.println(r >= 0);             // expect: true
+system.println(r < 1);              // expect: true
+var i = rand.int(1, 10);
+system.println(i >= 1);             // expect: true
+system.println(i <= 10);            // expect: true
+system.println(rand.bool() or !rand.bool() or true);  // expect: true
+
+system.println("All native tests passed!");           // expect: All native tests passed!

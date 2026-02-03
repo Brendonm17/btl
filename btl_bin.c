@@ -24,7 +24,7 @@
  * 1. CONTEXTS AND CORE UTILITIES
  * ============================================================================= */
 
-/* Used during the writing phase to collect all unique assets in the script. */
+ /* Used during the writing phase to collect all unique assets in the script. */
 typedef struct {
     Table strings;        // Hash table to deduplicate strings: ObjString* -> int ID
     Table natives;        // Set of strings: Names of native C functions required
@@ -39,7 +39,7 @@ typedef struct {
 
 /**
  * LEB128 (Little-Endian Base 128) Variable-Length Integer Encoding.
- * Most numbers in bytecode (arity, counts, indices) are small. Instead of 
+ * Most numbers in bytecode (arity, counts, indices) are small. Instead of
  * wasting 4 bytes for the number '2', this uses only 1 byte.
  * The 8th bit of each byte is a "continuation" flag.
  */
@@ -63,7 +63,7 @@ static uint32_t readVarint(FILE* f) {
             fprintf(stderr, "BTL Error: Truncated Varint.\n");
             exit(74);
         }
-        res |= (uint32_t)(b & 0x7F) << shift;
+        res |= (uint32_t) (b & 0x7F) << shift;
         if (!(b & 0x80)) return res; // High bit not set: this is the last byte
         shift += 7;
     }
@@ -72,8 +72,8 @@ static uint32_t readVarint(FILE* f) {
 
 /**
  * ZigZag Encoding for Signed Integers.
- * LEB128 is inefficient for negative numbers. ZigZag maps signed numbers 
- * onto unsigned ones (0->0, -1->1, 1->2, -2->3) so small negatives 
+ * LEB128 is inefficient for negative numbers. ZigZag maps signed numbers
+ * onto unsigned ones (0->0, -1->1, 1->2, -2->3) so small negatives
  * compress just as well as small positives. Used for line deltas.
  */
 static void writeSignedVarint(FILE* f, int32_t val) {
@@ -83,30 +83,34 @@ static void writeSignedVarint(FILE* f, int32_t val) {
 
 static int32_t readSignedVarint(FILE* f) {
     uint32_t zigzag = readVarint(f);
-    return (int32_t)((zigzag >> 1) ^ -(int32_t)(zigzag & 1));
+    return (int32_t) ((zigzag >> 1) ^ -(int32_t) (zigzag & 1));
 }
 
 /**
  * Portable Double I/O.
  * Directly writing a double depends on the CPU's Endianness. This breaks
- * the 64-bit float into 8 fixed bytes, ensuring a file saved on Intel 
+ * the 64-bit float into 8 fixed bytes, ensuring a file saved on Intel
  * works on ARM or PowerPC.
  */
 static void writeDouble(FILE* f, double val) {
-    union { double d; uint64_t u; } data;
+    union {
+        double d; uint64_t u;
+    } data;
     data.d = val;
     for (int i = 0; i < 8; i++) {
-        fputc((uint8_t)((data.u >> (i * 8)) & 0xFF), f);
+        fputc((uint8_t) ((data.u >> (i * 8)) & 0xFF), f);
     }
 }
 
 static double readDouble(FILE* f) {
-    union { double d; uint64_t u; } data;
+    union {
+        double d; uint64_t u;
+    } data;
     data.u = 0;
     for (int i = 0; i < 8; i++) {
         int b = fgetc(f);
         if (b == EOF) exit(74);
-        data.u |= ((uint64_t)b << (i * 8));
+        data.u |= ((uint64_t) b << (i * 8));
     }
     return data.d;
 }
@@ -115,18 +119,18 @@ static double readDouble(FILE* f) {
  * 2. PASS 1: DISCOVERY (STRINGS & NATIVES)
  * ============================================================================= */
 
-/* Returns the total bytes an instruction occupies, allowing the scanner to 
-   jump through bytecode without losing synchronization. */
+ /* Returns the total bytes an instruction occupies, allowing the scanner to
+    jump through bytecode without losing synchronization. */
 static int btlInstructionLength(uint8_t* code, int offset) {
     switch (code[offset]) {
-        case OP_CONSTANT:    case OP_CLASS:        case OP_GET_SUPER:
-        case OP_DEFINE_GLOBAL: case OP_GET_GLOBAL: case OP_SET_GLOBAL:
-        case OP_GET_LOCAL:   case OP_SET_LOCAL:    case OP_GET_UPVALUE:
-        case OP_SET_UPVALUE: case OP_GET_PROPERTY: case OP_SET_PROPERTY:
-        case OP_CALL:        case OP_METHOD:       return 2;
-        case OP_JUMP:        case OP_JUMP_IF_FALSE: case OP_LOOP:
-        case OP_INVOKE:      case OP_SUPER_INVOKE: return 3;
-        default:             return 1;
+    case OP_CONSTANT:    case OP_CLASS:        case OP_GET_SUPER:
+    case OP_DEFINE_GLOBAL: case OP_GET_GLOBAL: case OP_SET_GLOBAL:
+    case OP_GET_LOCAL:   case OP_SET_LOCAL:    case OP_GET_UPVALUE:
+    case OP_SET_UPVALUE: case OP_GET_PROPERTY: case OP_SET_PROPERTY:
+    case OP_CALL:        case OP_METHOD:       return 2;
+    case OP_JUMP:        case OP_JUMP_IF_FALSE: case OP_LOOP:
+    case OP_INVOKE:      case OP_SUPER_INVOKE: return 3;
+    default:             return 1;
     }
 }
 
@@ -167,12 +171,12 @@ static void discover(ObjFunction* fn, SerializationCtx* ctx) {
                     Value global;
                     // Check if this global name is currently a native in the VM
                     if (tableGet(&vm.globals, name, &global) && IS_NATIVE(global)) {
-                        tableSet(&ctx->natives, name, NIL_VAL);
+                        tableSet(&ctx->natives, name, NULL_VAL);
                     }
                 }
             }
         }
-        
+
         // Closures have a variable length based on upvalue count
         if (op == OP_CLOSURE) {
             uint8_t constant = fn->chunk.code[i + 1];
@@ -211,7 +215,7 @@ static void writeFunction(FILE* f, ObjFunction* fn, SerializationCtx* ctx, bool 
     } else {
         Value idx;
         tableGet(&ctx->strings, fn->name, &idx);
-        writeVarint(f, (uint32_t)AS_NUMBER(idx));
+        writeVarint(f, (uint32_t) AS_NUMBER(idx));
     }
 
     // Raw Bytecode
@@ -224,14 +228,14 @@ static void writeFunction(FILE* f, ObjFunction* fn, SerializationCtx* ctx, bool 
     } else {
         int runs = 0;
         for (int i = 0; i < fn->chunk.count; i++) {
-            while (i + 1 < fn->chunk.count && fn->chunk.lines[i] == fn->chunk.lines[i+1]) i++;
+            while (i + 1 < fn->chunk.count && fn->chunk.lines[i] == fn->chunk.lines[i + 1]) i++;
             runs++;
         }
         writeVarint(f, runs);
         int lastLine = 0;
         for (int i = 0; i < fn->chunk.count; i++) {
             int start = i;
-            while (i + 1 < fn->chunk.count && fn->chunk.lines[i] == fn->chunk.lines[i+1]) i++;
+            while (i + 1 < fn->chunk.count && fn->chunk.lines[i] == fn->chunk.lines[i + 1]) i++;
             writeVarint(f, (i - start) + 1); // Length of run
             writeSignedVarint(f, fn->chunk.lines[start] - lastLine); // Delta
             lastLine = fn->chunk.lines[start];
@@ -247,18 +251,23 @@ static void writeFunction(FILE* f, ObjFunction* fn, SerializationCtx* ctx, bool 
 
 /* Serializes a Btl Value using one-byte type tags. */
 static void writeValue(FILE* f, Value val, SerializationCtx* ctx, bool stripped) {
-    if (IS_NIL(val)) { fputc('n', f); }
-    else if (IS_BOOL(val)) { fputc(AS_BOOL(val) ? 't' : 'f', f); }
-    else if (IS_NUMBER(val)) {
+    if (IS_NULL(val)) {
+        fputc('n', f);
+    } else if (IS_BOOL(val)) {
+        fputc(AS_BOOL(val) ? 't' : 'f', f);
+    } else if (IS_NUMBER(val)) {
         double d = AS_NUMBER(val);
         // Optimization: if it's a small integer, store in 1 byte
-        if (d == (double)(uint8_t)d) { fputc('1', f); fputc((uint8_t)d, f); }
-        else { fputc('d', f); writeDouble(f, d); }
+        if (d == (double) (uint8_t) d) {
+            fputc('1', f); fputc((uint8_t) d, f);
+        } else {
+            fputc('d', f); writeDouble(f, d);
+        }
     } else if (IS_STRING(val)) {
         fputc('S', f);
         Value idx;
         tableGet(&ctx->strings, AS_STRING(val), &idx);
-        writeVarint(f, (uint32_t)AS_NUMBER(idx));
+        writeVarint(f, (uint32_t) AS_NUMBER(idx));
     } else if (IS_FUNCTION(val)) {
         fputc('F', f);
         writeFunction(f, AS_FUNCTION(val), ctx, stripped);
@@ -286,7 +295,7 @@ static ObjFunction* readFunction(FILE* f, DeserializationCtx* ctx) {
 
     fn->chunk.count = fn->chunk.capacity = readVarint(f);
     fn->chunk.code = ALLOCATE(uint8_t, fn->chunk.count);
-    if (fread(fn->chunk.code, 1, fn->chunk.count, f) < (size_t)fn->chunk.count) exit(74);
+    if (fread(fn->chunk.code, 1, fn->chunk.count, f) < (size_t) fn->chunk.count) exit(74);
 
     // Decompress Line Info
     int runs = readVarint(f);
@@ -316,18 +325,18 @@ static ObjFunction* readFunction(FILE* f, DeserializationCtx* ctx) {
 static Value readValue(FILE* f, DeserializationCtx* ctx) {
     int tag = fgetc(f);
     switch (tag) {
-        case 'n': return NIL_VAL;
-        case 't': return BOOL_VAL(true);
-        case 'f': return BOOL_VAL(false);
-        case '1': return NUMBER_VAL((double)fgetc(f));
-        case 'd': return NUMBER_VAL(readDouble(f));
-        case 'S': {
-            uint32_t idx = readVarint(f);
-            if (idx >= ctx->poolCount) exit(74);
-            return OBJ_VAL(ctx->pool[idx]);
-        }
-        case 'F': return OBJ_VAL(readFunction(f, ctx));
-        default:  return NIL_VAL;
+    case 'n': return NULL_VAL;
+    case 't': return BOOL_VAL(true);
+    case 'f': return BOOL_VAL(false);
+    case '1': return NUMBER_VAL((double) fgetc(f));
+    case 'd': return NUMBER_VAL(readDouble(f));
+    case 'S': {
+        uint32_t idx = readVarint(f);
+        if (idx >= ctx->poolCount) exit(74);
+        return OBJ_VAL(ctx->pool[idx]);
+    }
+    case 'F': return OBJ_VAL(readFunction(f, ctx));
+    default:  return NULL_VAL;
     }
 }
 
@@ -335,23 +344,23 @@ static Value readValue(FILE* f, DeserializationCtx* ctx) {
  * 5. PUBLIC API
  * ============================================================================= */
 
-/**
- * Saves a compiled  script to a BTL binary file.
- * Set 'stripped' to true to remove debug info (line numbers/names).
- */
+ /**
+  * Saves a compiled  script to a BTL binary file.
+  * Set 'stripped' to true to remove debug info (line numbers/names).
+  */
 void saveBtlBinary(ObjFunction* script, const char* path, bool stripped) {
     push(OBJ_VAL(script)); // GC Anchor for the root object
-    
+
     SerializationCtx ctx;
     initTable(&ctx.strings);
     initTable(&ctx.natives);
     ctx.poolCount = 0;
-    
+
     discover(script, &ctx); // Pass 1
 
     FILE* f = fopen(path, "wb");
-    if (!f) { 
-        freeTable(&ctx.strings); freeTable(&ctx.natives); pop(); return; 
+    if (!f) {
+        freeTable(&ctx.strings); freeTable(&ctx.natives); pop(); return;
     }
 
     // 1. Header
@@ -373,11 +382,11 @@ void saveBtlBinary(ObjFunction* script, const char* path, bool stripped) {
     writeVarint(f, ctx.poolCount);
     ObjString** sortedPool = NULL;
     if (ctx.poolCount > 0) {
-        sortedPool = (ObjString**)malloc(sizeof(ObjString*) * ctx.poolCount);
+        sortedPool = (ObjString**) malloc(sizeof(ObjString*) * ctx.poolCount);
         if (!sortedPool) exit(1);
         for (int i = 0; i < ctx.strings.capacity; i++) {
             Entry* e = &ctx.strings.entries[i];
-            if (e->key != NULL) sortedPool[(int)AS_NUMBER(e->value)] = e->key;
+            if (e->key != NULL) sortedPool[(int) AS_NUMBER(e->value)] = e->key;
         }
         for (int i = 0; i < ctx.poolCount; i++) {
             writeVarint(f, sortedPool[i]->length);
@@ -387,11 +396,11 @@ void saveBtlBinary(ObjFunction* script, const char* path, bool stripped) {
 
     // 4. Recursive Code Dump
     writeFunction(f, script, &ctx, stripped); // Pass 2
-    
+
     fclose(f);
     if (sortedPool) free(sortedPool);
     freeTable(&ctx.strings); freeTable(&ctx.natives);
-    pop(); 
+    pop();
 }
 
 /**
@@ -407,7 +416,9 @@ ObjFunction* loadBtlBinary(const char* path) {
         fgetc(f) != BTL_MAGIC_2 || fgetc(f) != BTL_MAGIC_3) {
         fclose(f); return NULL;
     }
-    if (fgetc(f) != BTL_VERSION) { fclose(f); return NULL; }
+    if (fgetc(f) != BTL_VERSION) {
+        fclose(f); return NULL;
+    }
     fgetc(f); // skip flags
 
     // 1. Requirement Validation (Natives)
@@ -415,15 +426,17 @@ ObjFunction* loadBtlBinary(const char* path) {
     for (int i = 0; i < nativeCount; i++) {
         int len = readVarint(f);
         char* name = malloc(len + 1);
-        if (fread(name, 1, len, f) < (size_t)len) { free(name); fclose(f); exit(74); }
+        if (fread(name, 1, len, f) < (size_t) len) {
+            free(name); fclose(f); exit(74);
+        }
         name[len] = '\0';
-        
+
         ObjString* nameStr = copyString(name, len);
         push(OBJ_VAL(nameStr)); // GC Anchor
         Value native;
         bool found = tableGet(&vm.globals, nameStr, &native);
         pop(); // nameStr
-        
+
         if (!found || !IS_NATIVE(native)) {
             fprintf(stderr, "BTL Error: Required native '%s' not found in this VM.\n", name);
             free(name); fclose(f); exit(74);
@@ -446,14 +459,16 @@ ObjFunction* loadBtlBinary(const char* path) {
         for (uint32_t i = 0; i < ctx.poolCount; i++) {
             int len = readVarint(f);
             char* chars = malloc(len + 1);
-            if (fread(chars, 1, len, f) < (size_t)len) { free(chars); fclose(f); exit(74); }
+            if (fread(chars, 1, len, f) < (size_t) len) {
+                free(chars); fclose(f); exit(74);
+            }
             chars[len] = '\0';
             ctx.pool[i] = copyString(chars, len);
             free(chars);
-            
+
             // GC Safety: Anchoring strings as they are interned. Strings in btl
             // are weakly referenced in the string table, so they must be on stack.
-            push(OBJ_VAL(ctx.pool[i])); 
+            push(OBJ_VAL(ctx.pool[i]));
         }
     }
 
@@ -465,7 +480,7 @@ ObjFunction* loadBtlBinary(const char* path) {
         for (uint32_t i = 0; i < ctx.poolCount; i++) pop();
         FREE_ARRAY(ObjString*, ctx.pool, ctx.poolCount);
     }
-    
+
     fclose(f);
     return script;
 }

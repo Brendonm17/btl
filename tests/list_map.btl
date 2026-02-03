@@ -1,3 +1,5 @@
+import "system";
+
 func map(list, fun) {
   var new_list = [];
   for (var i = 0; i < 3; i = i + 1) { // Assuming list length 3 for now
@@ -9,6 +11,6 @@ func map(list, fun) {
 func double(x) { return x * 2; }
 
 var results = map([1, 2, 3], double);
-print results[0]; // expect: 2
-print results[1]; // expect: 4
-print results[2]; // expect: 6
+system.println(results[0]); // expect: 2
+system.println(results[1]); // expect: 4
+system.println(results[2]); // expect: 6

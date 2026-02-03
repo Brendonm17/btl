@@ -8,8 +8,8 @@
 static void printValueStderr(Value value) {
     if (IS_BOOL(value)) {
         fprintf(stderr, AS_BOOL(value) ? "true" : "false");
-    } else if (IS_NIL(value)) {
-        fprintf(stderr, "nil");
+    } else if (IS_NULL(value)) {
+        fprintf(stderr, "null");
     } else if (IS_NUMBER(value)) {
         fprintf(stderr, "%g", AS_NUMBER(value));
     } else if (IS_OBJ(value)) {
@@ -208,7 +208,7 @@ int disassembleInstruction(Chunk* chunk, int offset) {
         // Constants
     case OP_CONSTANT:           return constant("CONSTANT", chunk, offset);
     case OP_CONSTANT_LONG:      return constantLong("CONSTANT_LONG", chunk, offset);
-    case OP_NIL:                return simple("NIL", offset);
+    case OP_NULL:                return simple("NULL", offset);
     case OP_TRUE:               return simple("TRUE", offset);
     case OP_FALSE:              return simple("FALSE", offset);
     case OP_0:                  return simple("PUSH_0", offset);
@@ -324,10 +324,6 @@ int disassembleInstruction(Chunk* chunk, int offset) {
     case OP_MODULO:             return simple("MOD", offset);
     case OP_NOT:                return simple("NOT", offset);
     case OP_NEGATE:             return simple("NEG", offset);
-
-        // I/O
-    case OP_PRINT:              return simple("PRINT", offset);
-
         // Jumps
     case OP_JUMP:               return jump("JUMP", 1, chunk, offset);
     case OP_JUMP_IF_FALSE:      return jump("JUMP_IF_FALSE", 1, chunk, offset);

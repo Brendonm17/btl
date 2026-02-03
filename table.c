@@ -54,7 +54,7 @@ static Entry* findEntry(Entry* entries, int capacity, Value key) {
         Entry* entry = &entries[index];
 
         if (IS_EMPTY(entry->key)) {
-            if (IS_NIL(entry->value)) {
+            if (IS_NULL(entry->value)) {
                 // Empty slot
                 return tombstone != NULL ? tombstone : entry;
             } else {
@@ -84,7 +84,7 @@ static void adjustCapacity(struct VM* vm, Table* table, int capacity) {
     Entry* entries = ALLOCATE(vm, Entry, capacity);
     for (int i = 0; i < capacity; i++) {
         entries[i].key = EMPTY_VAL;
-        entries[i].value = NIL_VAL;
+        entries[i].value = NULL_VAL;
     }
     table->count = 0;
     for (int i = 0; i < table->capacity; i++) {
@@ -108,7 +108,7 @@ bool tableSet(struct VM* vm, Table* table, Value key, Value value) {
     }
     Entry* entry = findEntry(table->entries, table->capacity, key);
     bool isNewKey = IS_EMPTY(entry->key);
-    if (isNewKey && IS_NIL(entry->value))
+    if (isNewKey && IS_NULL(entry->value))
         table->count++;
     entry->key = key;
     entry->value = value;
@@ -121,11 +121,12 @@ bool tableDelete(Table* table, Value key) {
     Entry* entry = findEntry(table->entries, table->capacity, key);
     if (IS_EMPTY(entry->key))
         return false;
-    // Place a tombstone: key is EMPTY, value is NIL (false/true marker)
-    // In our findEntry, IS_EMPTY key + NIL value = truly empty
+    // Place a tombstone: key is EMPTY, value is NULL (false/true marker)
+    // In our findEntry, IS_EMPTY key + NULL value = truly empty
     // IS_EMPTY key + BOOL true value = tombstone
     entry->key = EMPTY_VAL;
     entry->value = BOOL_VAL(true);
+    table->count--;
     return true;
 }
 
@@ -145,7 +146,7 @@ struct ObjString* tableFindString(Table* table, const char* chars, int length, u
         Entry* entry = &table->entries[index];
         if (IS_EMPTY(entry->key)) {
             // Stop if we hit a truly empty slot (not a tombstone)
-            if (IS_NIL(entry->value)) return NULL;
+            if (IS_NULL(entry->value)) return NULL;
         } else if (IS_STRING(entry->key)) {
             // We must extract the string object from the Value key first
             ObjString* string = AS_STRING(entry->key);

@@ -1,6 +1,8 @@
+import "system";
+
 class Person {
   func sayName() {
-    print this.name;
+    system.println(this.name);
   }
 }
 

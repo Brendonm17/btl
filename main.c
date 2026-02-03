@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include "vm.h"
+#include "native_system.h"
 
 static char* readFile(const char* path) {
     FILE* file = fopen(path, "rb");
@@ -34,6 +35,7 @@ static char* readFile(const char* path) {
 }
 
 int main(int argc, const char* argv []) {
+    setSystemArgs(argc, argv);
     struct VM vm;
     initVM(&vm);
 

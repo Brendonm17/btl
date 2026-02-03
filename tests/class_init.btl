@@ -1,3 +1,5 @@
+import "system";
+
 class Coffee {
   func init(type) {
     this.type = type;
@@ -5,4 +7,4 @@ class Coffee {
 }
 
 var c = Coffee("Espresso");
-print c.type; // expect: Espresso
+system.println(c.type); // expect: Espresso

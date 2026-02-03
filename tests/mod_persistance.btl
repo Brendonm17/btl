@@ -1,5 +1,6 @@
+import "system";
 import "tests/counter_lib.btl" as c1;
 import "tests/counter_lib.btl" as c2;
 
-print c1.inc(); // expect: 1
-print c2.inc(); // expect: 2
+system.println(c1.inc()); // expect: 1
+system.println(c2.inc()); // expect: 2
