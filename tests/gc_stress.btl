@@ -1,3 +1,5 @@
+import "system";
+
 func makeLargeList() {
   var l = [1, 2, 3, 4, 5];
   return l;
@@ -8,4 +10,4 @@ for (var i = 0; i < 10000; i = i + 1) {
   var s = "iteration " + "string"; 
 }
 
-print "GC survived"; // expect: GC survived
+system.println("GC survived"); // expect: GC survived

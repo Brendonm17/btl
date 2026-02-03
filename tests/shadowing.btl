@@ -1,10 +1,12 @@
+import "system";
+
 var a = "global";
 {
   var a = "outer";
   {
     var a = "inner";
-    print a; // expect: inner
+    system.println(a); // expect: inner
   }
-  print a; // expect: outer
+  system.println(a); // expect: outer
 }
-print a; // expect: global
+system.println(a); // expect: global

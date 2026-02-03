@@ -1,7 +1,9 @@
+import "system";
+
 func addElement(l, val) {
   l[3] = val; // Assuming list started with 3 elements
 }
 
-var myList = [1, 2, 3, nil];
+var myList = [1, 2, 3, null];
 addElement(myList, "added");
-print myList[3]; // expect: added
+system.println(myList[3]); // expect: added

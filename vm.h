@@ -12,10 +12,10 @@ typedef struct {
     ObjClosure* closure;
     uint8_t* ip;
     Value* slots;
-    RuntimeUpvalue* openUpvalues; // Head of list for this frame
+    RuntimeUpvalue* openUpvalues;
 } CallFrame;
 
-typedef struct VM {
+struct VM {
     CallFrame frames[FRAMES_MAX];
     int frameCount;
 
@@ -23,9 +23,16 @@ typedef struct VM {
     Value* stackTop;
 
     Table strings;
-    struct ObjString* initString;
+    ObjString* initString;
     Table modules;
     ObjModule* rootModule;
+
+    // Native modules and classes
+    Table nativeModules;
+    ObjNativeClass* stringClass;
+    ObjNativeClass* numberClass;
+    ObjNativeClass* listClass;
+    ObjNativeClass* tableClass;
 
     size_t bytesAllocated;
     size_t nextGC;
@@ -35,7 +42,7 @@ typedef struct VM {
     Obj** grayStack;
 
     struct Compiler* compiler;
-} VM;
+};
 
 typedef enum {
     INTERPRET_OK,
@@ -48,5 +55,6 @@ void freeVM(VM* vm);
 InterpretResult interpret(VM* vm, ObjModule* module, const char* source);
 void push(VM* vm, Value value);
 Value pop(VM* vm);
+void runtimeError(VM* vm, const char* format, ...);
 
 #endif

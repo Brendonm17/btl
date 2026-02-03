@@ -1,12 +1,14 @@
+import "system";
+
 func createCounter() {
   var count = 0;
   func increment() {
     count = count + 1;
-    print count;
+    system.println(count);
   }
   func decrement() {
     count = count - 1;
-    print count;
+    system.println(count);
   }
   return [increment, decrement]; // Testing list of functions!
 }

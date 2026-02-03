@@ -1,3 +1,5 @@
+import "system";
+
 class Transformer {
   func init(val) {
     this.val = val;
@@ -15,4 +17,4 @@ class Transformer {
 
 
 var t = Transformer("recycled this");
-print t.first(100); // expect: recycled this
+system.println(t.first(100)); // expect: recycled this

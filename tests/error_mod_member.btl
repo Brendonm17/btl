@@ -1,2 +1,3 @@
+import "system";
 import "tests/math_lib.btl" as math;
-print math.nonExistent; // expect error: Undefined property 'nonExistent' in module.
+system.println(math.nonExistent); // expect error: Undefined property 'nonExistent' in module.

@@ -1,3 +1,5 @@
+import "system";
+
 func level1(a) {
   func level2(b) {
     func level3(c) {
@@ -12,4 +14,4 @@ func level1(a) {
 }
 
 var closure = level1(1)(10)(100)(1000);
-print closure; // expect: 1111
+system.println(closure); // expect: 1111

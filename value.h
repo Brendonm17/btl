@@ -23,7 +23,7 @@ typedef struct ObjString ObjString;
 typedef uint64_t Value;
 
 #define IS_BOOL(v)      (((v) | 1) == TRUE_VAL)
-#define IS_NIL(v)       ((v) == NIL_VAL)
+#define IS_NULL(v)       ((v) == NULL_VAL)
 #define IS_EMPTY(v)     ((v) == EMPTY_VAL)
 #define IS_NUMBER(v)    (((v) & QNAN) != QNAN)
 #define IS_OBJ(v)       (((v) & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT))
@@ -35,7 +35,7 @@ typedef uint64_t Value;
 #define BOOL_VAL(b)     ((b) ? TRUE_VAL : FALSE_VAL)
 #define FALSE_VAL       ((Value)(uint64_t)(QNAN | TAG_FALSE))
 #define TRUE_VAL        ((Value)(uint64_t)(QNAN | TAG_TRUE))
-#define NIL_VAL         ((Value)(uint64_t)(QNAN | TAG_NIL))
+#define NULL_VAL         ((Value)(uint64_t)(QNAN | TAG_NIL))
 #define EMPTY_VAL       ((Value)(uint64_t)(QNAN | TAG_EMPTY))
 #define NUMBER_VAL(num) numToValue(num)
 #define OBJ_VAL(obj)    (Value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(obj))
@@ -58,7 +58,7 @@ typedef struct {
     } as;
 } Value;
 #define IS_BOOL(v)    ((v).type == VAL_BOOL)
-#define IS_NIL(v)     ((v).type == VAL_NIL)
+#define IS_NULL(v)     ((v).type == VAL_NIL)
 #define IS_EMPTY(v)   ((v).type == VAL_EMPTY)
 #define IS_NUMBER(v)  ((v).type == VAL_NUMBER)
 #define IS_OBJ(v)     ((v).type == VAL_OBJ)
@@ -66,7 +66,7 @@ typedef struct {
 #define AS_NUMBER(v)  ((v).as.number)
 #define AS_OBJ(v)     ((v).as.obj)
 #define BOOL_VAL(v)   ((Value){VAL_BOOL, {.boolean = v}})
-#define NIL_VAL       ((Value){VAL_NIL, {.number = 0}})
+#define NULL_VAL       ((Value){VAL_NIL, {.number = 0}})
 #define EMPTY_VAL     ((Value){VAL_EMPTY, {.number = 0}})
 #define NUMBER_VAL(v) ((Value){VAL_NUMBER, {.number = v}})
 #define OBJ_VAL(v)    ((Value){VAL_OBJ, {.obj = (struct Obj*)v}})

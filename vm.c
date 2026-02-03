@@ -13,6 +13,14 @@
 #include "vm.h"
 #include "value.h"
 
+#include "native_string.h"
+#include "native_list.h"
+#include "native_table.h"
+#include "native_number.h"
+#include "native_system.h"
+#include "native_math.h"
+#include "native_random.h"
+
 // --- Macros ---
 #define PATCH_OP_1(newOp) (frame->closure->function->chunk.code[ip - frame->closure->function->chunk.code - 1] = (newOp))
 #define PATCH_OP_2(newOp) (frame->closure->function->chunk.code[ip - frame->closure->function->chunk.code - 2] = (newOp))
@@ -68,10 +76,10 @@
 static void resetStack(VM* vm) {
     vm->stackTop = vm->stack;
     vm->frameCount = 0;
-    for (int i = 0; i < STACK_MAX; i++) vm->stack[i] = NIL_VAL;
+    for (int i = 0; i < STACK_MAX; i++) vm->stack[i] = NULL_VAL;
 }
 
-static void runtimeError(VM* vm, const char* format, ...) {
+void runtimeError(VM* vm, const char* format, ...) {
     va_list args;
     va_start(args, format);
     vfprintf(stderr, format, args);
@@ -101,7 +109,26 @@ Value pop(VM* vm) {
 }
 
 static bool isFalsey(Value value) {
-    return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
+    return IS_NULL(value) || (IS_BOOL(value) && !AS_BOOL(value));
+}
+
+// Helper: Get native class for a value
+static ObjNativeClass* getNativeClass(VM* vm, Value value) {
+    if (IS_STRING(value)) return vm->stringClass;
+    if (IS_NUMBER(value)) return vm->numberClass;
+    if (IS_LIST(value)) return vm->listClass;
+    if (IS_TABLE(value)) return vm->tableClass;
+    return NULL;
+}
+
+// Helper: Look up native method
+static ObjNativeMethod* findNativeMethod(ObjNativeClass* klass, ObjString* name) {
+    if (klass == NULL) return NULL;
+    Value method;
+    if (tableGet(&klass->methods, OBJ_VAL(name), &method)) {
+        return AS_NATIVE_METHOD(method);
+    }
+    return NULL;
 }
 
 static void growMethodTable(VM* vm, ObjClass* klass, int requiredIndex) {
@@ -267,7 +294,7 @@ static ObjString* valueToString(struct VM* vm, Value value) {
         return copyString(vm, buf, len);
     }
     if (IS_BOOL(value)) return copyString(vm, AS_BOOL(value) ? "true" : "false", AS_BOOL(value) ? 4 : 5);
-    if (IS_NIL(value)) return copyString(vm, "nil", 3);
+    if (IS_NULL(value)) return copyString(vm, "null", 3);
     return copyString(vm, "<object>", 8);
 }
 
@@ -315,18 +342,6 @@ static char* readFile(const char* path) {
     return buffer;
 }
 
-static void defineNative(VM* vm, const char* name, NativeFn function) {
-    push(vm, OBJ_VAL(copyString(vm, name, (int) strlen(name))));
-    push(vm, OBJ_VAL(newNative(vm, function)));
-    tableSet(vm, &vm->rootModule->globalNames, vm->stack[0], NUMBER_VAL((double) vm->rootModule->globalValues.count));
-    writeValueArray(vm, &vm->rootModule->globalValues, vm->stack[1]);
-    pop(vm); pop(vm);
-}
-
-static Value clockNative(int argCount, Value* args) {
-    (void) argCount; (void) args; return NUMBER_VAL((double) clock() / CLOCKS_PER_SEC);
-}
-
 static ObjString* findGlobalName(ObjModule* module, int index) {
     for (int i = 0; i < module->globalNames.capacity; i++) {
         Entry* entry = &module->globalNames.entries[i];
@@ -342,13 +357,30 @@ void initVM(VM* vm) {
     vm->nextGC = 1024 * 1024;
     vm->grayCount = 0; vm->grayCapacity = 0; vm->grayStack = NULL;
     initTable(&vm->strings); initTable(&vm->modules);
+    initTable(&vm->nativeModules);
+    vm->stringClass = NULL;
+    vm->numberClass = NULL;
+    vm->listClass = NULL;
+    vm->tableClass = NULL;
     vm->rootModule = newModule(vm, copyString(vm, "main", 4));
     vm->initString = copyString(vm, "init", 4);
-    defineNative(vm, "clock", clockNative);
+    //defineNative(vm, "clock", clockNative);
+
+    // Initialize native classes
+    initStringClass(vm);
+    initListClass(vm);
+    initTableClass(vm);
+    initNumberClass(vm);
+
+    // Initialize native modules
+    initSystemModule(vm);
+    initMathModule(vm);
+    initRandomModule(vm);
 }
 
 void freeVM(VM* vm) {
     freeTable(vm, &vm->strings); freeTable(vm, &vm->modules);
+    freeTable(vm, &vm->nativeModules);
     vm->initString = NULL; freeObjects(vm);
 }
 
@@ -385,7 +417,7 @@ static InterpretResult run(VM* vm) {
     static void* dispatchTable [] = {
     && L_OP_CONSTANT,
     && L_OP_CONSTANT_LONG,
-    && L_OP_NIL,
+    && L_OP_NULL,
     && L_OP_TRUE,
     && L_OP_FALSE,
     && L_OP_0,
@@ -483,7 +515,6 @@ static InterpretResult run(VM* vm) {
     && L_OP_MODULO,
     && L_OP_NOT,
     && L_OP_NEGATE,
-    && L_OP_PRINT,
     && L_OP_JUMP,
     && L_OP_JUMP_IF_FALSE,
     && L_OP_POP_JUMP_IF_FALSE,
@@ -591,7 +622,7 @@ static InterpretResult run(VM* vm) {
 
             OPCODE(OP_CONSTANT) : push(vm, READ_CONSTANT()); DISPATCH();
             OPCODE(OP_CONSTANT_LONG) : push(vm, READ_CONSTANT_LONG()); DISPATCH();
-            OPCODE(OP_NIL) : push(vm, NIL_VAL); DISPATCH();
+            OPCODE(OP_NULL) : push(vm, NULL_VAL); DISPATCH();
             OPCODE(OP_TRUE) : push(vm, BOOL_VAL(true)); DISPATCH();
             OPCODE(OP_FALSE) : push(vm, BOOL_VAL(false)); DISPATCH();
             OPCODE(OP_0) : push(vm, NUMBER_VAL(0.0)); DISPATCH();
@@ -929,6 +960,31 @@ static InterpretResult run(VM* vm) {
                     STORE_FRAME();
                     runtimeError(vm, "Undefined property '%s' in module.", name->chars);
                     return INTERPRET_RUNTIME_ERROR;
+                } else if (IS_NATIVE_MODULE(receiver)) {
+                    ObjNativeModule* module = AS_NATIVE_MODULE(receiver);
+                    ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+                    Value value;
+                    if (tableGet(&module->globals, OBJ_VAL(name), &value)) {
+                        pop(vm);
+                        push(vm, value);
+                        DISPATCH();
+                    }
+                    STORE_FRAME();
+                    runtimeError(vm, "Undefined property '%s' in native module.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
+                } else {
+                    // Check for native class method
+                    ObjNativeClass* nativeClass = getNativeClass(vm, receiver);
+                    if (nativeClass != NULL) {
+                        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+                        ObjNativeMethod* method = findNativeMethod(nativeClass, name);
+                        if (method != NULL) {
+                            // Leave receiver on stack, push method
+                            // This will be handled by INVOKE
+                            vm->stackTop[-1] = OBJ_VAL(method);
+                            DISPATCH();
+                        }
+                    }
                 }
 
                 STORE_FRAME();
@@ -1049,7 +1105,6 @@ static InterpretResult run(VM* vm) {
                 push(vm, NUMBER_VAL(-AS_NUMBER(pop(vm)))); DISPATCH();
             }
 
-            OPCODE(OP_PRINT) : { printValue(pop(vm)); printf("\n"); DISPATCH(); }
             OPCODE(OP_JUMP) : { uint16_t offset = READ_SHORT(); ip += offset; DISPATCH(); }
             OPCODE(OP_JUMP_IF_FALSE) : { uint16_t offset = READ_SHORT(); if (isFalsey(peek(vm, 0))) ip += offset; DISPATCH(); }
             OPCODE(OP_POP_JUMP_IF_FALSE) : { uint16_t offset = READ_SHORT(); if (isFalsey(pop(vm))) ip += offset; DISPATCH(); }
@@ -1358,6 +1413,46 @@ static InterpretResult run(VM* vm) {
             STORE_FRAME();
             runtimeError(vm, "Undefined function '%s' in module.", name->chars);
             return INTERPRET_RUNTIME_ERROR;
+        } else if (IS_NATIVE_MODULE(receiver)) {
+            ObjNativeModule* module = AS_NATIVE_MODULE(receiver);
+            ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+            Value func;
+            if (tableGet(&module->globals, OBJ_VAL(name), &func)) {
+                vm->stackTop[-argCount - 1] = func;
+                STORE_FRAME();
+                if (!callValue(vm, func, argCount)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                REFRESH_FRAME();
+                DISPATCH();
+            }
+            STORE_FRAME();
+            runtimeError(vm, "Undefined function '%s' in native module.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
+        } else {
+            // Native method call (String, List, Table, Number)
+            ObjNativeClass* nativeClass = getNativeClass(vm, receiver);
+            if (nativeClass != NULL) {
+                ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+                ObjNativeMethod* method = findNativeMethod(nativeClass, name);
+                if (method != NULL) {
+                    // Check arity
+                    if (method->arity >= 0 && argCount != method->arity) {
+                        STORE_FRAME();
+                        runtimeError(vm, "Expected %d arguments but got %d.", method->arity, argCount);
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+
+                    // Call native method
+                    Value* args = vm->stackTop - argCount;
+                    Value result = method->function(vm, receiver, argCount, args);
+
+                    // Pop receiver and args, push result
+                    vm->stackTop -= argCount + 1;
+                    push(vm, result);
+                    DISPATCH();
+                }
+            }
         }
 
         STORE_FRAME();
@@ -1859,12 +1954,12 @@ OPCODE(OP_BUILD_TABLE) : {
         Value key = pairs[i * 2];
         Value value = pairs[i * 2 + 1];
         tableSet(vm, &table->table, key, value);
-}
+    }
 
     vm->stackTop -= (count * 2 + 1);
     push(vm, OBJ_VAL(table));
     DISPATCH();
-        }
+}
 OPCODE(OP_INDEX_GET) : {
     Value key = pop(vm);
     Value obj = pop(vm);
@@ -1886,7 +1981,7 @@ OPCODE(OP_INDEX_GET) : {
         ObjTable* table = AS_TABLE(obj);
         Value value;
         if (!tableGet(&table->table, key, &value)) {
-            push(vm, NIL_VAL);
+            push(vm, NULL_VAL);
         } else {
             push(vm, value);
         }
@@ -1953,6 +2048,12 @@ OPCODE(OP_INDEX_SET) : {
 }
 OPCODE(OP_IMPORT) : {
     ObjString* fName = READ_STRING();
+    // Check native modules first
+    Value nativeModule;
+    if (tableGet(&vm->nativeModules, OBJ_VAL(fName), &nativeModule)) {
+        push(vm, nativeModule);
+        DISPATCH();
+    }
     Value mVal;
     if (tableGet(&vm->modules, OBJ_VAL(fName), &mVal)) {
         push(vm, mVal); DISPATCH();
@@ -1976,6 +2077,12 @@ OPCODE(OP_IMPORT) : {
 }
 OPCODE(OP_IMPORT_LONG) : {
     ObjString* fName = READ_STRING_LONG();
+    // Check native modules first
+    Value nativeModule;
+    if (tableGet(&vm->nativeModules, OBJ_VAL(fName), &nativeModule)) {
+        push(vm, nativeModule);
+        DISPATCH();
+    }
     Value mVal;
     if (tableGet(&vm->modules, OBJ_VAL(fName), &mVal)) {
         push(vm, mVal); DISPATCH();
@@ -1998,8 +2105,8 @@ OPCODE(OP_IMPORT_LONG) : {
     DISPATCH();
 }
 #ifndef HAS_COMPUTED_GOTOS
+        }
     }
-}
 #endif
 }
 InterpretResult interpret(VM* vm, ObjModule* m, const char* src) {

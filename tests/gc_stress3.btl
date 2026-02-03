@@ -1,3 +1,5 @@
+import "system";
+
 var x = -1;
 for (var i = 0; i < 10000; i = i + 1) {
   var a = "string" + " concatenation " + "test " + i;
@@ -5,4 +7,4 @@ for (var i = 0; i < 10000; i = i + 1) {
   // Creation of many objects that should be collected
   if (i % 1000 == 0) x = i;
 }
-print "GC Stress passed " + x;   // expect: GC Stress passed 9000
+system.println("GC Stress passed " + x);   // expect: GC Stress passed 9000

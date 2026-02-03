@@ -1,3 +1,5 @@
+import "system";
+
 func apply(fun, value) {
   return fun(value);
 }
@@ -6,4 +8,4 @@ func triple(n) {
   return n * 3;
 }
 
-print apply(triple, 10); // expect: 30
+system.println(apply(triple, 10)); // expect: 30

@@ -1,12 +1,14 @@
+import "system";
+
 class A {
   func method() {
-    print "A method";
+    system.println("A method");
   }
 }
 
 class B < A {
   func method() {
-    print "B method";
+    system.println("B method");
     super.method();
   }
 }

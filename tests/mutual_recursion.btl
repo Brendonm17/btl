@@ -1,3 +1,5 @@
+import "system";
+
 func isEven(n) {
   if (n == 0) return true;
   return isOdd(n - 1);
@@ -8,5 +10,5 @@ func isOdd(n) {
   return isEven(n - 1);
 }
 
-print isEven(4); // expect: true
-print isOdd(4);  // expect: false
+system.println(isEven(4)); // expect: true
+system.println(isOdd(4));  // expect: false

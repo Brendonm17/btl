@@ -119,6 +119,23 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
     case OBJ_TABLE:
         markTable(vm, &((ObjTable*) object)->table);
         break;
+    case OBJ_NATIVE_METHOD: {
+        ObjNativeMethod* method = (ObjNativeMethod*) object;
+        markObject(vm, (Obj*) method->name);
+        break;
+    }
+    case OBJ_NATIVE_CLASS: {
+        ObjNativeClass* klass = (ObjNativeClass*) object;
+        markObject(vm, (Obj*) klass->name);
+        markTable(vm, &klass->methods);
+        break;
+    }
+    case OBJ_NATIVE_MODULE: {
+        ObjNativeModule* module = (ObjNativeModule*) object;
+        markObject(vm, (Obj*) module->name);
+        markTable(vm, &module->globals);
+        break;
+    }
     case OBJ_NATIVE:
     case OBJ_STRING:
         break;
@@ -214,6 +231,22 @@ static void freeObject(struct VM* vm, struct Obj* object) {
         FREE(vm, ObjTable, object);
         break;
     }
+    case OBJ_NATIVE_METHOD: {
+        FREE(vm, ObjNativeMethod, object);
+        break;
+    }
+    case OBJ_NATIVE_CLASS: {
+        ObjNativeClass* klass = (ObjNativeClass*) object;
+        freeTable(vm, &klass->methods);
+        FREE(vm, ObjNativeClass, object);
+        break;
+    }
+    case OBJ_NATIVE_MODULE: {
+        ObjNativeModule* module = (ObjNativeModule*) object;
+        freeTable(vm, &module->globals);
+        FREE(vm, ObjNativeModule, object);
+        break;
+    }
     }
 }
 
@@ -233,6 +266,13 @@ void collectGarbage(struct VM* vm) {
 
     // Mark root module
     if (vm->rootModule) markObject(vm, (struct Obj*) vm->rootModule);
+
+    // Mark native classes and modules
+    if (vm->stringClass != NULL) markObject(vm, (Obj*) vm->stringClass);
+    if (vm->numberClass != NULL) markObject(vm, (Obj*) vm->numberClass);
+    if (vm->listClass != NULL) markObject(vm, (Obj*) vm->listClass);
+    if (vm->tableClass != NULL) markObject(vm, (Obj*) vm->tableClass);
+    markTable(vm, &vm->nativeModules);
 
     // Mark compiler roots (linked chain)
     markCompilerRoots(vm);

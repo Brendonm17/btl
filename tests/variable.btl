@@ -1,4 +1,6 @@
+import "system";
+
 var x = "hello";
-print x;              // expect: hello
+system.println(x);              // expect: hello
 x = "world";
-print x;              // expect: world
+system.println(x);              // expect: world

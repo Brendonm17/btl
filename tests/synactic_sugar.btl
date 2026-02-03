@@ -1,81 +1,83 @@
+import "system";
+
 // Compound assignment operators
 var x = 10;
 x += 5;
-print x;  // expect: 15
+system.println(x);  // expect: 15
 
 x -= 3;
-print x;  // expect: 12
+system.println(x);  // expect: 12
 
 x *= 2;
-print x;  // expect: 24
+system.println(x);  // expect: 24
 
 x /= 4;
-print x;  // expect: 6
+system.println(x);  // expect: 6
 
 x %= 4;
-print x;  // expect: 2
+system.println(x);  // expect: 2
 
 // Prefix increment/decrement
 var a = 5;
-print ++a;  // expect: 6
-print a;    // expect: 6
+system.println(++a);  // expect: 6
+system.println(a);    // expect: 6
 
-print --a;  // expect: 5
-print a;    // expect: 5
+system.println(--a);  // expect: 5
+system.println(a);    // expect: 5
 
 // Postfix increment/decrement
 var b = 10;
-print b++;  // expect: 10
-print b;    // expect: 11
+system.println(b++);  // expect: 10
+system.println(b);    // expect: 11
 
-print b--;  // expect: 11
-print b;    // expect: 10
+system.println(b--);  // expect: 11
+system.println(b);    // expect: 10
 
 // In expressions
 var c = 5;
 var d = ++c + 2;
-print d;  // expect: 8
-print c;  // expect: 6
+system.println(d);  // expect: 8
+system.println(c);  // expect: 6
 
 var e = 5;
 var f = e++ + 2;
-print f;  // expect: 7
-print e;  // expect: 6
+system.println(f);  // expect: 7
+system.println(e);  // expect: 6
 
 // In conditions
 var count = 0;
 while (count < 3) {
-    print count++;
+    system.println(count++);
 }
 // expect: 0
 // expect: 1
 // expect: 2
-print count;  // expect: 3
+system.println(count);  // expect: 3
 
 // Multiple operations
 var n = 10;
 n += 5;
 n *= 2;
-print n;  // expect: 30
+system.println(n);  // expect: 30
 
 // Chained (prefix returns new value)
 var p = 5;
 var q = ++p;
 var r = ++p;
-print p;  // expect: 7
-print q;  // expect: 6
-print r;  // expect: 7
+system.println(p);  // expect: 7
+system.println(q);  // expect: 6
+system.println(r);  // expect: 7
 
 // Global variables
 var global = 100;
 global += 50;
-print global;  // expect: 150
+system.println(global);  // expect: 150
 
 global++;
-print global;  // expect: 151
+system.println(global);  // expect: 151
 
 ++global;
-print global;  // expect: 152
+system.println(global);  // expect: 152
 
 // Upvalues
 func outer() {
@@ -83,17 +85,17 @@ func outer() {
     
     func inner() {
         x += 5;
-        print x;   // expect: 15
+        system.println(x);   // expect: 15
         
-        print x++;  // expect: 15
-        print x;    // expect: 16
+        system.println(x++);  // expect: 15
+        system.println(x);    // expect: 16
         
-        print ++x;  // expect: 17
-        print x;    // expect: 17
+        system.println(++x);  // expect: 17
+        system.println(x);    // expect: 17
     }
     
     inner();
-    print x;  // expect: 17
+    system.println(x);  // expect: 17
 }
 outer();
 
@@ -103,16 +105,16 @@ class Counter {
     
     func increment() {
         this.count++;
-        print this.count;
+        system.println(this.count);
     }
     
     func add(n) {
         this.count += n;
-        print this.count;
+        system.println(this.count);
     }
     
     func prefixInc() {
-        print ++this.count;
+        system.println(++this.count);
     }
 }
 
@@ -125,23 +127,23 @@ counter.prefixInc();     // expect: 13
 // Edge cases
 var zero = 0;
 zero++;
-print zero;  // expect: 1
+system.println(zero);  // expect: 1
 
 var neg = -5;
 neg += 10;
-print neg;   // expect: 5
+system.println(neg);   // expect: 5
 
 // Expression evaluation
 var m = 5;
 var result = (m++) + (++m);
-print result;  // expect: 12
-print m;       // expect: 7
+system.println(result);  // expect: 12
+system.println(m);       // expect: 7
 
 // Compound with compound
 var y = 10;
 y += 5;
 y *= 2;
 y /= 3;
-print y;  // expect: 10
+system.println(y);  // expect: 10
 
-print "All tests passed!";  // expect: All tests passed!
+system.println("All tests passed!");  // expect: All tests passed!

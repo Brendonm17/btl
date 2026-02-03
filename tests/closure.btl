@@ -1,8 +1,10 @@
+import "system";
+
 func makeCounter() {
   var i = 0;
   func count() {
     i = i + 1;
-    print i;
+    system.println(i);
   }
   return count;
 }

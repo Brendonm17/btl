@@ -1,3 +1,5 @@
+import "system";
+
 var sideEffect = "did not run";
 
 func setSideEffect() {
@@ -7,10 +9,10 @@ func setSideEffect() {
 
 // True OR should not evaluate the second part
 true or setSideEffect();
-print sideEffect; // expect: did not run
+system.println(sideEffect); // expect: did not run
 
 // False AND should not evaluate the second part
 false and setSideEffect();
-print sideEffect; // expect: did not run
+system.println(sideEffect); // expect: did not run
 
-print true and "ok"; // expect: ok
+system.println(true and "ok"); // expect: ok

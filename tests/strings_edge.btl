@@ -1,6 +1,8 @@
-print ""; // expect: 
-print "line one
-line two"; 
+import "system";
+
+system.println(""); // expect: 
+system.println("line one
+line two"); 
 // expect: line one
 // expect: line two
-print "alpha" + " " + "beta"; // expect: alpha beta
+system.println("alpha" + " " + "beta"); // expect: alpha beta

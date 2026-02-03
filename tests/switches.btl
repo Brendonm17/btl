@@ -1,3 +1,5 @@
+import "system";
+
 // as an expression
 var x = 2;
 var result = switch (x) {
@@ -5,75 +7,75 @@ var result = switch (x) {
     case 2: break "two";
     default: break "unknown";
 };
-print result;                       // expect: two
+system.println(result);                       // expect: two
 
 
 // as expression in an argument, with blocks
-print switch (x) {
+system.println(switch (x) {
     case 1: {
         break "one";
     }
     default: {
         break "other";
     }
-};                                  // expect: other
+});                                  // expect: other
 
 // expression arithmetic
 var y = 10 + switch (x) {
     case 1: break 5;
     default: break 0;
 };
-print y;                            // expect: 10
+system.println(y);                            // expect: 10
 
 // fallthrough and statement
 switch (y) {
     case 10:
-    print "zero";
+    system.println("zero");
     case 0:
-    print "and ten";
+    system.println("and ten");
     break;
     default:
-    print "default";
+    system.println("default");
     break;
-};                                  // expect: zero
+}                                  // expect: zero
                                     // expect: and ten
 
 // fall through to default and statement
 switch (y) {
     case 10:
-    print "0";                      // expect: 0
+    system.println("0");                      // expect: 0
     case 0:
-    print "1";                      // expect: 1
+    system.println("1");                      // expect: 1
     default:
-    print "2";                      // expect: 2
+    system.println("2");                      // expect: 2
     break;
-}; 
+}
 
 // default
 switch (y) {
     case 5:
-    print "5";
+    system.println("5");
     break;
     case 8:
-    print "8";
+    system.println("8");
     break;
     default:
-    print "other";                      // expect: other
+    system.println("other");                      // expect: other
     break;
-};
+}
 
 // boolean cases
 switch (y) {
     case 5:
-    print "5";
+    system.println("5");
     break;
     case > 8:
-    print "8";                          // expect: 8
+    system.println("8");                          // expect: 8
     break;
     default:
-    print "other";
+    system.println("other");
     break;
-};
+}
 
 var five = 5;
 
@@ -82,18 +84,18 @@ func oddSwitch(x) {
     var four = 4;
     switch (x) {
         case 1, 2, 3:
-            print "small";
+            system.println("small");
             break;
         case < 0 or > 100:
-            print "out of range";
+            system.println("out of range");
             break;
         case >= 10 and <= 20:
-            print "teens";
+            system.println("teens");
             break;
         case five, four, < 8 or > 50:
-            print "mixed";
+            system.println("mixed");
             break;
-    };
+    }
 }
 
 oddSwitch(2);                           // expect: small
