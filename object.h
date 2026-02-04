@@ -27,12 +27,6 @@ typedef enum ObjType {
     OBJ_FUTURE, OBJ_ACTOR
 } ObjType;
 
-// Object generations for generational GC
-typedef enum {
-    GEN_NURSERY = 0,    // Young generation - in nursery
-    GEN_OLD = 1         // Old generation - survived at least one GC
-} Generation;
-
 struct Obj {
     ObjType type;
     bool isMarked;          // For tri-color: false=WHITE, true=GRAY/BLACK

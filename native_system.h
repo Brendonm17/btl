@@ -3,7 +3,10 @@
 
 #include "vm.h"
 
+// Set command line arguments (call from main before running)
+void setSystemArgs(int argc, const char* argv []);
+
+// Initialize the system module
 void initSystemModule(VM* vm);
-void setSystemArgs(int argc, const char** argv);
 
 #endif
