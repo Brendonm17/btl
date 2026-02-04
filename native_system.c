@@ -268,6 +268,16 @@ static Value systemIsInstance(int argCount, Value* args) {
     return BOOL_VAL(IS_INSTANCE(args[0]));
 }
 
+static Value systemIsActor(int argCount, Value* args) {
+    if (argCount != 1) return BOOL_VAL(false);
+    return BOOL_VAL(IS_ACTOR(args[0]));
+}
+
+static Value systemIsFuture(int argCount, Value* args) {
+    if (argCount != 1) return BOOL_VAL(false);
+    return BOOL_VAL(IS_FUTURE(args[0]));
+}
+
 // tonum(value) - convert to number
 static Value systemToNum(int argCount, Value* args) {
     (void) argCount;
@@ -398,6 +408,8 @@ void initSystemModule(VM* vm) {
     defineNativeModuleFn(vm, module, "isfunc", systemIsFunc, 1);
     defineNativeModuleFn(vm, module, "isclass", systemIsClass, 1);
     defineNativeModuleFn(vm, module, "isinstance", systemIsInstance, 1);
+    defineNativeModuleFn(vm, module, "isactor", systemIsActor, 1);
+    defineNativeModuleFn(vm, module, "isfuture", systemIsFuture, 1);
 
     // Type conversion
     defineNativeModuleFn(vm, module, "tonum", systemToNum, 1);

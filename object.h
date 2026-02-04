@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 199309L
 #ifndef btl_object_h
 #define btl_object_h
 
@@ -20,7 +19,7 @@ typedef struct ObjFuture ObjFuture;
 typedef struct ObjActor ObjActor;
 
 // --- Object Types ---
-typedef enum {
+typedef enum ObjType {
     OBJ_BOUND_METHOD, OBJ_CLASS, OBJ_CLOSURE, OBJ_FUNCTION,
     OBJ_INSTANCE, OBJ_LIST, OBJ_MODULE, OBJ_NATIVE, OBJ_STRING,
     OBJ_UPVALUE, OBJ_TABLE,
@@ -28,10 +27,18 @@ typedef enum {
     OBJ_FUTURE, OBJ_ACTOR
 } ObjType;
 
+// Object generations for generational GC
+typedef enum {
+    GEN_NURSERY = 0,    // Young generation - in nursery
+    GEN_OLD = 1         // Old generation - survived at least one GC
+} Generation;
+
 struct Obj {
     ObjType type;
-    bool isMarked;
-    struct Obj* next;
+    bool isMarked;          // For tri-color: false=WHITE, true=GRAY/BLACK
+    uint8_t generation;     // GEN_NURSERY or GEN_OLD
+    struct Obj* next;       // Linked list for old generation
+    struct Obj* forwarding; // Used during minor GC for forwarding pointer
 };
 
 // Future states
