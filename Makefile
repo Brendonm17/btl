@@ -1,7 +1,7 @@
 # Compiler and Flags
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11
-LIBS = -lm
+LIBS = -lm -lpthread
 TARGET = btl
 DEBUG_TARGET = btl_debug
 

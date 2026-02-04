@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <pthread.h>
 
 #include "common.h"
 #include "compiler.h"
@@ -12,6 +13,7 @@
 #include "memory.h"
 #include "vm.h"
 #include "value.h"
+#include "threadpool.h"
 
 #include "native_string.h"
 #include "native_list.h"
@@ -20,6 +22,31 @@
 #include "native_system.h"
 #include "native_math.h"
 #include "native_random.h"
+
+InterpretResult runVM(VM* vm);
+
+// --- Global Thread Pool ---
+static ThreadPool globalThreadPool;
+static bool threadPoolInitialized = false;
+static pthread_mutex_t threadPoolInitMutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void ensureThreadPool(void) {
+    pthread_mutex_lock(&threadPoolInitMutex);
+    if (!threadPoolInitialized) {
+        threadPoolInit(&globalThreadPool, 4);
+        threadPoolInitialized = true;
+    }
+    pthread_mutex_unlock(&threadPoolInitMutex);
+}
+
+void shutdownThreadPool(void) {
+    pthread_mutex_lock(&threadPoolInitMutex);
+    if (threadPoolInitialized) {
+        threadPoolShutdown(&globalThreadPool);
+        threadPoolInitialized = false;
+    }
+    pthread_mutex_unlock(&threadPoolInitMutex);
+}
 
 // --- Macros ---
 #define PATCH_OP_1(newOp) (frame->closure->function->chunk.code[ip - frame->closure->function->chunk.code - 1] = (newOp))
@@ -109,7 +136,16 @@ Value pop(VM* vm) {
 }
 
 static bool isFalsey(Value value) {
-    return IS_NULL(value) || (IS_BOOL(value) && !AS_BOOL(value));
+    if (IS_NULL(value)) return true;
+    if (IS_BOOL(value)) return !AS_BOOL(value);
+    if (IS_FUTURE(value)) {
+        FutureState state = futureGetState(AS_FUTURE(value));
+        return state == FUTURE_ERROR;
+    }
+    if (IS_ACTOR(value)) {
+        return !AS_ACTOR(value)->alive;
+    }
+    return false;
 }
 
 // Helper: Get native class for a value
@@ -278,6 +314,27 @@ static bool callValue(VM* vm, Value callee, int argCount) {
             push(vm, result);
             return true;
         }
+        case OBJ_FUTURE: {
+            if (argCount != 0) {
+                runtimeError(vm, "Futures take no arguments.");
+                return false;
+            }
+            ObjFuture* future = AS_FUTURE(callee);
+            Value result = futureGet(future);
+            FutureState state = futureGetState(future);
+            vm->stackTop--;
+            if (state == FUTURE_ERROR) {
+                runtimeError(vm, "Future error: %s",
+                    IS_STRING(result) ? AS_CSTRING(result) : "unknown");
+                return false;
+            }
+            push(vm, result);
+            return true;
+        }
+        case OBJ_ACTOR: {
+            runtimeError(vm, "Cannot call actor directly. Use actor.method().");
+            return false;
+        }
         default:
             break;
         }
@@ -364,6 +421,7 @@ void initVM(VM* vm) {
     vm->tableClass = NULL;
     vm->rootModule = newModule(vm, copyString(vm, "main", 4));
     vm->initString = copyString(vm, "init", 4);
+    vm->lastReturnValue = NULL_VAL;
     //defineNative(vm, "clock", clockNative);
 
     // Initialize native classes
@@ -378,10 +436,67 @@ void initVM(VM* vm) {
     initRandomModule(vm);
 }
 
-void freeVM(VM* vm) {
+void freeVM(VM* vm, bool mainVM) {
+    if (mainVM) {
+        shutdownThreadPool();
+    }
     freeTable(vm, &vm->strings); freeTable(vm, &vm->modules);
     freeTable(vm, &vm->nativeModules);
     vm->initString = NULL; freeObjects(vm);
+}
+
+typedef struct {
+    VM* vm;
+    ObjClosure* closure;
+    Value* args;
+    int argCount;
+    ObjFuture* future;
+    ObjNativeClass* stringClass;
+    ObjNativeClass* numberClass;
+    ObjNativeClass* listClass;
+    ObjNativeClass* tableClass;
+} AsyncCallTask;
+
+static InterpretResult run(VM* vm);  // Forward declaration
+
+static void asyncCallTaskRun(void* arg) {
+    AsyncCallTask* task = (AsyncCallTask*) arg;
+    VM* vm = task->vm;
+
+    // Push closure for the "script" slot
+    push(vm, OBJ_VAL(task->closure));
+
+    // Push args
+    for (int i = 0; i < task->argCount; i++) {
+        push(vm, task->args[i]);
+    }
+
+    // Set up call frame
+    CallFrame* frame = &vm->frames[vm->frameCount++];
+    frame->closure = task->closure;
+    frame->ip = task->closure->function->chunk.code;
+    frame->slots = vm->stack;
+    frame->openUpvalues = NULL;
+
+    // Run
+    InterpretResult result = runVM(vm);
+
+    if (result == INTERPRET_OK) {
+        futureResolve(task->future, vm->lastReturnValue);
+    } else {
+        ObjString* errMsg = copyString(vm, "Async call failed", 17);
+        futureReject(task->future, OBJ_VAL(errMsg));
+    }
+
+    // Cleanup
+    if (task->args != NULL) free(task->args);
+    freeVM(vm, false);
+    free(vm);
+    free(task);
+}
+
+InterpretResult runVM(VM* vm) {
+    return run(vm);
 }
 
 static InterpretResult run(VM* vm) {
@@ -605,7 +720,9 @@ static InterpretResult run(VM* vm) {
     && L_OP_INDEX_GET,
     && L_OP_INDEX_SET,
     && L_OP_IMPORT,
-    && L_OP_IMPORT_LONG
+    && L_OP_IMPORT_LONG,
+    && L_OP_DO_NEW,
+    && L_OP_DO_INVOKE
     };
 
 #define DISPATCH() do { \
@@ -1068,8 +1185,33 @@ static InterpretResult run(VM* vm) {
                 if (!bindMethod(vm, superclass, name)) return INTERPRET_RUNTIME_ERROR;
                 DISPATCH();
             }
+            OPCODE(OP_EQUAL) : {
+                Value b = pop(vm);
+                Value a = pop(vm);
 
-            OPCODE(OP_EQUAL) : { Value b = pop(vm); Value a = pop(vm); push(vm, BOOL_VAL(valuesEqual(a, b))); DISPATCH(); }
+                // future == null checks if pending
+                if (IS_FUTURE(a) && IS_NULL(b)) {
+                    push(vm, BOOL_VAL(futureGetState(AS_FUTURE(a)) == FUTURE_PENDING));
+                    DISPATCH();
+                }
+                if (IS_NULL(a) && IS_FUTURE(b)) {
+                    push(vm, BOOL_VAL(futureGetState(AS_FUTURE(b)) == FUTURE_PENDING));
+                    DISPATCH();
+                }
+
+                // actor == null checks if dead
+                if (IS_ACTOR(a) && IS_NULL(b)) {
+                    push(vm, BOOL_VAL(!AS_ACTOR(a)->alive));
+                    DISPATCH();
+                }
+                if (IS_NULL(a) && IS_ACTOR(b)) {
+                    push(vm, BOOL_VAL(!AS_ACTOR(b)->alive));
+                    DISPATCH();
+                }
+
+                push(vm, BOOL_VAL(valuesEqual(a, b)));
+                DISPATCH();
+            }
             OPCODE(OP_GREATER) : { BINARY_OP(BOOL_VAL, > ); DISPATCH(); }
             OPCODE(OP_LESS) : { BINARY_OP(BOOL_VAL, < ); DISPATCH(); }
             OPCODE(OP_ADD) : {
@@ -1152,6 +1294,7 @@ static InterpretResult run(VM* vm) {
                 closeUpvalues(vm, frame);
                 vm->frameCount--;
                 if (vm->frameCount == 0) {
+                    vm->lastReturnValue = result;
                     pop(vm); return INTERPRET_OK;
                 }
                 vm->stackTop = frame->slots;
@@ -1310,9 +1453,36 @@ static InterpretResult run(VM* vm) {
         uint8_t nameIdx = READ_BYTE();
         argCount = READ_BYTE();
         uint8_t icSlot = READ_BYTE();
-
         Value receiver = peek(vm, argCount);
-
+        // CHECK FOR ACTOR - handle async method call
+        if (IS_ACTOR(receiver)) {
+            ObjActor* actor = AS_ACTOR(receiver);
+            ObjString* methodName = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+            // Dead actor returns null
+            if (!actor->alive) {
+                for (int i = 0; i <= argCount; i++) pop(vm);
+                push(vm, NULL_VAL);
+                DISPATCH();
+            }
+            // Create future for result
+            ObjFuture* future = newFuture(vm);
+            // Collect args
+            Value* args = NULL;
+            if (argCount > 0) {
+                args = malloc(sizeof(Value) * argCount);
+                for (int i = 0; i < argCount; i++) {
+                    args[i] = peek(vm, argCount - 1 - i);
+                }
+            }
+            // Send message to actor
+            actorSend(actor, methodName, args, argCount, future);
+            if (args != NULL) free(args);
+            // Pop args and receiver
+            for (int i = 0; i <= argCount; i++) pop(vm);
+            // Push future as result
+            push(vm, OBJ_VAL(future));
+            DISPATCH();
+        }
         if (IS_INSTANCE(receiver)) {
             ObjInstance* instance = AS_INSTANCE(receiver);
             MethodIC* ic = &frame->closure->methodICs[icSlot];
@@ -1574,9 +1744,30 @@ OPCODE(OP_TAIL_INVOKE_IC) : {
     uint8_t nameIdx = READ_BYTE();
     argCount = READ_BYTE();
     uint8_t icSlot = READ_BYTE();
-
     Value receiver = peek(vm, argCount);
-
+    // CHECK FOR ACTOR - handle async method call (no tail optimization for actors)
+    if (IS_ACTOR(receiver)) {
+        ObjActor* actor = AS_ACTOR(receiver);
+        ObjString* methodName = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+        if (!actor->alive) {
+            for (int i = 0; i <= argCount; i++) pop(vm);
+            push(vm, NULL_VAL);
+            DISPATCH();
+        }
+        ObjFuture* future = newFuture(vm);
+        Value* args = NULL;
+        if (argCount > 0) {
+            args = malloc(sizeof(Value) * argCount);
+            for (int i = 0; i < argCount; i++) {
+                args[i] = peek(vm, argCount - 1 - i);
+            }
+        }
+        actorSend(actor, methodName, args, argCount, future);
+        if (args != NULL) free(args);
+        for (int i = 0; i <= argCount; i++) pop(vm);
+        push(vm, OBJ_VAL(future));
+        DISPATCH();
+    }
     if (IS_INSTANCE(receiver)) {
         ObjInstance* instance = AS_INSTANCE(receiver);
         MethodIC* ic = &frame->closure->methodICs[icSlot];
@@ -2102,6 +2293,121 @@ OPCODE(OP_IMPORT_LONG) : {
     vm->frames[vm->frameCount - 1].slots[0] = OBJ_VAL(m);
     tableSet(vm, &vm->modules, OBJ_VAL(fName), OBJ_VAL(m));
     REFRESH_FRAME();
+    DISPATCH();
+}
+OPCODE(OP_DO_NEW) : {
+    uint8_t argCount = READ_BYTE();
+    Value callee = peek(vm, argCount);
+
+    if (IS_CLASS(callee)) {
+        // Create actor from class
+        ObjClass* klass = AS_CLASS(callee);
+
+        Value* args = NULL;
+        if (argCount > 0) {
+            args = malloc(sizeof(Value) * argCount);
+            for (int i = 0; i < argCount; i++) {
+                args[i] = peek(vm, argCount - 1 - i);
+            }
+        }
+
+        for (int i = 0; i <= argCount; i++) pop(vm);
+
+        ensureThreadPool();
+        ObjActor* actor = newActor(vm, klass, args, argCount);
+
+        if (args != NULL) free(args);
+
+        push(vm, OBJ_VAL(actor));
+
+    } else if (IS_CLOSURE(callee)) {
+        // Async function call
+        ObjClosure* closure = AS_CLOSURE(callee);
+        ObjFuture* future = newFuture(vm);
+
+        VM* asyncVM = malloc(sizeof(VM));
+        initVM(asyncVM);
+
+        // Copy native classes
+        asyncVM->stringClass = vm->stringClass;
+        asyncVM->numberClass = vm->numberClass;
+        asyncVM->listClass = vm->listClass;
+        asyncVM->tableClass = vm->tableClass;
+        asyncVM->rootModule = closure->function->module;
+
+        AsyncCallTask* task = malloc(sizeof(AsyncCallTask));
+        task->vm = asyncVM;
+        task->closure = closure;
+        task->argCount = argCount;
+        task->future = future;
+
+        if (argCount > 0) {
+            task->args = malloc(sizeof(Value) * argCount);
+            for (int i = 0; i < argCount; i++) {
+                task->args[i] = deepCopyValue(asyncVM, vm, peek(vm, argCount - 1 - i));
+            }
+        } else {
+            task->args = NULL;
+        }
+
+        for (int i = 0; i <= argCount; i++) pop(vm);
+
+        ensureThreadPool();
+        threadPoolSubmit(&globalThreadPool, asyncCallTaskRun, task);
+
+        push(vm, OBJ_VAL(future));
+    } else {
+        STORE_FRAME();
+        runtimeError(vm, "Can only use 'do' with classes or functions.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+    DISPATCH();
+}
+
+OPCODE(OP_DO_INVOKE) : {
+    uint8_t nameConstant = READ_BYTE();
+    uint8_t argCount = READ_BYTE();
+    ObjString* methodName = AS_STRING(frame->closure->function->chunk.constants.values[nameConstant]);
+
+    Value actorVal = peek(vm, argCount);
+
+    if (IS_NULL(actorVal)) {
+        for (int i = 0; i <= argCount; i++) pop(vm);
+        push(vm, NULL_VAL);
+        DISPATCH();
+    }
+
+    if (!IS_ACTOR(actorVal)) {
+        STORE_FRAME();
+        runtimeError(vm, "Expected actor for 'do' method call.");
+        return INTERPRET_RUNTIME_ERROR;
+    }
+
+    ObjActor* actor = AS_ACTOR(actorVal);
+
+    if (!actor->alive) {
+        for (int i = 0; i <= argCount; i++) pop(vm);
+        push(vm, NULL_VAL);
+        DISPATCH();
+    }
+
+    ObjFuture* future = newFuture(vm);
+
+    Value* args = NULL;
+    if (argCount > 0) {
+        args = malloc(sizeof(Value) * argCount);
+        for (int i = 0; i < argCount; i++) {
+            args[i] = peek(vm, argCount - 1 - i);
+        }
+    }
+
+    actorSend(actor, methodName, args, argCount, future);
+
+    if (args != NULL) free(args);
+
+    for (int i = 0; i <= argCount; i++) pop(vm);
+
+    push(vm, OBJ_VAL(future));
     DISPATCH();
 }
 #ifndef HAS_COMPUTED_GOTOS

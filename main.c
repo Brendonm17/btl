@@ -58,7 +58,7 @@ int main(int argc, const char* argv []) {
     }
 
     // Clean up
-    freeVM(&vm);
+    freeVM(&vm, true);
 
     // CRITICAL for tests: Signal errors to the OS
     if (result == INTERPRET_COMPILE_ERROR) exit(65);

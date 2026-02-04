@@ -1,0 +1,136 @@
+import "system";
+
+// === ACTOR TESTS ===
+
+class Counter {
+    var count = 0;
+    
+    func init(start) {
+        this.count = start;
+    }
+    
+    func increment() {
+        this.count = this.count + 1;
+        return this.count;
+    }
+    
+    func add(n) {
+        this.count = this.count + n;
+        return this.count;
+    }
+    
+    func getCount() {
+        return this.count;
+    }
+}
+
+// Create actor
+var counter = do Counter(10);
+system.println(counter);                    // expect: <actor:Counter>
+
+// Method calls return futures
+var f1 = counter.getCount();
+system.println(f1());                       // expect: 10
+
+var f2 = counter.increment();
+system.println(f2());                       // expect: 11
+
+var f3 = counter.add(5);
+system.println(f3());                       // expect: 16
+
+// Fire and forget
+counter.increment();
+counter.increment();
+var f4 = counter.getCount();
+system.println(f4());                       // expect: 18
+
+// Multiple actors
+class Worker {
+    var id = 0;
+    
+    func init(id) {
+        this.id = id;
+    }
+    
+    func compute(n) {
+        var result = 0;
+        for (var i = 1; i <= n; i++) {
+            result = result + i;
+        }
+        return result;
+    }
+    
+    func getId() {
+        return this.id;
+    }
+}
+
+var w1 = do Worker(1);
+var w2 = do Worker(2);
+
+system.println(w1.getId()());               // expect: 1
+system.println(w2.getId()());               // expect: 2
+
+// Both workers compute in parallel
+var r1 = w1.compute(10);
+var r2 = w2.compute(10);
+system.println(r1());                       // expect: 55
+system.println(r2());                       // expect: 55
+
+// === ASYNC FUNCTION TESTS ===
+
+var async1 = do func() {
+    var sum = 0;
+    for (var i = 1; i <= 5; i++) {
+        sum = sum + i;
+    }
+    return sum;
+};
+system.println(async1());                   // expect: 15
+
+var async2 = do func() {
+    return 42;
+};
+system.println(async2());                   // expect: 42
+
+// === FUTURE TESTS ===
+
+// Future truthiness: ready future is truthy
+var f = counter.getCount();
+var result = f();
+if (f) {
+    system.println("ready");                // expect: ready
+}
+
+// Future calling: f() blocks and returns value
+system.println(result);                     // expect: 18
+
+// === ACTOR STATE ISOLATION ===
+
+class Box {
+    var value = 0;
+    
+    func init(v) {
+        this.value = v;
+    }
+    
+    func set(v) {
+        this.value = v;
+        return this.value;
+    }
+    
+    func get() {
+        return this.value;
+    }
+}
+
+var box1 = do Box(100);
+var box2 = do Box(200);
+
+box1.set(111);
+box2.set(222);
+
+system.println(box1.get()());               // expect: 111
+system.println(box2.get()());               // expect: 222
+
+system.println("all tests passed");         // expect: all tests passed

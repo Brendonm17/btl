@@ -51,6 +51,25 @@ static void printValueStderr(Value value) {
         case OBJ_UPVALUE:
             fprintf(stderr, "<upvalue>");
             break;
+        case OBJ_FUTURE: {
+            ObjFuture* future = AS_FUTURE(value);
+            FutureState state = futureGetState(future);
+            switch (state) {
+            case FUTURE_PENDING: fprintf(stderr, "<future:pending>"); break;
+            case FUTURE_READY:   fprintf(stderr, "<future:ready>"); break;
+            case FUTURE_ERROR:   fprintf(stderr, "<future:error>"); break;
+            }
+            break;
+        }
+        case OBJ_ACTOR: {
+            ObjActor* actor = AS_ACTOR(value);
+            if (actor->alive) {
+                fprintf(stderr, "<actor:%s>", actor->klass->name->chars);
+            } else {
+                fprintf(stderr, "<actor:dead>");
+            }
+            break;
+        }
         default:
             fprintf(stderr, "<obj>");
             break;
@@ -442,6 +461,11 @@ int disassembleInstruction(Chunk* chunk, int offset) {
         // Import
     case OP_IMPORT:             return constant("IMPORT", chunk, offset);
     case OP_IMPORT_LONG:        return constantLong("IMPORT_LONG", chunk, offset);
+
+    case OP_DO_NEW:
+        return byte("OP_DO_NEW", chunk, offset);
+    case OP_DO_INVOKE:
+        return invoke("OP_DO_INVOKE", chunk, offset);
 
     default:
         fprintf(stderr, "UNKNOWN_OP %d\n", op);
