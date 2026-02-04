@@ -13,6 +13,7 @@ static Value listPush(VM* vm, Value receiver, int argCount, Value* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
     writeValueArray(vm, &list->items, args[0]);
+    writeBarrier(vm, (Obj*) list, args[0]);
     return receiver;
 }
 
@@ -50,6 +51,7 @@ static Value listUnshift(VM* vm, Value receiver, int argCount, Value* args) {
         list->items.values[i] = list->items.values[i - 1];
     }
     list->items.values[0] = args[0];
+    writeBarrier(vm, (Obj*) list, args[0]);
     return receiver;
 }
 
@@ -70,6 +72,7 @@ static Value listInsert(VM* vm, Value receiver, int argCount, Value* args) {
         list->items.values[i] = list->items.values[i - 1];
     }
     list->items.values[index] = args[1];
+    writeBarrier(vm, (Obj*) list, args[1]);
     return receiver;
 }
 
@@ -159,6 +162,7 @@ static Value listSlice(VM* vm, Value receiver, int argCount, Value* args) {
     push(vm, OBJ_VAL(result));
     for (int i = start; i < end; i++) {
         writeValueArray(vm, &result->items, list->items.values[i]);
+        writeBarrier(vm, (Obj*) result, list->items.values[i]);  // Fixed: was 'list'
     }
     pop(vm);
     return OBJ_VAL(result);
@@ -210,6 +214,7 @@ static Value listClone(VM* vm, Value receiver, int argCount, Value* args) {
     push(vm, OBJ_VAL(result));
     for (int i = 0; i < list->items.count; i++) {
         writeValueArray(vm, &result->items, list->items.values[i]);
+        writeBarrier(vm, (Obj*) result, list->items.values[i]);  // Fixed: was 'list'
     }
     pop(vm);
     return OBJ_VAL(result);

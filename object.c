@@ -1,27 +1,21 @@
-#include "object.h"
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+
+#include "object.h"
 #include "memory.h"
 #include "table.h"
 #include "value.h"
 #include "vm.h"
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
 
+// Object allocation macro - uses allocateObject from memory.c
+#define ALLOCATE_OBJ(vm, type, objectType) \
+    (type*)allocateObject(vm, sizeof(type), objectType)
 
-#define ALLOCATE_OBJ(vm, type, ot) (type*)allocateObject(vm, sizeof(type), ot)
-
-static struct Obj* allocateObject(struct VM* vm, size_t size, ObjType type) {
-    struct Obj* object = (struct Obj*) reallocate(vm, NULL, 0, size);
-    object->type = type;
-    object->isMarked = false;
-    object->next = vm->objects;
-    vm->objects = object;
-    return object;
-}
 // ============== FUTURE ==============
 
 ObjFuture* newFuture(VM* vm) {
@@ -181,7 +175,6 @@ Value deepCopyValue(VM* destVM, VM* srcVM, Value value) {
         for (int i = 0; i < src->items.count; i++) {
             Value copied = deepCopyValue(destVM, srcVM, src->items.values[i]);
             writeValueArray(destVM, &dest->items, copied);
-            dest->items.count++;
         }
         pop(destVM);
         return OBJ_VAL(dest);
@@ -226,7 +219,6 @@ Value deepCopyValue(VM* destVM, VM* srcVM, Value value) {
 // Forward declare - this will be in vm.c
 extern InterpretResult runVM(VM* vm);
 
-// In actorThreadMain - CORRECTED method lookup
 static void* actorThreadMain(void* arg) {
     ObjActor* actor = (ObjActor*) arg;
     VM* vm = actor->vm;
@@ -302,6 +294,7 @@ static void* actorThreadMain(void* arg) {
     actor->alive = false;
     return NULL;
 }
+
 ObjActor* newActor(VM* parentVM, ObjClass* klass, Value* args, int argCount) {
     ObjActor* actor = ALLOCATE_OBJ(parentVM, ObjActor, OBJ_ACTOR);
 
@@ -402,6 +395,8 @@ void actorStop(ObjActor* actor) {
     free(actor->vm);
 }
 
+// ============== NATIVE METHODS/CLASSES/MODULES ==============
+
 ObjNativeMethod* newNativeMethod(VM* vm, NativeMethodFn fn, const char* name, int arity) {
     ObjNativeMethod* method = ALLOCATE_OBJ(vm, ObjNativeMethod, OBJ_NATIVE_METHOD);
     method->function = fn;
@@ -454,6 +449,8 @@ void defineNativeModuleFn(VM* vm, ObjNativeModule* module, const char* name, Nat
     pop(vm);
 }
 
+// ============== CORE OBJECT TYPES ==============
+
 ObjTable* newTable(struct VM* vm) {
     ObjTable* table = ALLOCATE_OBJ(vm, ObjTable, OBJ_TABLE);
     initTable(&table->table);
@@ -479,7 +476,7 @@ ObjClass* newClass(struct VM* vm, struct ObjString* name) {
     // Method indices for compile-time lookup
     initTable(&klass->methodIndices);
 
-    // Field system (unchanged)
+    // Field system
     klass->fieldCount = 0;
     initTable(&klass->fieldIndices);
 
@@ -487,6 +484,8 @@ ObjClass* newClass(struct VM* vm, struct ObjString* name) {
 }
 
 ObjClosure* newClosure(VM* vm, ObjFunction* function) {
+    gcInhibitStart(vm);  // Protect during construction
+
     size_t size = sizeof(ObjClosure) + sizeof(RuntimeUpvalue) * function->upvalueCount;
     ObjClosure* closure = (ObjClosure*) allocateObject(vm, size, OBJ_CLOSURE);
     closure->function = function;
@@ -496,6 +495,7 @@ ObjClosure* newClosure(VM* vm, ObjFunction* function) {
         closure->upvalues[i].isOpen = true;
         closure->upvalues[i].next = NULL;
     }
+
     // Allocate and initialize IC arrays
     if (function->fieldICCount > 0) {
         closure->fieldICs = ALLOCATE(vm, FieldIC, function->fieldICCount);
@@ -511,6 +511,7 @@ ObjClosure* newClosure(VM* vm, ObjFunction* function) {
         closure->methodICs = NULL;
     }
 
+    gcInhibitEnd(vm);  // Safe now
     return closure;
 }
 
@@ -527,6 +528,8 @@ ObjFunction* newFunction(struct VM* vm, ObjModule* module) {
 }
 
 ObjInstance* newInstance(struct VM* vm, ObjClass* klass) {
+    gcInhibitStart(vm);  // Protect during field allocation
+
     ObjInstance* instance = ALLOCATE_OBJ(vm, ObjInstance, OBJ_INSTANCE);
     instance->klass = klass;
 
@@ -538,6 +541,8 @@ ObjInstance* newInstance(struct VM* vm, ObjClass* klass) {
     for (int i = 0; i < klass->fieldCount; i++) {
         instance->fields[i] = NULL_VAL;
     }
+
+    gcInhibitEnd(vm);
     return instance;
 }
 
@@ -562,16 +567,7 @@ ObjNative* newNative(struct VM* vm, NativeFn function) {
     return native;
 }
 
-static struct ObjString* allocateString(struct VM* vm, char* chars, int length, uint32_t hash) {
-    struct ObjString* string = (struct ObjString*) allocateObject(vm, sizeof(struct ObjString), OBJ_STRING);
-    string->length = length;
-    string->chars = chars;
-    string->hash = hash;
-    push(vm, OBJ_VAL(string));
-    tableSet(vm, &vm->strings, OBJ_VAL(string), NULL_VAL);
-    pop(vm);
-    return string;
-}
+// ============== STRING INTERNING ==============
 
 static uint32_t hashString(const char* key, int length) {
     uint32_t hash = 2166136261u;
@@ -580,6 +576,19 @@ static uint32_t hashString(const char* key, int length) {
         hash *= 16777619;
     }
     return hash;
+}
+
+static struct ObjString* allocateString(struct VM* vm, char* chars, int length, uint32_t hash) {
+    gcInhibitStart(vm);  // Protect: allocate string, then add to table
+    struct ObjString* string = (struct ObjString*) allocateObject(vm, sizeof(struct ObjString), OBJ_STRING);
+    string->length = length;
+    string->chars = chars;
+    string->hash = hash;
+    push(vm, OBJ_VAL(string));
+    tableSet(vm, &vm->strings, OBJ_VAL(string), NULL_VAL);
+    pop(vm);
+    gcInhibitEnd(vm);
+    return string;
 }
 
 struct ObjString* takeString(struct VM* vm, char* chars, int length) {
@@ -596,17 +605,25 @@ struct ObjString* copyString(struct VM* vm, const char* chars, int length) {
     uint32_t hash = hashString(chars, length);
     struct ObjString* interned = tableFindString(&vm->strings, chars, length, hash);
     if (interned != NULL) return interned;
+
+    gcInhibitStart(vm);  // Protect: allocate chars, then string object
     char* heapChars = ALLOCATE(vm, char, length + 1);
     memcpy(heapChars, chars, length);
     heapChars[length] = '\0';
-    return allocateString(vm, heapChars, length, hash);
+    struct ObjString* result = allocateString(vm, heapChars, length, hash);
+    gcInhibitEnd(vm);
+    return result;
 }
+
+// ============== UPVALUES ==============
 
 ObjUpvalue* newUpvalueBox(VM* vm, Value value) {
     ObjUpvalue* box = ALLOCATE_OBJ(vm, ObjUpvalue, OBJ_UPVALUE);
     box->closed = value;
     return box;
 }
+
+// ============== PRINT OBJECT ==============
 
 void printObject(Value value) {
     switch (OBJ_TYPE(value)) {
@@ -627,7 +644,7 @@ void printObject(Value value) {
         break;
     case OBJ_LIST: {
         ObjList* list = AS_LIST(value);
-        printf("<list>[");
+        printf("[");
         for (int i = 0; i < list->items.count; i++) {
             printValue(list->items.values[i]);
             if (i < list->items.count - 1) printf(", ");

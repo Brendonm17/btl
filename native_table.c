@@ -17,6 +17,7 @@ static Value tableKeys(VM* vm, Value receiver, int argCount, Value* args) {
         Entry* entry = &table->table.entries[i];
         if (!IS_EMPTY(entry->key)) {
             writeValueArray(vm, &list->items, entry->key);
+            writeBarrier(vm, (Obj*) list, entry->key);
         }
     }
     pop(vm);
@@ -32,6 +33,7 @@ static Value tableValues(VM* vm, Value receiver, int argCount, Value* args) {
         Entry* entry = &table->table.entries[i];
         if (!IS_EMPTY(entry->key)) {
             writeValueArray(vm, &list->items, entry->value);
+            writeBarrier(vm, (Obj*) list, entry->value);
         }
     }
     pop(vm);
@@ -64,7 +66,17 @@ static Value tableClone(VM* vm, Value receiver, int argCount, Value* args) {
     ObjTable* table = AS_TABLE(receiver);
     ObjTable* result = newTable(vm);
     push(vm, OBJ_VAL(result));
-    tableAddAll(vm, &table->table, &result->table);
+
+    // Copy entries with write barriers
+    for (int i = 0; i < table->table.capacity; i++) {
+        Entry* entry = &table->table.entries[i];
+        if (!IS_EMPTY(entry->key)) {
+            tableSet(vm, &result->table, entry->key, entry->value);
+            writeBarrier(vm, (Obj*) result, entry->key);
+            writeBarrier(vm, (Obj*) result, entry->value);
+        }
+    }
+
     pop(vm);
     return OBJ_VAL(result);
 }

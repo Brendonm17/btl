@@ -33,7 +33,7 @@ static pthread_mutex_t threadPoolInitMutex = PTHREAD_MUTEX_INITIALIZER;
 static void ensureThreadPool(void) {
     pthread_mutex_lock(&threadPoolInitMutex);
     if (!threadPoolInitialized) {
-        threadPoolInit(&globalThreadPool, 4);
+        threadPoolInit(&globalThreadPool, BTL_NUM_THREADS);
         threadPoolInitialized = true;
     }
     pthread_mutex_unlock(&threadPoolInitMutex);
@@ -412,7 +412,20 @@ void initVM(VM* vm) {
     vm->objects = NULL;
     vm->bytesAllocated = 0;
     vm->nextGC = 1024 * 1024;
-    vm->grayCount = 0; vm->grayCapacity = 0; vm->grayStack = NULL;
+    vm->grayCount = 0;
+    vm->grayCapacity = 0;
+    vm->grayStack = NULL;
+    // Initialize nursery
+    initNursery(&vm->nursery);
+    vm->nurseryAllocated = 0;
+    // Initialize remembered set
+    initRememberedSet(&vm->rememberedSet);
+    // GC stats
+    vm->minorGCCount = 0;
+    vm->majorGCCount = 0;
+    vm->promotedBytes = 0;
+    vm->inMinorGC = false;
+    vm->gcInhibit = 0;
     initTable(&vm->strings); initTable(&vm->modules);
     initTable(&vm->nativeModules);
     vm->stringClass = NULL;
@@ -844,7 +857,10 @@ static InterpretResult run(VM* vm) {
                     STORE_FRAME(); runtimeError(vm, "Undefined variable '%s'.", findGlobalName(frame->closure->function->module, (int) index)->chars);
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                frame->closure->function->module->globalValues.values[index] = peek(vm, 0); DISPATCH();
+                Value value = peek(vm, 0);
+                frame->closure->function->module->globalValues.values[index] = value;
+                writeBarrier(vm, (Obj*) frame->closure->function->module, value);
+                DISPATCH();
             }
             OPCODE(OP_SET_GLOBAL_LONG) : {
                 uint16_t index = READ_SHORT();
@@ -852,7 +868,10 @@ static InterpretResult run(VM* vm) {
                     STORE_FRAME(); runtimeError(vm, "Undefined variable '%s'.", findGlobalName(frame->closure->function->module, (int) index)->chars);
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                frame->closure->function->module->globalValues.values[index] = peek(vm, 0); DISPATCH();
+                Value value = peek(vm, 0);
+                frame->closure->function->module->globalValues.values[index] = value;
+                writeBarrier(vm, (Obj*) frame->closure->function->module, value);
+                DISPATCH();
             }
 
             OPCODE(OP_CLOSURE) : {
@@ -1013,7 +1032,9 @@ static InterpretResult run(VM* vm) {
                 uint8_t index = READ_BYTE();
                 Value receiver = frame->slots[0];
                 ObjInstance* instance = AS_INSTANCE(receiver);
-                instance->fields[index] = peek(vm, 0);
+                Value value = peek(vm, 0);
+                instance->fields[index] = value;
+                writeBarrier(vm, (Obj*) instance, value);
                 DISPATCH();
             }
 
@@ -2220,11 +2241,14 @@ OPCODE(OP_INDEX_SET) : {
             writeValueArray(vm, &l->items, value);
         } else {
             l->items.values[idx] = value;
+            writeBarrier(vm, (Obj*) l, value);
         }
         push(vm, value);
     } else if (IS_TABLE(obj)) {
         ObjTable* table = AS_TABLE(obj);
         tableSet(vm, &table->table, key, value);
+        writeBarrier(vm, (Obj*) table, value);
+        writeBarrier(vm, (Obj*) table, key);
         push(vm, value);
     } else if (IS_STRING(obj)) {
         STORE_FRAME();
@@ -2412,7 +2436,7 @@ OPCODE(OP_DO_INVOKE) : {
 }
 #ifndef HAS_COMPUTED_GOTOS
         }
-    }
+        }
 #endif
 }
 InterpretResult interpret(VM* vm, ObjModule* m, const char* src) {
