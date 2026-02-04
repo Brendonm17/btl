@@ -8,6 +8,7 @@
 #include "compiler.h"
 #include "memory.h"
 #include "scanner.h"
+#include "runtime.h"
 
 #ifdef DEBUG_PRINT_CODE
 #include "debug.h"
@@ -82,16 +83,15 @@ static void errorAt(Parser* p, Token* token, const char* message) {
     if (p->panicMode) return;
     p->panicMode = true;
     p->hadError = true;
-    fprintf(stderr, "[line %d] Error", token->line);
+    btl_errorf(p->vm, "[line %d] Error", token->line);
 
     if (token->type == TOKEN_EOF) {
-        fprintf(stderr, " at end");
+        btl_error(p->vm, " at end");
     } else if (token->type != TOKEN_ERROR) {
-        fprintf(stderr, " at '%.*s'", token->length, token->start);
+        btl_errorf(p->vm, " at '%.*s'", token->length, token->start);
     }
 
-    fprintf(stderr, ": %s\n", message);
-    fflush(stderr);
+    btl_errorf(p->vm, ": %s\n", message);
 }
 
 static void advance(Parser* p, Scanner* s) {
@@ -471,7 +471,7 @@ static ObjFunction* endCompiler(Parser* p, Compiler* c) {
     function->fieldICCount = c->fieldICCount;
     function->methodICCount = c->methodICCount;
 #ifdef DEBUG_PRINT_CODE
-    if (!p->hadError) disassembleChunk(currentChunk(c), function->name != NULL ? function->name->chars : "<script>");
+    if (!p->hadError) disassembleChunk(c->vm->runtime, currentChunk(c), function->name != NULL ? function->name->chars : "<script>");
 #endif
     freeTable(c->vm, &c->constants);
     c->vm->compiler = (void*) c->enclosing;
@@ -2177,8 +2177,10 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
         }
     }
     beginScope(c);
+    int shadowVar = -1;  // ADD THIS
     if (loopVar != -1) {
         emitBytes(p, c, OP_GET_LOCAL, (uint8_t) loopVar);
+        shadowVar = c->localCount;  // ADD THIS - save index BEFORE incrementing
         Local* shadow = &c->locals[c->localCount++];
         shadow->name = c->locals[loopVar].name;
         shadow->depth = c->scopeDepth;
@@ -2187,7 +2189,7 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     }
     statement(p, s, c, cc);
     if (loopVar != -1) {
-        emitBytes(p, c, OP_GET_LOCAL, (uint8_t) c->localCount - 1);
+        emitBytes(p, c, OP_GET_LOCAL, (uint8_t) shadowVar);  // CHANGE THIS
         emitBytes(p, c, OP_SET_LOCAL, (uint8_t) loopVar);
         emitPopOrRemoveLoad(p, c);
     }

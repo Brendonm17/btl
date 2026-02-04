@@ -11,6 +11,8 @@
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
 
+typedef struct BTLRuntime BTLRuntime;
+
 typedef struct {
     ObjClosure* closure;
     uint8_t* ip;
@@ -57,6 +59,7 @@ struct VM {
 
     struct Compiler* compiler;
     Value lastReturnValue;
+    BTLRuntime* runtime;
 };
 
 typedef enum {

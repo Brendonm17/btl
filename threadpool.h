@@ -10,7 +10,8 @@ typedef struct Task {
     struct Task* next;
 } Task;
 
-typedef struct {
+// Use a named struct so it can be forward-declared elsewhere
+struct ThreadPool {
     pthread_t* threads;
     int threadCount;
     Task* head;
@@ -18,7 +19,9 @@ typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
     volatile bool shutdown;
-} ThreadPool;
+};
+
+typedef struct ThreadPool ThreadPool;
 
 void threadPoolInit(ThreadPool* pool, int numThreads);
 void threadPoolSubmit(ThreadPool* pool, void (*function)(void*), void* arg);

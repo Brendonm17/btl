@@ -1,44 +1,348 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include "compiler.h"
 #include "memory.h"
 #include "object.h"
 #include "vm.h"
+#include "runtime.h"
 
-// ============================================
+// ============================================================================
+// CORE ALLOCATION - Runtime Level (before VM exists)
+// ============================================================================
+
+void* btl_runtime_alloc(BTLRuntime* runtime, void* pointer, size_t oldSize, size_t newSize) {
+    // Free case
+    if (newSize == 0) {
+        if (pointer != NULL) {
+            if (runtime != NULL && runtime->config.free != NULL) {
+                runtime->config.free(pointer, oldSize, runtime->config.user_data);
+            } else {
+                free(pointer);
+            }
+        }
+        return NULL;
+    }
+
+    void* result = NULL;
+
+    if (runtime != NULL) {
+        BTLConfig* cfg = &runtime->config;
+
+        if (pointer == NULL) {
+            // Fresh allocation
+            if (cfg->alloc != NULL) {
+                result = cfg->alloc(newSize, cfg->user_data);
+            } else {
+                result = malloc(newSize);
+            }
+        } else {
+            // Reallocation
+            if (cfg->realloc != NULL) {
+                result = cfg->realloc(pointer, oldSize, newSize, cfg->user_data);
+            } else if (cfg->alloc != NULL && cfg->free != NULL) {
+                // Simulate realloc
+                result = cfg->alloc(newSize, cfg->user_data);
+                if (result != NULL) {
+                    size_t copySize = oldSize < newSize ? oldSize : newSize;
+                    memcpy(result, pointer, copySize);
+                    cfg->free(pointer, oldSize, cfg->user_data);
+                }
+            } else {
+                result = realloc(pointer, newSize);
+            }
+        }
+    } else {
+        // No runtime, use system allocator
+        result = realloc(pointer, newSize);
+    }
+
+    if (result == NULL && newSize > 0) {
+        fprintf(stderr, "btl: out of memory\n");
+        exit(1);
+    }
+
+    return result;
+}
+
+// ============================================================================
+// CORE ALLOCATION - VM Level (most common)
+// ============================================================================
+
+void* btl_realloc(VM* vm, void* pointer, size_t oldSize, size_t newSize) {
+    // Update VM allocation tracking
+    if (vm != NULL) {
+        vm->bytesAllocated += newSize - oldSize;
+
+        // Check max heap size (if configured and this is a growth)
+        if (newSize > oldSize && vm->runtime != NULL) {
+            size_t maxHeap = vm->runtime->config.max_heap_size;
+            if (maxHeap > 0 && vm->bytesAllocated > maxHeap) {
+                // Try GC first
+                if (vm->gcInhibit == 0 && !vm->inMinorGC) {
+                    majorGC(vm);
+                    // Check again after GC
+                    if (vm->bytesAllocated > maxHeap) {
+                        btl_error(vm, "btl: max heap size exceeded\n");
+                        exit(1);
+                    }
+                }
+            }
+        }
+    }
+
+#ifdef DEBUG_STRESS_GC
+    static int stressCounter = 0;
+    if (vm != NULL && newSize > oldSize && vm->gcInhibit == 0 && !vm->inMinorGC) {
+        stressCounter++;
+        if (stressCounter >= 10) {
+            stressCounter = 0;
+            if (vm->nurseryAllocated > 0 && vm->nursery.fromSpace != NULL) {
+                minorGC(vm);
+            }
+        }
+    }
+#endif
+
+    // Trigger major GC based on old gen growth
+    if (vm != NULL && newSize > oldSize && !vm->inMinorGC && vm->gcInhibit == 0) {
+        if (vm->bytesAllocated > vm->nextGC) {
+            majorGC(vm);
+        }
+    }
+
+    // Route through runtime allocator
+    BTLRuntime* runtime = (vm != NULL) ? vm->runtime : NULL;
+    return btl_runtime_alloc(runtime, pointer, oldSize, newSize);
+}
+
+// ============================================================================
+// I/O FUNCTIONS - Runtime Level
+// ============================================================================
+
+void btl_runtime_print(BTLRuntime* runtime, const char* text) {
+    if (runtime != NULL && runtime->config.print != NULL) {
+        runtime->config.print(text, runtime->config.user_data);
+    } else {
+        printf("%s", text);
+        fflush(stdout);
+    }
+}
+
+void btl_runtime_error(BTLRuntime* runtime, const char* text) {
+    if (runtime != NULL && runtime->config.error != NULL) {
+        runtime->config.error(text, runtime->config.user_data);
+    } else {
+        fprintf(stderr, "%s", text);
+        fflush(stderr);
+    }
+}
+
+// ============================================================================
+// I/O FUNCTIONS - VM Level
+// ============================================================================
+
+void btl_print(VM* vm, const char* text) {
+    BTLRuntime* runtime = (vm != NULL) ? vm->runtime : NULL;
+    btl_runtime_print(runtime, text);
+}
+
+void btl_println(VM* vm, const char* text) {
+    btl_print(vm, text);
+    btl_print(vm, "\n");
+}
+
+void btl_vprintf(VM* vm, const char* format, va_list args) {
+    char buffer[4096];
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    btl_print(vm, buffer);
+}
+
+void btl_printf(VM* vm, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    btl_vprintf(vm, format, args);
+    va_end(args);
+}
+
+void btl_error(VM* vm, const char* text) {
+    BTLRuntime* runtime = (vm != NULL) ? vm->runtime : NULL;
+    btl_runtime_error(runtime, text);
+}
+
+void btl_errorln(VM* vm, const char* text) {
+    btl_error(vm, text);
+    btl_error(vm, "\n");
+}
+
+void btl_verrorf(VM* vm, const char* format, va_list args) {
+    char buffer[4096];
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    btl_error(vm, buffer);
+}
+
+void btl_errorf(VM* vm, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    btl_verrorf(vm, format, args);
+    va_end(args);
+}
+
+// ============================================================================
+// VALUE PRINTING
+// ============================================================================
+
+void btl_print_value(VM* vm, Value value) {
+    if (IS_BOOL(value)) {
+        btl_print(vm, AS_BOOL(value) ? "true" : "false");
+    } else if (IS_NULL(value)) {
+        btl_print(vm, "null");
+    } else if (IS_NUMBER(value)) {
+        btl_printf(vm, "%g", AS_NUMBER(value));
+    } else if (IS_OBJ(value)) {
+        switch (OBJ_TYPE(value)) {
+        case OBJ_STRING:
+            btl_print(vm, AS_CSTRING(value));
+            break;
+        case OBJ_FUNCTION: {
+            ObjFunction* func = AS_FUNCTION(value);
+            if (func->name == NULL) {
+                btl_print(vm, "<script>");
+            } else {
+                btl_printf(vm, "<func %s>", func->name->chars);
+            }
+            break;
+        }
+        case OBJ_CLOSURE: {
+            ObjFunction* func = AS_CLOSURE(value)->function;
+            if (func->name == NULL) {
+                btl_print(vm, "<script>");
+            } else {
+                btl_printf(vm, "<func %s>", func->name->chars);
+            }
+            break;
+        }
+        case OBJ_CLASS:
+            btl_printf(vm, "<class %s>", AS_CLASS(value)->name->chars);
+            break;
+        case OBJ_INSTANCE:
+            btl_printf(vm, "<%s instance>", AS_INSTANCE(value)->klass->name->chars);
+            break;
+        case OBJ_BOUND_METHOD: {
+            ObjFunction* func = AS_BOUND_METHOD(value)->method->function;
+            if (func->name == NULL) {
+                btl_print(vm, "<bound method>");
+            } else {
+                btl_printf(vm, "<bound method %s>", func->name->chars);
+            }
+            break;
+        }
+        case OBJ_LIST:
+            btl_print(vm, "<list>");
+            break;
+        case OBJ_TABLE:
+            btl_print(vm, "<table>");
+            break;
+        case OBJ_MODULE:
+            btl_printf(vm, "<module %s>", AS_MODULE(value)->name->chars);
+            break;
+        case OBJ_NATIVE:
+            btl_print(vm, "<native func>");
+            break;
+        case OBJ_NATIVE_CLASS:
+            btl_printf(vm, "<native class %s>", AS_NATIVE_CLASS(value)->name->chars);
+            break;
+        case OBJ_NATIVE_MODULE:
+            btl_printf(vm, "<native module %s>", AS_NATIVE_MODULE(value)->name->chars);
+            break;
+        case OBJ_NATIVE_METHOD:
+            btl_printf(vm, "<native method %s>", AS_NATIVE_METHOD(value)->name->chars);
+            break;
+        case OBJ_FUTURE:
+            btl_print(vm, "<future>");
+            break;
+        case OBJ_ACTOR: {
+            ObjActor* actor = AS_ACTOR(value);
+            if (actor->alive) {
+                btl_printf(vm, "<actor:%s>", actor->klass->name->chars);
+            } else {
+                btl_print(vm, "<actor:dead>");
+            }
+            break;
+        }
+        case OBJ_UPVALUE:
+            btl_print(vm, "<upvalue>");
+            break;
+        default:
+            btl_print(vm, "<object>");
+            break;
+        }
+    }
+}
+
+void btl_error_value(VM* vm, Value value) {
+    if (IS_BOOL(value)) {
+        btl_error(vm, AS_BOOL(value) ? "true" : "false");
+    } else if (IS_NULL(value)) {
+        btl_error(vm, "null");
+    } else if (IS_NUMBER(value)) {
+        btl_errorf(vm, "%g", AS_NUMBER(value));
+    } else if (IS_OBJ(value)) {
+        switch (OBJ_TYPE(value)) {
+        case OBJ_STRING:
+            btl_error(vm, AS_CSTRING(value));
+            break;
+        default:
+            btl_error(vm, "<object>");
+            break;
+        }
+    }
+}
+
+// ============================================================================
 // NURSERY MANAGEMENT
-// ============================================
+// ============================================================================
 
-void initNursery(Nursery* nursery) {
-    nursery->size = NURSERY_SIZE;
-    nursery->fromSpace = (uint8_t*) malloc(NURSERY_SIZE);
-    nursery->toSpace = (uint8_t*) malloc(NURSERY_SIZE);
+void initNursery(VM* vm, Nursery* nursery) {
+    // Get nursery size from config, or use default
+    size_t size = DEFAULT_NURSERY_SIZE;
+    if (vm->runtime != NULL && vm->runtime->config.nursery_size > 0) {
+        size = vm->runtime->config.nursery_size;
+    }
+
+    nursery->size = size;
+    // Use runtime allocator for nursery spaces
+    nursery->fromSpace = (uint8_t*) btl_realloc(vm, NULL, 0, size);
+    nursery->toSpace = (uint8_t*) btl_realloc(vm, NULL, 0, size);
     nursery->allocPtr = nursery->fromSpace;
-    nursery->limit = nursery->fromSpace + NURSERY_SIZE;
+    nursery->limit = nursery->fromSpace + size;
 
     if (nursery->fromSpace == NULL || nursery->toSpace == NULL) {
-        fprintf(stderr, "Failed to allocate nursery\n");
+        btl_error(vm, "Failed to allocate nursery\n");
         exit(1);
     }
 }
 
-void freeNursery(Nursery* nursery) {
-    free(nursery->fromSpace);
-    free(nursery->toSpace);
+void freeNursery(VM* vm, Nursery* nursery) {
+    if (nursery->fromSpace != NULL) {
+        btl_realloc(vm, nursery->fromSpace, nursery->size, 0);
+    }
+    if (nursery->toSpace != NULL) {
+        btl_realloc(vm, nursery->toSpace, nursery->size, 0);
+    }
     nursery->fromSpace = NULL;
     nursery->toSpace = NULL;
     nursery->allocPtr = NULL;
     nursery->limit = NULL;
+    nursery->size = 0;
 }
 
-// Fast bump allocation in nursery
 static void* nurseryAlloc(VM* vm, size_t size) {
-    // Align to 8 bytes
     size = (size + 7) & ~7;
 
     if (vm->nursery.allocPtr + size > vm->nursery.limit) {
-        return NULL;  // Nursery full
+        return NULL;
     }
 
     void* ptr = vm->nursery.allocPtr;
@@ -47,9 +351,9 @@ static void* nurseryAlloc(VM* vm, size_t size) {
     return ptr;
 }
 
-// ============================================
+// ============================================================================
 // REMEMBERED SET
-// ============================================
+// ============================================================================
 
 void initRememberedSet(RememberedSet* set) {
     set->entries = NULL;
@@ -67,14 +371,12 @@ void freeRememberedSet(VM* vm, RememberedSet* set) {
 }
 
 void rememberObject(VM* vm, Obj* object) {
-    // Check if already in remembered set
     for (int i = 0; i < vm->rememberedSet.count; i++) {
         if (vm->rememberedSet.entries[i].object == object) {
             return;
         }
     }
 
-    // Grow if needed
     if (vm->rememberedSet.count >= vm->rememberedSet.capacity) {
         int oldCapacity = vm->rememberedSet.capacity;
         vm->rememberedSet.capacity = GROW_CAPACITY(oldCapacity);
@@ -87,9 +389,9 @@ void rememberObject(VM* vm, Obj* object) {
     vm->rememberedSet.count++;
 }
 
-// ============================================
-// GC INHIBIT HELPERS
-// ============================================
+// ============================================================================
+// GC INHIBIT
+// ============================================================================
 
 void gcInhibitStart(VM* vm) {
     vm->gcInhibit++;
@@ -99,28 +401,24 @@ void gcInhibitEnd(VM* vm) {
     vm->gcInhibit--;
 }
 
-// ============================================
+// ============================================================================
 // WRITE BARRIER
-// ============================================
+// ============================================================================
 
 void writeBarrier(VM* vm, Obj* container, Value value) {
     if (!IS_OBJ(value)) return;
-
     Obj* child = AS_OBJ(value);
-
-    // If old object points to nursery object, remember it
     if (container->generation == GEN_OLD && child->generation == GEN_NURSERY) {
         rememberObject(vm, container);
     }
 }
 
-// ============================================
+// ============================================================================
 // OBJECT ALLOCATION
-// ============================================
+// ============================================================================
 
-// Allocate directly in old generation (bypass nursery)
 static Obj* allocateInOldGen(VM* vm, size_t size, ObjType type) {
-    Obj* object = (Obj*) reallocate(vm, NULL, 0, size);
+    Obj* object = (Obj*) btl_realloc(vm, NULL, 0, size);
     object->type = type;
     object->isMarked = false;
     object->generation = GEN_OLD;
@@ -131,24 +429,20 @@ static Obj* allocateInOldGen(VM* vm, size_t size, ObjType type) {
 }
 
 void* allocateObject(VM* vm, size_t size, ObjType type) {
-    // During GC, allocate directly to old gen to avoid complications
     if (vm->inMinorGC) {
         return allocateInOldGen(vm, size, type);
     }
 
-    // Large objects go directly to old generation
-    if (size >= LARGE_OBJECT_SIZE) {
+    // Calculate large object threshold based on actual nursery size
+    size_t largeObjSize = LARGE_OBJECT_SIZE_FOR(vm->nursery.size);
+    if (size >= largeObjSize) {
         return allocateInOldGen(vm, size, type);
     }
 
-    // Strings go directly to old generation because they're interned
-    // and moving them would corrupt the intern table's hash positions
     if (type == OBJ_STRING) {
         return allocateInOldGen(vm, size, type);
     }
 
-    // These types are often shared across actor VMs or are long-lived,
-    // so allocate them directly to old gen to avoid promotion issues
     if (type == OBJ_MODULE || type == OBJ_CLASS || type == OBJ_FUNCTION ||
         type == OBJ_CLOSURE || type == OBJ_NATIVE || type == OBJ_NATIVE_CLASS ||
         type == OBJ_NATIVE_MODULE || type == OBJ_NATIVE_METHOD ||
@@ -156,24 +450,19 @@ void* allocateObject(VM* vm, size_t size, ObjType type) {
         return allocateInOldGen(vm, size, type);
     }
 
-    // Try nursery first
     Obj* object = (Obj*) nurseryAlloc(vm, size);
 
     if (object == NULL) {
-        // Nursery full - run minor GC only if not inhibited
         if (vm->gcInhibit == 0) {
             minorGC(vm);
-            // Try again
             object = (Obj*) nurseryAlloc(vm, size);
         }
 
         if (object == NULL) {
-            // Still no room (or GC was inhibited) - fall back to old generation
             return allocateInOldGen(vm, size, type);
         }
     }
 
-    // Initialize object header
     object->type = type;
     object->isMarked = false;
     object->generation = GEN_NURSERY;
@@ -183,44 +472,9 @@ void* allocateObject(VM* vm, size_t size, ObjType type) {
     return object;
 }
 
-void* reallocate(VM* vm, void* pointer, size_t oldSize, size_t newSize) {
-    vm->bytesAllocated += newSize - oldSize;
-
-#ifdef DEBUG_STRESS_GC
-    // Stress test: GC periodically, but only if not inhibited
-    // Using a counter to avoid GC on literally every allocation which is too aggressive
-    static int stressCounter = 0;
-    if (newSize > oldSize && vm->gcInhibit == 0 && !vm->inMinorGC) {
-        stressCounter++;
-        if (stressCounter >= 10) {  // GC every 10 allocations
-            stressCounter = 0;
-            if (vm->nurseryAllocated > 0 && vm->nursery.fromSpace != NULL) {
-                minorGC(vm);
-            }
-        }
-    }
-#endif
-
-    // Trigger major GC based on old gen growth
-    if (newSize > oldSize && !vm->inMinorGC && vm->gcInhibit == 0) {
-        if (vm->bytesAllocated > vm->nextGC) {
-            majorGC(vm);
-        }
-    }
-
-    if (newSize == 0) {
-        free(pointer);
-        return NULL;
-    }
-
-    void* result = realloc(pointer, newSize);
-    if (result == NULL) exit(1);
-    return result;
-}
-
-// ============================================
-// MARKING FUNCTIONS
-// ============================================
+// ============================================================================
+// MARKING
+// ============================================================================
 
 void markObject(VM* vm, Obj* object) {
     if (object == NULL) return;
@@ -228,10 +482,12 @@ void markObject(VM* vm, Obj* object) {
 
     object->isMarked = true;
 
-    // Add to gray stack
     if (vm->grayCapacity < vm->grayCount + 1) {
         vm->grayCapacity = GROW_CAPACITY(vm->grayCapacity);
-        vm->grayStack = (Obj**) realloc(vm->grayStack, sizeof(Obj*) * vm->grayCapacity);
+        // Gray stack uses runtime allocator
+        vm->grayStack = (Obj**) btl_realloc(vm, vm->grayStack,
+            sizeof(Obj*) * (vm->grayCapacity / 2),
+            sizeof(Obj*) * vm->grayCapacity);
         if (vm->grayStack == NULL) exit(1);
     }
 
@@ -269,10 +525,9 @@ static void blackenObject(VM* vm, Obj* object) {
         markObject(vm, (Obj*) b->method);
         break;
     }
-    case OBJ_CLASS: {
+    case OBJ_CLASS:
         markClass(vm, (ObjClass*) object);
         break;
-    }
     case OBJ_CLOSURE: {
         ObjClosure* closure = (ObjClosure*) object;
         markObject(vm, (Obj*) closure->function);
@@ -322,11 +577,9 @@ static void blackenObject(VM* vm, Obj* object) {
     case OBJ_TABLE:
         markTable(vm, &((ObjTable*) object)->table);
         break;
-    case OBJ_NATIVE_METHOD: {
-        ObjNativeMethod* method = (ObjNativeMethod*) object;
-        markObject(vm, (Obj*) method->name);
+    case OBJ_NATIVE_METHOD:
+        markObject(vm, (Obj*) ((ObjNativeMethod*) object)->name);
         break;
-    }
     case OBJ_NATIVE_CLASS: {
         ObjNativeClass* klass = (ObjNativeClass*) object;
         markObject(vm, (Obj*) klass->name);
@@ -339,11 +592,9 @@ static void blackenObject(VM* vm, Obj* object) {
         markTable(vm, &module->globals);
         break;
     }
-    case OBJ_FUTURE: {
-        ObjFuture* future = (ObjFuture*) object;
-        markValue(vm, future->result);
+    case OBJ_FUTURE:
+        markValue(vm, ((ObjFuture*) object)->result);
         break;
-    }
     case OBJ_ACTOR: {
         ObjActor* actor = (ObjActor*) object;
         markValue(vm, actor->instance);
@@ -355,17 +606,15 @@ static void blackenObject(VM* vm, Obj* object) {
     }
 }
 
-// ============================================
-// MINOR GC - Simplified approach
-// ============================================
+// ============================================================================
+// MINOR GC
+// ============================================================================
 
-// Promote a single nursery object to old generation
 static Obj* promoteObject(VM* vm, Obj* object) {
     if (object == NULL) return NULL;
     if (object->generation != GEN_NURSERY) return object;
     if (object->forwarding != NULL) return object->forwarding;
 
-    // Calculate size
     size_t size;
     switch (object->type) {
     case OBJ_BOUND_METHOD: size = sizeof(ObjBoundMethod); break;
@@ -391,48 +640,37 @@ static Obj* promoteObject(VM* vm, Obj* object) {
     default: size = sizeof(Obj); break;
     }
 
-    // Allocate copy in old gen
-    Obj* copy = (Obj*) malloc(size);
+    // Use runtime allocator for promoted objects
+    Obj* copy = (Obj*) btl_realloc(vm, NULL, 0, size);
     if (copy == NULL) exit(1);
 
-    // Copy object header and data
     memcpy(copy, object, size);
 
-    // Update metadata
     copy->generation = GEN_OLD;
     copy->next = vm->objects;
     copy->forwarding = NULL;
     copy->isMarked = false;
     vm->objects = copy;
 
-    // Set forwarding pointer in original
     object->forwarding = copy;
-
-    vm->bytesAllocated += size;
     vm->promotedBytes += size;
 
-    // CRITICAL: Duplicate external allocations so the promoted copy owns its own memory
-    // The nursery copy's external pointers will become invalid when nursery resets,
-    // but that's okay since we won't access them again.
+    // Duplicate external allocations
     switch (object->type) {
     case OBJ_CLOSURE: {
         ObjClosure* oldClosure = (ObjClosure*) object;
         ObjClosure* newClosure = (ObjClosure*) copy;
 
-        // Duplicate field ICs
         if (oldClosure->fieldICs != NULL && oldClosure->function->fieldICCount > 0) {
-            newClosure->fieldICs = malloc(sizeof(FieldIC) * oldClosure->function->fieldICCount);
-            memcpy(newClosure->fieldICs, oldClosure->fieldICs,
-                sizeof(FieldIC) * oldClosure->function->fieldICCount);
-            vm->bytesAllocated += sizeof(FieldIC) * oldClosure->function->fieldICCount;
+            size_t icSize = sizeof(FieldIC) * oldClosure->function->fieldICCount;
+            newClosure->fieldICs = btl_realloc(vm, NULL, 0, icSize);
+            memcpy(newClosure->fieldICs, oldClosure->fieldICs, icSize);
         }
 
-        // Duplicate method ICs
         if (oldClosure->methodICs != NULL && oldClosure->function->methodICCount > 0) {
-            newClosure->methodICs = malloc(sizeof(MethodIC) * oldClosure->function->methodICCount);
-            memcpy(newClosure->methodICs, oldClosure->methodICs,
-                sizeof(MethodIC) * oldClosure->function->methodICCount);
-            vm->bytesAllocated += sizeof(MethodIC) * oldClosure->function->methodICCount;
+            size_t icSize = sizeof(MethodIC) * oldClosure->function->methodICCount;
+            newClosure->methodICs = btl_realloc(vm, NULL, 0, icSize);
+            memcpy(newClosure->methodICs, oldClosure->methodICs, icSize);
         }
         break;
     }
@@ -440,27 +678,21 @@ static Obj* promoteObject(VM* vm, Obj* object) {
         ObjFunction* oldFunc = (ObjFunction*) object;
         ObjFunction* newFunc = (ObjFunction*) copy;
 
-        // Duplicate chunk's code array
         if (oldFunc->chunk.code != NULL && oldFunc->chunk.capacity > 0) {
-            newFunc->chunk.code = malloc(oldFunc->chunk.capacity);
+            newFunc->chunk.code = btl_realloc(vm, NULL, 0, oldFunc->chunk.capacity);
             memcpy(newFunc->chunk.code, oldFunc->chunk.code, oldFunc->chunk.capacity);
-            vm->bytesAllocated += oldFunc->chunk.capacity;
         }
 
-        // Duplicate chunk's lines array (same capacity as code)
         if (oldFunc->chunk.lines != NULL && oldFunc->chunk.capacity > 0) {
-            newFunc->chunk.lines = malloc(sizeof(int) * oldFunc->chunk.capacity);
-            memcpy(newFunc->chunk.lines, oldFunc->chunk.lines,
-                sizeof(int) * oldFunc->chunk.capacity);
-            vm->bytesAllocated += sizeof(int) * oldFunc->chunk.capacity;
+            size_t lineSize = sizeof(int) * oldFunc->chunk.capacity;
+            newFunc->chunk.lines = btl_realloc(vm, NULL, 0, lineSize);
+            memcpy(newFunc->chunk.lines, oldFunc->chunk.lines, lineSize);
         }
 
-        // Duplicate chunk's constants array
         if (oldFunc->chunk.constants.values != NULL && oldFunc->chunk.constants.capacity > 0) {
-            newFunc->chunk.constants.values = malloc(sizeof(Value) * oldFunc->chunk.constants.capacity);
-            memcpy(newFunc->chunk.constants.values, oldFunc->chunk.constants.values,
-                sizeof(Value) * oldFunc->chunk.constants.capacity);
-            vm->bytesAllocated += sizeof(Value) * oldFunc->chunk.constants.capacity;
+            size_t constSize = sizeof(Value) * oldFunc->chunk.constants.capacity;
+            newFunc->chunk.constants.values = btl_realloc(vm, NULL, 0, constSize);
+            memcpy(newFunc->chunk.constants.values, oldFunc->chunk.constants.values, constSize);
         }
         break;
     }
@@ -468,12 +700,10 @@ static Obj* promoteObject(VM* vm, Obj* object) {
         ObjInstance* oldInst = (ObjInstance*) object;
         ObjInstance* newInst = (ObjInstance*) copy;
 
-        // Duplicate fields array
         if (oldInst->fields != NULL && oldInst->klass->fieldCount > 0) {
-            int fieldSize = oldInst->klass->fieldCount > 0 ? oldInst->klass->fieldCount : 1;
-            newInst->fields = malloc(sizeof(Value) * fieldSize);
-            memcpy(newInst->fields, oldInst->fields, sizeof(Value) * fieldSize);
-            vm->bytesAllocated += sizeof(Value) * fieldSize;
+            size_t fieldSize = sizeof(Value) * oldInst->klass->fieldCount;
+            newInst->fields = btl_realloc(vm, NULL, 0, fieldSize);
+            memcpy(newInst->fields, oldInst->fields, fieldSize);
         }
         break;
     }
@@ -481,12 +711,10 @@ static Obj* promoteObject(VM* vm, Obj* object) {
         ObjList* oldList = (ObjList*) object;
         ObjList* newList = (ObjList*) copy;
 
-        // Duplicate items array
         if (oldList->items.values != NULL && oldList->items.capacity > 0) {
-            newList->items.values = malloc(sizeof(Value) * oldList->items.capacity);
-            memcpy(newList->items.values, oldList->items.values,
-                sizeof(Value) * oldList->items.capacity);
-            vm->bytesAllocated += sizeof(Value) * oldList->items.capacity;
+            size_t itemSize = sizeof(Value) * oldList->items.capacity;
+            newList->items.values = btl_realloc(vm, NULL, 0, itemSize);
+            memcpy(newList->items.values, oldList->items.values, itemSize);
         }
         break;
     }
@@ -494,28 +722,22 @@ static Obj* promoteObject(VM* vm, Obj* object) {
         ObjClass* oldClass = (ObjClass*) object;
         ObjClass* newClass = (ObjClass*) copy;
 
-        // Duplicate methods array
         if (oldClass->methods != NULL && oldClass->methodCapacity > 0) {
-            newClass->methods = malloc(sizeof(MethodEntry) * oldClass->methodCapacity);
-            memcpy(newClass->methods, oldClass->methods,
-                sizeof(MethodEntry) * oldClass->methodCapacity);
-            vm->bytesAllocated += sizeof(MethodEntry) * oldClass->methodCapacity;
+            size_t methodSize = sizeof(MethodEntry) * oldClass->methodCapacity;
+            newClass->methods = btl_realloc(vm, NULL, 0, methodSize);
+            memcpy(newClass->methods, oldClass->methods, methodSize);
         }
 
-        // Duplicate methodIndices table
         if (oldClass->methodIndices.entries != NULL && oldClass->methodIndices.capacity > 0) {
-            newClass->methodIndices.entries = malloc(sizeof(Entry) * oldClass->methodIndices.capacity);
-            memcpy(newClass->methodIndices.entries, oldClass->methodIndices.entries,
-                sizeof(Entry) * oldClass->methodIndices.capacity);
-            vm->bytesAllocated += sizeof(Entry) * oldClass->methodIndices.capacity;
+            size_t entrySize = sizeof(Entry) * oldClass->methodIndices.capacity;
+            newClass->methodIndices.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newClass->methodIndices.entries, oldClass->methodIndices.entries, entrySize);
         }
 
-        // Duplicate fieldIndices table
         if (oldClass->fieldIndices.entries != NULL && oldClass->fieldIndices.capacity > 0) {
-            newClass->fieldIndices.entries = malloc(sizeof(Entry) * oldClass->fieldIndices.capacity);
-            memcpy(newClass->fieldIndices.entries, oldClass->fieldIndices.entries,
-                sizeof(Entry) * oldClass->fieldIndices.capacity);
-            vm->bytesAllocated += sizeof(Entry) * oldClass->fieldIndices.capacity;
+            size_t entrySize = sizeof(Entry) * oldClass->fieldIndices.capacity;
+            newClass->fieldIndices.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newClass->fieldIndices.entries, oldClass->fieldIndices.entries, entrySize);
         }
         break;
     }
@@ -523,28 +745,22 @@ static Obj* promoteObject(VM* vm, Obj* object) {
         ObjModule* oldMod = (ObjModule*) object;
         ObjModule* newMod = (ObjModule*) copy;
 
-        // Duplicate globalNames table
         if (oldMod->globalNames.entries != NULL && oldMod->globalNames.capacity > 0) {
-            newMod->globalNames.entries = malloc(sizeof(Entry) * oldMod->globalNames.capacity);
-            memcpy(newMod->globalNames.entries, oldMod->globalNames.entries,
-                sizeof(Entry) * oldMod->globalNames.capacity);
-            vm->bytesAllocated += sizeof(Entry) * oldMod->globalNames.capacity;
+            size_t entrySize = sizeof(Entry) * oldMod->globalNames.capacity;
+            newMod->globalNames.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newMod->globalNames.entries, oldMod->globalNames.entries, entrySize);
         }
 
-        // Duplicate globalValues array
         if (oldMod->globalValues.values != NULL && oldMod->globalValues.capacity > 0) {
-            newMod->globalValues.values = malloc(sizeof(Value) * oldMod->globalValues.capacity);
-            memcpy(newMod->globalValues.values, oldMod->globalValues.values,
-                sizeof(Value) * oldMod->globalValues.capacity);
-            vm->bytesAllocated += sizeof(Value) * oldMod->globalValues.capacity;
+            size_t valSize = sizeof(Value) * oldMod->globalValues.capacity;
+            newMod->globalValues.values = btl_realloc(vm, NULL, 0, valSize);
+            memcpy(newMod->globalValues.values, oldMod->globalValues.values, valSize);
         }
 
-        // Duplicate classInfo table
         if (oldMod->classInfo.entries != NULL && oldMod->classInfo.capacity > 0) {
-            newMod->classInfo.entries = malloc(sizeof(Entry) * oldMod->classInfo.capacity);
-            memcpy(newMod->classInfo.entries, oldMod->classInfo.entries,
-                sizeof(Entry) * oldMod->classInfo.capacity);
-            vm->bytesAllocated += sizeof(Entry) * oldMod->classInfo.capacity;
+            size_t entrySize = sizeof(Entry) * oldMod->classInfo.capacity;
+            newMod->classInfo.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newMod->classInfo.entries, oldMod->classInfo.entries, entrySize);
         }
         break;
     }
@@ -552,12 +768,10 @@ static Obj* promoteObject(VM* vm, Obj* object) {
         ObjTable* oldTable = (ObjTable*) object;
         ObjTable* newTable = (ObjTable*) copy;
 
-        // Duplicate table entries
         if (oldTable->table.entries != NULL && oldTable->table.capacity > 0) {
-            newTable->table.entries = malloc(sizeof(Entry) * oldTable->table.capacity);
-            memcpy(newTable->table.entries, oldTable->table.entries,
-                sizeof(Entry) * oldTable->table.capacity);
-            vm->bytesAllocated += sizeof(Entry) * oldTable->table.capacity;
+            size_t entrySize = sizeof(Entry) * oldTable->table.capacity;
+            newTable->table.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newTable->table.entries, oldTable->table.entries, entrySize);
         }
         break;
     }
@@ -565,12 +779,10 @@ static Obj* promoteObject(VM* vm, Obj* object) {
         ObjNativeClass* oldNC = (ObjNativeClass*) object;
         ObjNativeClass* newNC = (ObjNativeClass*) copy;
 
-        // Duplicate methods table
         if (oldNC->methods.entries != NULL && oldNC->methods.capacity > 0) {
-            newNC->methods.entries = malloc(sizeof(Entry) * oldNC->methods.capacity);
-            memcpy(newNC->methods.entries, oldNC->methods.entries,
-                sizeof(Entry) * oldNC->methods.capacity);
-            vm->bytesAllocated += sizeof(Entry) * oldNC->methods.capacity;
+            size_t entrySize = sizeof(Entry) * oldNC->methods.capacity;
+            newNC->methods.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newNC->methods.entries, oldNC->methods.entries, entrySize);
         }
         break;
     }
@@ -578,24 +790,20 @@ static Obj* promoteObject(VM* vm, Obj* object) {
         ObjNativeModule* oldNM = (ObjNativeModule*) object;
         ObjNativeModule* newNM = (ObjNativeModule*) copy;
 
-        // Duplicate globals table
         if (oldNM->globals.entries != NULL && oldNM->globals.capacity > 0) {
-            newNM->globals.entries = malloc(sizeof(Entry) * oldNM->globals.capacity);
-            memcpy(newNM->globals.entries, oldNM->globals.entries,
-                sizeof(Entry) * oldNM->globals.capacity);
-            vm->bytesAllocated += sizeof(Entry) * oldNM->globals.capacity;
+            size_t entrySize = sizeof(Entry) * oldNM->globals.capacity;
+            newNM->globals.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newNM->globals.entries, oldNM->globals.entries, entrySize);
         }
         break;
     }
     default:
-        // Other types don't have external allocations
         break;
     }
 
     return copy;
 }
 
-// Update a value, promoting nursery objects
 static Value promoteValue(VM* vm, Value value) {
     if (!IS_OBJ(value)) return value;
     Obj* obj = AS_OBJ(value);
@@ -603,7 +811,6 @@ static Value promoteValue(VM* vm, Value value) {
     return OBJ_VAL(promoted);
 }
 
-// Scan and update references in an object
 static void scanObject(VM* vm, Obj* object) {
     if (object == NULL) return;
 
@@ -623,7 +830,6 @@ static void scanObject(VM* vm, Obj* object) {
                 klass->methods[i].name = (ObjString*) promoteObject(vm, (Obj*) klass->methods[i].name);
             }
         }
-        // Update table keys
         if (klass->methodIndices.entries != NULL) {
             for (int i = 0; i < klass->methodIndices.capacity; i++) {
                 Entry* entry = &klass->methodIndices.entries[i];
@@ -769,71 +975,41 @@ static void scanObject(VM* vm, Obj* object) {
     }
     case OBJ_NATIVE:
     case OBJ_STRING:
-        // No references to update
         break;
     }
 }
 
 void minorGC(VM* vm) {
     if (vm->inMinorGC) return;
-
-    // Don't GC if nursery is empty or not initialized
-    if (vm->nurseryAllocated == 0 || vm->nursery.fromSpace == NULL) {
-        return;
-    }
-
-    // Don't GC if inhibited (during critical object construction)
-    if (vm->gcInhibit > 0) {
-        return;
-}
-
+    if (vm->nurseryAllocated == 0 || vm->nursery.fromSpace == NULL) return;
+    if (vm->gcInhibit > 0) return;
+    vm->gcInhibit++;
     vm->inMinorGC = true;
 
 #ifdef DEBUG_LOG_GC
-    fprintf(stderr, "-- minor gc begin (nursery: %zu bytes)\n", vm->nurseryAllocated);
-    fflush(stderr);
+    btl_errorf(vm, "-- minor gc begin (nursery: %zu bytes)\n", vm->nurseryAllocated);
     size_t promotedBefore = vm->promotedBytes;
 #endif
 
-    // Remember where old gen list started - we'll only scan newly promoted objects
     Obj* oldGenHead = vm->objects;
 
-    // Phase 1: Promote all live objects from roots
-
-    // Stack roots
     for (Value* slot = vm->stack; slot < vm->stackTop; slot++) {
         *slot = promoteValue(vm, *slot);
     }
 
-    // Frame roots
     for (int i = 0; i < vm->frameCount; i++) {
         vm->frames[i].closure = (ObjClosure*) promoteObject(vm, (Obj*) vm->frames[i].closure);
     }
 
-    // Module roots
     if (vm->rootModule) {
         vm->rootModule = (ObjModule*) promoteObject(vm, (Obj*) vm->rootModule);
     }
 
-    // Native classes
-    if (vm->stringClass) {
-        vm->stringClass = (ObjNativeClass*) promoteObject(vm, (Obj*) vm->stringClass);
-    }
-    if (vm->numberClass) {
-        vm->numberClass = (ObjNativeClass*) promoteObject(vm, (Obj*) vm->numberClass);
-    }
-    if (vm->listClass) {
-        vm->listClass = (ObjNativeClass*) promoteObject(vm, (Obj*) vm->listClass);
-    }
-    if (vm->tableClass) {
-        vm->tableClass = (ObjNativeClass*) promoteObject(vm, (Obj*) vm->tableClass);
-    }
+    if (vm->stringClass) vm->stringClass = (ObjNativeClass*) promoteObject(vm, (Obj*) vm->stringClass);
+    if (vm->numberClass) vm->numberClass = (ObjNativeClass*) promoteObject(vm, (Obj*) vm->numberClass);
+    if (vm->listClass) vm->listClass = (ObjNativeClass*) promoteObject(vm, (Obj*) vm->listClass);
+    if (vm->tableClass) vm->tableClass = (ObjNativeClass*) promoteObject(vm, (Obj*) vm->tableClass);
 
-    // String table - strings are always in old gen, so no promotion needed
-    // But we still need to check in case any values reference nursery objects
-    // (though string table values are always NULL_VAL for interning)
-
-    // Modules table
     if (vm->modules.entries != NULL) {
         for (int i = 0; i < vm->modules.capacity; i++) {
             Entry* entry = &vm->modules.entries[i];
@@ -844,7 +1020,6 @@ void minorGC(VM* vm) {
         }
     }
 
-    // Native modules
     if (vm->nativeModules.entries != NULL) {
         for (int i = 0; i < vm->nativeModules.capacity; i++) {
             Entry* entry = &vm->nativeModules.entries[i];
@@ -855,65 +1030,54 @@ void minorGC(VM* vm) {
         }
     }
 
-    // Init string
     if (vm->initString) {
         vm->initString = (ObjString*) promoteObject(vm, (Obj*) vm->initString);
     }
 
-    // Last return value
     vm->lastReturnValue = promoteValue(vm, vm->lastReturnValue);
 
-    // Remembered set - scan old gen objects that point to nursery
     for (int i = 0; i < vm->rememberedSet.count; i++) {
         scanObject(vm, vm->rememberedSet.entries[i].object);
     }
 
-    // Phase 2: Scan promoted objects iteratively
-    // Use isMarked temporarily to track which objects we've scanned
-    // (We'll clear it before returning)
     bool madeProgress = true;
     while (madeProgress) {
         madeProgress = false;
         Obj* obj = vm->objects;
         while (obj != NULL && obj != oldGenHead) {
             if (!obj->isMarked) {
-                obj->isMarked = true;  // Mark as scanned
-                scanObject(vm, obj);   // May promote more objects
-                madeProgress = true;   // We did work, check for new objects
+                obj->isMarked = true;
+                scanObject(vm, obj);
+                madeProgress = true;
             }
             obj = obj->next;
         }
     }
 
-    // Clear the isMarked flags we set
     for (Obj* obj = vm->objects; obj != NULL && obj != oldGenHead; obj = obj->next) {
         obj->isMarked = false;
     }
 
-    // Phase 3: Reset nursery
     vm->nursery.allocPtr = vm->nursery.fromSpace;
     vm->nurseryAllocated = 0;
-
-    // Clear remembered set
     vm->rememberedSet.count = 0;
 
     vm->minorGCCount++;
     vm->inMinorGC = false;
+    vm->gcInhibit--;
 
 #ifdef DEBUG_LOG_GC
-    fprintf(stderr, "-- minor gc end (promoted %zu bytes)\n", vm->promotedBytes - promotedBefore);
-    fflush(stderr);
+    btl_errorf(vm, "-- minor gc end (promoted %zu bytes)\n", vm->promotedBytes - promotedBefore);
 #endif
 
-    // If old gen is getting big, trigger major GC
-    if (vm->bytesAllocated > vm->nextGC) {
-        majorGC(vm);
-    }
+    //if (vm->bytesAllocated > vm->nextGC) {
+    //    majorGC(vm);
+    //}
 }
 
-// ============================================
-// MAJOR GC (Old Generation Collection)
-// ============================================
+// ============================================================================
+// MAJOR GC
+// ============================================================================
 
 static void freeObject(VM* vm, Obj* object) {
     switch (object->type) {
@@ -933,15 +1097,13 @@ static void freeObject(VM* vm, Obj* object) {
     case OBJ_CLOSURE: {
         ObjClosure* closure = (ObjClosure*) object;
         if (closure->fieldICs != NULL) {
-            FREE_ARRAY(vm, FieldIC, closure->fieldICs,
-                closure->function->fieldICCount);
+            FREE_ARRAY(vm, FieldIC, closure->fieldICs, closure->function->fieldICCount);
         }
         if (closure->methodICs != NULL) {
-            FREE_ARRAY(vm, MethodIC, closure->methodICs,
-                closure->function->methodICCount);
+            FREE_ARRAY(vm, MethodIC, closure->methodICs, closure->function->methodICCount);
         }
         size_t size = sizeof(ObjClosure) + sizeof(RuntimeUpvalue) * closure->upvalueCount;
-        reallocate(vm, object, size, 0);
+        btl_realloc(vm, object, size, 0);
         break;
     }
     case OBJ_FUNCTION: {
@@ -998,10 +1160,9 @@ static void freeObject(VM* vm, Obj* object) {
         FREE(vm, ObjTable, object);
         break;
     }
-    case OBJ_NATIVE_METHOD: {
+    case OBJ_NATIVE_METHOD:
         FREE(vm, ObjNativeMethod, object);
         break;
-    }
     case OBJ_NATIVE_CLASS: {
         ObjNativeClass* klass = (ObjNativeClass*) object;
         freeTable(vm, &klass->methods);
@@ -1030,64 +1191,48 @@ static void freeObject(VM* vm, Obj* object) {
 }
 
 static void markRoots(VM* vm) {
-    // Stack roots
     for (Value* slot = vm->stack; slot < vm->stackTop; slot++) {
         markValue(vm, *slot);
     }
 
-    // Frame roots
     for (int i = 0; i < vm->frameCount; i++) {
         markObject(vm, (Obj*) vm->frames[i].closure);
     }
 
-    // Module registry
     markTable(vm, &vm->modules);
 
-    // Root module
     if (vm->rootModule) markObject(vm, (Obj*) vm->rootModule);
 
-    // Native classes and modules
     if (vm->stringClass != NULL) markObject(vm, (Obj*) vm->stringClass);
     if (vm->numberClass != NULL) markObject(vm, (Obj*) vm->numberClass);
     if (vm->listClass != NULL) markObject(vm, (Obj*) vm->listClass);
     if (vm->tableClass != NULL) markObject(vm, (Obj*) vm->tableClass);
     markTable(vm, &vm->nativeModules);
 
-    // Compiler roots
     markCompilerRoots(vm);
-
-    // Init string
     markObject(vm, (Obj*) vm->initString);
-
-    // Last return value
     markValue(vm, vm->lastReturnValue);
 }
 
 void majorGC(VM* vm) {
-    // Don't GC if inhibited
-    if (vm->gcInhibit > 0) {
-        return;
-    }
+    if (vm->gcInhibit > 0) return;
+
+    vm->gcInhibit++;
 
 #ifdef DEBUG_LOG_GC
-    fprintf(stderr, "-- major gc begin\n");
-    fflush(stderr);
+    btl_error(vm, "-- major gc begin\n");
     size_t before = vm->bytesAllocated;
 #endif
 
-    // Mark phase
     markRoots(vm);
 
-    // Trace references
     while (vm->grayCount > 0) {
         Obj* object = vm->grayStack[--vm->grayCount];
         blackenObject(vm, object);
     }
 
-    // Sweep weak references
     tableRemoveWhite(&vm->strings);
 
-    // Sweep phase
     Obj* previous = NULL;
     Obj* object = vm->objects;
     while (object != NULL) {
@@ -1105,29 +1250,37 @@ void majorGC(VM* vm) {
             }
             freeObject(vm, unreached);
         }
-            }
+    }
 
-    vm->nextGC = vm->bytesAllocated * GC_HEAP_GROW_FACTOR;
+    // Use grow factor from config, or default
+    float growFactor = DEFAULT_GC_HEAP_GROW_FACTOR;
+    if (vm->runtime != NULL && vm->runtime->config.gc_grow_factor > 0) {
+        growFactor = vm->runtime->config.gc_grow_factor;
+    }
+    vm->nextGC = (size_t) (vm->bytesAllocated * growFactor);
+
     vm->majorGCCount++;
 
 #ifdef DEBUG_LOG_GC
-    fprintf(stderr, "-- major gc end (collected %zu bytes, %zu -> %zu)\n",
+    btl_errorf(vm, "-- major gc end (collected %zu bytes, %zu -> %zu)\n",
         before - vm->bytesAllocated, before, vm->bytesAllocated);
-    fflush(stderr);
 #endif
-        }
+
+    vm->gcInhibit--;
+}
 
 void collectGarbage(VM* vm) {
-    if (vm->nurseryAllocated > NURSERY_THRESHOLD) {
+    size_t threshold = NURSERY_THRESHOLD_FOR(vm->nursery.size);
+    if (vm->nurseryAllocated > threshold) {
         minorGC(vm);
     } else {
         majorGC(vm);
     }
 }
 
-// ============================================
+// ============================================================================
 // CLEANUP
-// ============================================
+// ============================================================================
 
 void freeObjects(VM* vm) {
     Obj* object = vm->objects;
@@ -1137,7 +1290,11 @@ void freeObjects(VM* vm) {
         object = next;
     }
 
-    free(vm->grayStack);
-    freeNursery(&vm->nursery);
+    if (vm->grayStack != NULL) {
+        btl_realloc(vm, vm->grayStack, sizeof(Obj*) * vm->grayCapacity, 0);
+        vm->grayStack = NULL;
+    }
+
+    freeNursery(vm, &vm->nursery);
     freeRememberedSet(vm, &vm->rememberedSet);
 }

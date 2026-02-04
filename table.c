@@ -164,11 +164,13 @@ struct ObjString* tableFindString(Table* table, const char* chars, int length, u
 void tableRemoveWhite(Table* table) {
     for (int i = 0; i < table->capacity; i++) {
         Entry* entry = &table->entries[i];
-        // If the key is an object (string) and it isn't marked, delete it
         if (!IS_EMPTY(entry->key) && IS_OBJ(entry->key)) {
             Obj* obj = AS_OBJ(entry->key);
             if (!obj->isMarked) {
-                tableDelete(table, entry->key);
+                // Don't use tableDelete - just mark as truly empty
+                entry->key = EMPTY_VAL;
+                entry->value = NULL_VAL;
+                table->count--;
             }
         }
     }

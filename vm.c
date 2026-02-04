@@ -22,31 +22,9 @@
 #include "native_system.h"
 #include "native_math.h"
 #include "native_random.h"
+#include "runtime.h"
 
 InterpretResult runVM(VM* vm);
-
-// --- Global Thread Pool ---
-static ThreadPool globalThreadPool;
-static bool threadPoolInitialized = false;
-static pthread_mutex_t threadPoolInitMutex = PTHREAD_MUTEX_INITIALIZER;
-
-static void ensureThreadPool(void) {
-    pthread_mutex_lock(&threadPoolInitMutex);
-    if (!threadPoolInitialized) {
-        threadPoolInit(&globalThreadPool, BTL_NUM_THREADS);
-        threadPoolInitialized = true;
-    }
-    pthread_mutex_unlock(&threadPoolInitMutex);
-}
-
-void shutdownThreadPool(void) {
-    pthread_mutex_lock(&threadPoolInitMutex);
-    if (threadPoolInitialized) {
-        threadPoolShutdown(&globalThreadPool);
-        threadPoolInitialized = false;
-    }
-    pthread_mutex_unlock(&threadPoolInitMutex);
-}
 
 // --- Macros ---
 #define PATCH_OP_1(newOp) (frame->closure->function->chunk.code[ip - frame->closure->function->chunk.code - 1] = (newOp))
@@ -109,14 +87,20 @@ static void resetStack(VM* vm) {
 void runtimeError(VM* vm, const char* format, ...) {
     va_list args;
     va_start(args, format);
-    vfprintf(stderr, format, args);
+    btl_verrorf(vm, format, args);
     va_end(args);
-    fputs("\n", stderr);
+    btl_error(vm, "\n");
+
     for (int i = vm->frameCount - 1; i >= 0; i--) {
         CallFrame* frame = &vm->frames[i];
         ObjFunction* function = frame->closure->function;
         size_t instruction = frame->ip - function->chunk.code - 1;
-        fprintf(stderr, "[line %d] in script\n", function->chunk.lines[instruction]);
+        btl_errorf(vm, "[line %d] in ", function->chunk.lines[instruction]);
+        if (function->name == NULL) {
+            btl_error(vm, "script\n");
+        } else {
+            btl_errorf(vm, "%s()\n", function->name->chars);
+        }
     }
     resetStack(vm);
 }
@@ -314,6 +298,20 @@ static bool callValue(VM* vm, Value callee, int argCount) {
             push(vm, result);
             return true;
         }
+        case OBJ_NATIVE_METHOD: {
+            ObjNativeMethod* method = AS_NATIVE_METHOD(callee);
+            if (method->arity >= 0 && argCount != method->arity) {
+                runtimeError(vm, "Expected %d arguments but got %d.", method->arity, argCount);
+                return false;
+            }
+            Value* args = vm->stackTop - argCount;
+            // For native module methods, receiver is the module on stack
+            Value receiver = vm->stackTop[-argCount - 1];
+            Value result = method->function(vm, receiver, argCount, args);
+            vm->stackTop -= argCount + 1;
+            push(vm, result);
+            return true;
+        }
         case OBJ_FUTURE: {
             if (argCount != 0) {
                 runtimeError(vm, "Futures take no arguments.");
@@ -368,28 +366,107 @@ static void concatenate(struct VM* vm) {
     pop(vm); pop(vm); pop(vm); pop(vm);
     push(vm, OBJ_VAL(result));
 }
-
 #ifdef DEBUG_TRACE_EXECUTION
+static void printValueTrace(VM* vm, Value value) {
+    char buffer[256];
+
+    if (IS_BOOL(value)) {
+        snprintf(buffer, sizeof(buffer), "%s", AS_BOOL(value) ? "true" : "false");
+    } else if (IS_NULL(value)) {
+        snprintf(buffer, sizeof(buffer), "null");
+    } else if (IS_NUMBER(value)) {
+        snprintf(buffer, sizeof(buffer), "%g", AS_NUMBER(value));
+    } else if (IS_OBJ(value)) {
+        switch (OBJ_TYPE(value)) {
+        case OBJ_STRING:
+            snprintf(buffer, sizeof(buffer), "'%s'", AS_CSTRING(value));
+            break;
+        case OBJ_FUNCTION: {
+            ObjFunction* fn = AS_FUNCTION(value);
+            snprintf(buffer, sizeof(buffer), "<fn %s>", fn->name ? fn->name->chars : "script");
+            break;
+        }
+        case OBJ_CLASS:
+            snprintf(buffer, sizeof(buffer), "<class %s>", AS_CLASS(value)->name->chars);
+            break;
+        case OBJ_INSTANCE:
+            snprintf(buffer, sizeof(buffer), "<%s>", AS_INSTANCE(value)->klass->name->chars);
+            break;
+        case OBJ_BOUND_METHOD:
+            snprintf(buffer, sizeof(buffer), "<bound %s>", AS_BOUND_METHOD(value)->method->function->name->chars);
+            break;
+        case OBJ_CLOSURE: {
+            ObjClosure* cl = AS_CLOSURE(value);
+            snprintf(buffer, sizeof(buffer), "<fn %s>", cl->function->name ? cl->function->name->chars : "script");
+            break;
+        }
+        case OBJ_NATIVE:
+            snprintf(buffer, sizeof(buffer), "<native>");
+            break;
+        case OBJ_LIST:
+            snprintf(buffer, sizeof(buffer), "<list[%d]>", AS_LIST(value)->items.count);
+            break;
+        case OBJ_TABLE:
+            snprintf(buffer, sizeof(buffer), "<table>");
+            break;
+        case OBJ_MODULE:
+            snprintf(buffer, sizeof(buffer), "<module %s>", AS_MODULE(value)->name->chars);
+            break;
+        case OBJ_UPVALUE:
+            snprintf(buffer, sizeof(buffer), "<upvalue>");
+            break;
+        case OBJ_FUTURE: {
+            ObjFuture* future = AS_FUTURE(value);
+            FutureState state = futureGetState(future);
+            switch (state) {
+            case FUTURE_PENDING: snprintf(buffer, sizeof(buffer), "<future:pending>"); break;
+            case FUTURE_READY:   snprintf(buffer, sizeof(buffer), "<future:ready>"); break;
+            case FUTURE_ERROR:   snprintf(buffer, sizeof(buffer), "<future:error>"); break;
+            }
+            break;
+        }
+        case OBJ_ACTOR: {
+            ObjActor* actor = AS_ACTOR(value);
+            if (actor->alive) {
+                snprintf(buffer, sizeof(buffer), "<actor:%s>", actor->klass->name->chars);
+            } else {
+                snprintf(buffer, sizeof(buffer), "<actor:dead>");
+            }
+            break;
+        }
+        default:
+            snprintf(buffer, sizeof(buffer), "<obj>");
+            break;
+        }
+    } else {
+        snprintf(buffer, sizeof(buffer), "<unknown>");
+    }
+
+    btl_errorf(vm, "%s", buffer);
+}
+
 static void traceExecution(VM* vm) {
     CallFrame* frame = &vm->frames[vm->frameCount - 1];
-    fprintf(stderr, "          ");
+    btl_errorf(vm, "          ");
     for (Value* slot = vm->stack; slot < vm->stackTop; slot++) {
-        fprintf(stderr, "[ "); printValueStderr(*slot); fprintf(stderr, " ]");
+        btl_errorf(vm, "[ ");
+        printValueTrace(vm, *slot);
+        btl_errorf(vm, " ]");
     }
-    fprintf(stderr, "\n");
+    btl_errorf(vm, "\n");
     int offset = (int) (frame->ip - frame->closure->function->chunk.code);
-    disassembleInstruction(&frame->closure->function->chunk, offset);
+    disassembleInstruction(vm->runtime, &frame->closure->function->chunk, offset);
 }
 #endif
 
 // --- IO & Natives ---
-static char* readFile(const char* path) {
+static char* readFile(VM* vm, const char* path) {
     FILE* file = fopen(path, "rb");
     if (!file) return NULL;
     fseek(file, 0L, SEEK_END);
     size_t fileSize = ftell(file);
     rewind(file);
-    char* buffer = (char*) malloc(fileSize + 1);
+    char* buffer = (char*) btl_realloc(vm, NULL, 0, fileSize + 1);
     if (!buffer) {
         fclose(file); return NULL;
     }
@@ -416,7 +493,7 @@ void initVM(VM* vm) {
     vm->grayCapacity = 0;
     vm->grayStack = NULL;
     // Initialize nursery
-    initNursery(&vm->nursery);
+    initNursery(vm, &vm->nursery);
     vm->nurseryAllocated = 0;
     // Initialize remembered set
     initRememberedSet(&vm->rememberedSet);
@@ -450,12 +527,12 @@ void initVM(VM* vm) {
 }
 
 void freeVM(VM* vm, bool mainVM) {
-    if (mainVM) {
-        shutdownThreadPool();
-    }
-    freeTable(vm, &vm->strings); freeTable(vm, &vm->modules);
+    (void) mainVM;
+    freeTable(vm, &vm->strings);
+    freeTable(vm, &vm->modules);
     freeTable(vm, &vm->nativeModules);
-    vm->initString = NULL; freeObjects(vm);
+    vm->initString = NULL;
+    freeObjects(vm);
 }
 
 typedef struct {
@@ -475,23 +552,21 @@ static InterpretResult run(VM* vm);  // Forward declaration
 static void asyncCallTaskRun(void* arg) {
     AsyncCallTask* task = (AsyncCallTask*) arg;
     VM* vm = task->vm;
+    BTLRuntime* runtime = vm->runtime;  // Save runtime BEFORE freeing VM
+    int savedArgCount = task->argCount;  // Save before cleanup
 
-    // Push closure for the "script" slot
     push(vm, OBJ_VAL(task->closure));
 
-    // Push args
     for (int i = 0; i < task->argCount; i++) {
         push(vm, task->args[i]);
     }
 
-    // Set up call frame
     CallFrame* frame = &vm->frames[vm->frameCount++];
     frame->closure = task->closure;
     frame->ip = task->closure->function->chunk.code;
     frame->slots = vm->stack;
     frame->openUpvalues = NULL;
 
-    // Run
     InterpretResult result = runVM(vm);
 
     if (result == INTERPRET_OK) {
@@ -501,11 +576,16 @@ static void asyncCallTaskRun(void* arg) {
         futureReject(task->future, OBJ_VAL(errMsg));
     }
 
-    // Cleanup
-    if (task->args != NULL) free(task->args);
+    // Cleanup using runtime allocator
+    if (task->args != NULL) {
+        btl_realloc(vm, task->args, sizeof(Value) * savedArgCount, 0);
+    }
+
     freeVM(vm, false);
-    free(vm);
-    free(task);
+
+    // VM is gone - use runtime allocator directly
+    btl_runtime_alloc(runtime, vm, sizeof(VM), 0);
+    btl_runtime_alloc(runtime, task, sizeof(AsyncCallTask), 0);
 }
 
 InterpretResult runVM(VM* vm) {
@@ -1490,14 +1570,14 @@ static InterpretResult run(VM* vm) {
             // Collect args
             Value* args = NULL;
             if (argCount > 0) {
-                args = malloc(sizeof(Value) * argCount);
+                args = btl_realloc(vm, NULL, 0, sizeof(Value) * argCount);
                 for (int i = 0; i < argCount; i++) {
                     args[i] = peek(vm, argCount - 1 - i);
                 }
             }
             // Send message to actor
             actorSend(actor, methodName, args, argCount, future);
-            if (args != NULL) free(args);
+            if (args != NULL) btl_realloc(vm, args, sizeof(Value) * argCount, 0);
             // Pop args and receiver
             for (int i = 0; i <= argCount; i++) pop(vm);
             // Push future as result
@@ -1778,13 +1858,13 @@ OPCODE(OP_TAIL_INVOKE_IC) : {
         ObjFuture* future = newFuture(vm);
         Value* args = NULL;
         if (argCount > 0) {
-            args = malloc(sizeof(Value) * argCount);
+            args = btl_realloc(vm, NULL, 0, sizeof(Value) * argCount);
             for (int i = 0; i < argCount; i++) {
                 args[i] = peek(vm, argCount - 1 - i);
             }
         }
         actorSend(actor, methodName, args, argCount, future);
-        if (args != NULL) free(args);
+        if (args != NULL) btl_realloc(vm, args, sizeof(Value) * argCount, 0);
         for (int i = 0; i <= argCount; i++) pop(vm);
         push(vm, OBJ_VAL(future));
         DISPATCH();
@@ -2273,14 +2353,15 @@ OPCODE(OP_IMPORT) : {
     if (tableGet(&vm->modules, OBJ_VAL(fName), &mVal)) {
         push(vm, mVal); DISPATCH();
     }
-    char* src = readFile(fName->chars);
+    char* src = readFile(vm, fName->chars);
     if (!src) {
         runtimeError(vm, "Could not open file \"%s\".", fName->chars); return INTERPRET_RUNTIME_ERROR;
     }
+    size_t srcLen = strlen(src);  // Track size for deallocation
     STORE_FRAME();
     ObjModule* m = newModule(vm, fName);
     ObjFunction* f = compile(vm, m, src);
-    free(src);
+    btl_realloc(vm, src, srcLen + 1, 0);  // Free source with correct size
     if (!f) return INTERPRET_RUNTIME_ERROR;
     ObjClosure* c = newClosure(vm, f);
     push(vm, OBJ_VAL(c));
@@ -2302,14 +2383,15 @@ OPCODE(OP_IMPORT_LONG) : {
     if (tableGet(&vm->modules, OBJ_VAL(fName), &mVal)) {
         push(vm, mVal); DISPATCH();
     }
-    char* src = readFile(fName->chars);
+    char* src = readFile(vm, fName->chars);
     if (!src) {
         runtimeError(vm, "Could not open file \"%s\".", fName->chars); return INTERPRET_RUNTIME_ERROR;
     }
+    size_t srcLen = strlen(src);  // Track size for deallocation
     STORE_FRAME();
     ObjModule* m = newModule(vm, fName);
     ObjFunction* f = compile(vm, m, src);
-    free(src);
+    btl_realloc(vm, src, srcLen + 1, 0);  // Free source with correct size
     if (!f) return INTERPRET_RUNTIME_ERROR;
     ObjClosure* c = newClosure(vm, f);
     push(vm, OBJ_VAL(c));
@@ -2329,7 +2411,7 @@ OPCODE(OP_DO_NEW) : {
 
         Value* args = NULL;
         if (argCount > 0) {
-            args = malloc(sizeof(Value) * argCount);
+            args = btl_realloc(vm, NULL, 0, sizeof(Value) * argCount);
             for (int i = 0; i < argCount; i++) {
                 args[i] = peek(vm, argCount - 1 - i);
             }
@@ -2337,19 +2419,22 @@ OPCODE(OP_DO_NEW) : {
 
         for (int i = 0; i <= argCount; i++) pop(vm);
 
-        ensureThreadPool();
         ObjActor* actor = newActor(vm, klass, args, argCount);
 
-        if (args != NULL) free(args);
+        if (args != NULL) btl_realloc(vm, args, sizeof(Value) * argCount, 0);
 
         push(vm, OBJ_VAL(actor));
 
     } else if (IS_CLOSURE(callee)) {
-        // Async function call
         ObjClosure* closure = AS_CLOSURE(callee);
         ObjFuture* future = newFuture(vm);
 
-        VM* asyncVM = malloc(sizeof(VM));
+        // Allocate async VM using runtime allocator
+        VM* asyncVM = btl_realloc(vm, NULL, 0, sizeof(VM));
+
+        // CRITICAL: Share parent's runtime with async VM
+        asyncVM->runtime = vm->runtime;
+
         initVM(asyncVM);
 
         // Copy native classes
@@ -2359,14 +2444,14 @@ OPCODE(OP_DO_NEW) : {
         asyncVM->tableClass = vm->tableClass;
         asyncVM->rootModule = closure->function->module;
 
-        AsyncCallTask* task = malloc(sizeof(AsyncCallTask));
+        AsyncCallTask* task = btl_realloc(vm, NULL, 0, sizeof(AsyncCallTask));
         task->vm = asyncVM;
         task->closure = closure;
         task->argCount = argCount;
         task->future = future;
 
         if (argCount > 0) {
-            task->args = malloc(sizeof(Value) * argCount);
+            task->args = btl_realloc(vm, NULL, 0, sizeof(Value) * argCount);
             for (int i = 0; i < argCount; i++) {
                 task->args[i] = deepCopyValue(asyncVM, vm, peek(vm, argCount - 1 - i));
             }
@@ -2376,8 +2461,7 @@ OPCODE(OP_DO_NEW) : {
 
         for (int i = 0; i <= argCount; i++) pop(vm);
 
-        ensureThreadPool();
-        threadPoolSubmit(&globalThreadPool, asyncCallTaskRun, task);
+        threadPoolSubmit(vm->runtime->pool, asyncCallTaskRun, task);
 
         push(vm, OBJ_VAL(future));
     } else {
@@ -2387,7 +2471,6 @@ OPCODE(OP_DO_NEW) : {
     }
     DISPATCH();
 }
-
 OPCODE(OP_DO_INVOKE) : {
     uint8_t nameConstant = READ_BYTE();
     uint8_t argCount = READ_BYTE();
@@ -2419,7 +2502,7 @@ OPCODE(OP_DO_INVOKE) : {
 
     Value* args = NULL;
     if (argCount > 0) {
-        args = malloc(sizeof(Value) * argCount);
+        args = btl_realloc(vm, NULL, 0, sizeof(Value) * argCount);
         for (int i = 0; i < argCount; i++) {
             args[i] = peek(vm, argCount - 1 - i);
         }
@@ -2427,7 +2510,7 @@ OPCODE(OP_DO_INVOKE) : {
 
     actorSend(actor, methodName, args, argCount, future);
 
-    if (args != NULL) free(args);
+    if (args != NULL) btl_realloc(vm, args, sizeof(Value)* argCount, 0);
 
     for (int i = 0; i <= argCount; i++) pop(vm);
 
@@ -2436,7 +2519,7 @@ OPCODE(OP_DO_INVOKE) : {
 }
 #ifndef HAS_COMPUTED_GOTOS
         }
-        }
+    }
 #endif
 }
 InterpretResult interpret(VM* vm, ObjModule* m, const char* src) {
