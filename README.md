@@ -1,6 +1,19 @@
 # BTL Language
 
-brens tiny lang. more info soon
+Bren's Tiny Language - A lightweight scripting language designed for game development with built-in concurrency support.
+
+## Features
+
+- **Clean, familiar syntax** inspired by JavaScript and Lua
+- **Classes with inheritance** - single inheritance, constructors, super calls
+- **First-class functions** - closures, anonymous functions
+- **Built-in data structures** - lists and tables (dictionaries)
+- **Native methods** - methods directly on strings, numbers, lists, and tables
+- **Switch expressions** - pattern matching with comparison operators
+- **Actors and Futures** - built-in concurrency without callbacks
+- **Module system** - import statement with native and user modules
+
+---
 
 # BTL Language Grammar
 
@@ -158,6 +171,13 @@ call           → primary ( "(" arguments? ")" | "." IDENTIFIER | "[" expressio
 arguments      → expression ( "," expression )*
 ```
 
+### Do Expressions (Actors/Async)
+```ebnf
+doExpr         → "do" IDENTIFIER "(" arguments? ")"           // Create actor or async call
+               | "do" IDENTIFIER "." IDENTIFIER "(" arguments? ")"  // Explicit actor message (optional)
+               | "do" "func" "(" parameters? ")" block        // Async anonymous function
+```
+
 ### Primary Expressions
 ```ebnf
 primary        → "true" | "false" | "null"
@@ -171,6 +191,7 @@ primary        → "true" | "false" | "null"
                | tableLiteral
                | anonymousFunc
                | switchExpr
+               | doExpr
 
 listLiteral    → "[" ( expression ( "," expression )* )? "]"
 
@@ -217,6 +238,7 @@ COMMENT        → "//" <any char except newline>* newline
 | `class` | Class declaration |
 | `continue` | Skip to next loop iteration |
 | `default` | Switch default label |
+| `do` | Create actor or run async function |
 | `else` | If-else branch |
 | `false` | Boolean false |
 | `for` | For loop |
@@ -322,6 +344,8 @@ From lowest to highest:
 
 - `false` and `null` are falsey
 - Everything else is truthy (including `0` and `""`)
+- Futures: `false` if error, `null`-like if pending, `true` if ready
+- Actors: `false` if dead, `true` if alive
 
 ### String Concatenation
 
@@ -359,6 +383,170 @@ The `+` operator concatenates when either operand is a string:
 - Comparison operators allowed in case expressions (e.g., `case >= 90:`)
 - `break` without value exits the switch
 - `break value` exits and returns a value (switch as expression)
+
+---
+
+## Actors and Futures
+
+BTL has built-in support for concurrent programming using **actors** and **futures**. This enables parallel execution without the complexity of manual thread management or callback hell.
+
+### Creating Actors
+
+Use the `do` keyword before a class instantiation to create an **actor**:
+
+```js
+class Counter {
+    var count = 0;
+    
+    func init(start) {
+        this.count = start;
+    }
+    
+    func increment() {
+        this.count = this.count + 1;
+        return this.count;
+    }
+    
+    func getCount() {
+        return this.count;
+    }
+}
+
+// Create an actor - runs on its own thread
+var counter = do Counter(10);
+```
+
+### Actor Method Calls Return Futures
+
+When you call a method on an actor, it returns a **future** immediately:
+
+```js
+var future = counter.increment();  // Returns immediately with a future
+var result = future();             // Blocks until result is ready
+system.println(result);            // 11
+```
+
+### Future States
+
+Futures have three states that can be checked:
+
+```js
+var f = counter.getCount();
+
+// Check if pending (not yet complete)
+if (f == null) {
+    system.println("Still computing...");
+}
+
+// Check if ready (has value)
+if (f) {
+    system.println("Ready!");
+}
+
+// Check if error
+if (!f) {
+    system.println("Error occurred");
+}
+
+// Block and get the result
+var result = f();
+```
+
+### Fire and Forget
+
+You can ignore the returned future if you don't need the result:
+
+```js
+counter.increment();  // Fire and forget
+counter.increment();
+counter.increment();
+
+// Later, get the final state
+var count = counter.getCount()();
+```
+
+### Async Functions
+
+Use `do` with an anonymous function to run code asynchronously:
+
+```js
+var future = do func() {
+    var sum = 0;
+    for (var i = 1; i <= 1000000; i++) {
+        sum = sum + i;
+    }
+    return sum;
+};
+
+// Do other work while computation runs...
+
+var result = future();  // Block and get result
+```
+
+### Multiple Actors
+
+Create multiple actors to parallelize work:
+
+```js
+class Worker {
+    var id;
+    
+    func init(id) {
+        this.id = id;
+    }
+    
+    func compute(n) {
+        var result = 0;
+        for (var i = 1; i <= n; i++) {
+            result = result + i;
+        }
+        return result;
+    }
+}
+
+// Create worker pool
+var w1 = do Worker(1);
+var w2 = do Worker(2);
+var w3 = do Worker(3);
+var w4 = do Worker(4);
+
+// Start parallel computations
+var f1 = w1.compute(1000000);
+var f2 = w2.compute(1000000);
+var f3 = w3.compute(1000000);
+var f4 = w4.compute(1000000);
+
+// Gather results
+var total = f1() + f2() + f3() + f4();
+```
+
+### Actor State Isolation
+
+Each actor has its own isolated state. Data passed to actors is deep-copied:
+
+```js
+var actor1 = do Counter(100);
+var actor2 = do Counter(200);
+
+actor1.increment();
+actor2.increment();
+
+// Each actor maintains its own state
+system.println(actor1.getCount()());  // 101
+system.println(actor2.getCount()());  // 201
+```
+
+### Summary
+
+| Syntax | Description |
+|--------|-------------|
+| `do Class(args)` | Create an actor (class instance on its own thread) |
+| `do func() { }` | Run anonymous function asynchronously |
+| `actor.method()` | Send message to actor, returns future |
+| `future()` | Block and get result (or throw on error) |
+| `future == null` | Check if future is still pending |
+| `if (future)` | Check if future is ready (truthy) |
+| `if (!future)` | Check if future has error (falsey) |
 
 ---
 
@@ -640,6 +828,88 @@ system.println(counter());  // 2
 system.println(counter());  // 3
 ```
 
+### Actors and Concurrency
+```js
+import "system";
+
+class Calculator {
+    var result = 0;
+    
+    func init() {
+        this.result = 0;
+    }
+    
+    func add(n) {
+        this.result = this.result + n;
+        return this.result;
+    }
+    
+    func multiply(n) {
+        this.result = this.result * n;
+        return this.result;
+    }
+    
+    func getResult() {
+        return this.result;
+    }
+}
+
+// Create an actor
+var calc = do Calculator();
+
+// Method calls return futures
+var f1 = calc.add(10);
+var f2 = calc.multiply(2);
+var f3 = calc.add(5);
+
+// Get results (blocks until ready)
+system.println(f1());  // 10
+system.println(f2());  // 20
+system.println(f3());  // 25
+
+// Async anonymous function
+var asyncSum = do func() {
+    var sum = 0;
+    for (var i = 1; i <= 100; i++) {
+        sum = sum + i;
+    }
+    return sum;
+};
+
+system.println(asyncSum());  // 5050
+```
+
+### Parallel Processing
+```js
+import "system";
+
+class Worker {
+    func compute(start, end) {
+        var sum = 0;
+        for (var i = start; i <= end; i++) {
+            sum = sum + i;
+        }
+        return sum;
+    }
+}
+
+// Create 4 workers
+var w1 = do Worker();
+var w2 = do Worker();
+var w3 = do Worker();
+var w4 = do Worker();
+
+// Divide work
+var f1 = w1.compute(1, 250000);
+var f2 = w2.compute(250001, 500000);
+var f3 = w3.compute(500001, 750000);
+var f4 = w4.compute(750001, 1000000);
+
+// Combine results
+var total = f1() + f2() + f3() + f4();
+system.println(total);  // 500000500000
+```
+
 ### Type Checking and Conversion
 ```js
 import "system";
@@ -678,6 +948,8 @@ system.println("Argument count: " + system.argc());
 system.println("Program name: " + system.argv(0));
 system.println("All arguments: " + system.args());
 ```
+
+---
 
 # BTL Native Modules Reference
 
@@ -819,6 +1091,8 @@ import "system";
 | `isfunc(v)` | True if function |
 | `isclass(v)` | True if class |
 | `isinstance(v)` | True if class instance |
+| `isfuture(v)` | True if future |
+| `isactor(v)` | True if actor |
 
 ### Type Conversion
 
@@ -938,45 +1212,50 @@ table.has("a");  // true
 | `clear()` | Remove all entries, returns table |
 | `clone()` | Shallow copy |
 
+### **Future** methods
+```js
+var f = actor.someMethod();
+f();  // Block and get result
+```
+
+| Operation | Description |
+|-----------|-------------|
+| `future()` | Call to block and get result |
+| `future == null` | Check if pending |
+| `if (future)` | Check if ready (truthy) |
+| `if (!future)` | Check if error (falsey) |
+
+### **Actor** methods
+```js
+var actor = do SomeClass();
+actor.method();  // Returns future
+```
+
+| Operation | Description |
+|-----------|-------------|
+| `actor.method(args)` | Send message, returns future |
+| `actor == null` | Check if dead |
+| `if (actor)` | Check if alive (truthy) |
+
 ---
 
-## Usage Examples
-```js
-import "math";
-import "random";
-import "system";
+## Building
 
-// Math
-var angle = math.PI / 4;
-system.println(math.sin(angle));  // 0.707...
-system.println(math.sqrt(16));    // 4
-
-// Random
-random.seed(42);
-system.println(random.int(1, 100));
-system.println(random.choice(["a", "b", "c"]));
-
-// String methods
-var s = "Hello, World!";
-system.println(s.upper());        // HELLO, WORLD!
-system.println(s.split(", "));    // ["Hello", "World!"]
-
-// Number methods
-var n = 3.14159;
-system.println(n.toFixed(2));     // 3.14
-system.println((65).chr());       // A
-
-// List methods
-var list = [3, 1, 4, 1, 5];
-list.push(9);
-system.println(list.reverse());   // [9, 5, 1, 4, 1, 3]
-
-// Table methods
-var table = ["a": 1, "b": 2];
-system.println(table.keys());     // ["a", "b"]
-system.println(table.has("a"));   // true
-
-// System
-system.println(system.platform());
-system.println(system.type(42));  // number
+```bash
+make          # Build release version
+make debug    # Build debug version with tracing
+make test     # Run test suite
+make clean    # Clean build artifacts
 ```
+
+### Requirements
+
+- GCC or Clang with C11 support
+- POSIX threads (pthread)
+- Math library (libm)
+
+---
+
+## License
+
+MIT License - see LICENSE file for details.
