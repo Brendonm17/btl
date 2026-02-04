@@ -4,7 +4,7 @@ func fib_tco(n, a, b) {
   return fib_tco(n - 1, b, a + b); // TAIL CALL
 }
 
-var start = clock();
-print fib_tco(35, 0, 1);
-print "BTL Time:";
-print clock() - start;
+//var start = clock();
+system.println(fib_tco(35, 0, 1));
+system.println("BTL Time:");
+//system.println(clock() - start);

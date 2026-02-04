@@ -4,6 +4,8 @@
 #include "object.h"
 #include "table.h"
 #include "value.h"
+#include "threadpool.h"
+#include <pthread.h>
 
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
@@ -42,6 +44,7 @@ struct VM {
     Obj** grayStack;
 
     struct Compiler* compiler;
+    Value lastReturnValue;
 };
 
 typedef enum {
@@ -51,7 +54,7 @@ typedef enum {
 } InterpretResult;
 
 void initVM(VM* vm);
-void freeVM(VM* vm);
+void freeVM(VM* vm, bool mainVM);
 InterpretResult interpret(VM* vm, ObjModule* module, const char* source);
 void push(VM* vm, Value value);
 Value pop(VM* vm);

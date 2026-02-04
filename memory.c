@@ -136,6 +136,17 @@ static void blackenObject(struct VM* vm, struct Obj* object) {
         markTable(vm, &module->globals);
         break;
     }
+    case OBJ_FUTURE: {
+        ObjFuture* future = (ObjFuture*) object;
+        markValue(vm, future->result);
+        break;
+    }
+    case OBJ_ACTOR: {
+        ObjActor* actor = (ObjActor*) object;
+        markValue(vm, actor->instance);
+        // Note: actor->vm has its own GC
+        break;
+    }
     case OBJ_NATIVE:
     case OBJ_STRING:
         break;
@@ -245,6 +256,18 @@ static void freeObject(struct VM* vm, struct Obj* object) {
         ObjNativeModule* module = (ObjNativeModule*) object;
         freeTable(vm, &module->globals);
         FREE(vm, ObjNativeModule, object);
+        break;
+    }
+    case OBJ_FUTURE: {
+        ObjFuture* future = (ObjFuture*) object;
+        freeFuture(future);
+        FREE(vm, ObjFuture, object);
+        break;
+    }
+    case OBJ_ACTOR: {
+        ObjActor* actor = (ObjActor*) object;
+        actorStop(actor);
+        FREE(vm, ObjActor, object);
         break;
     }
     }

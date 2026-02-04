@@ -69,6 +69,8 @@ static int resolveLocal(Parser* p, Compiler* c, Token* name);
 static int resolveUpvalue(Parser* p, Compiler* c, Token* name);
 static void emitVariableSet(Parser* p, Compiler* c, ClassCompiler* cc, Token name);
 static void prefixIncDec(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign);
+static void doExpr(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign);
+
 
 // --- Chunk Management ---
 
@@ -1341,6 +1343,69 @@ static void switch_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool 
     switchStatement(p, s, c, cc, false);
 }
 
+static void doExpr(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+    (void) canAssign;
+
+    // do func() { ... } - anonymous async function
+    if (match(p, s, TOKEN_FUNC)) {
+        function(p, s, c, cc, TYPE_FUNCTION);
+        emitBytes(p, c, OP_DO_NEW, 0);
+        return;
+    }
+
+    if (!check(p, TOKEN_IDENTIFIER)) {
+        errorAt(p, &p->current, "Expect identifier or 'func' after 'do'.");
+        return;
+    }
+
+    advance(p, s);
+    Token name = p->previous;
+
+    if (check(p, TOKEN_LEFT_PAREN)) {
+        // do identifier() - Class or function call
+        namedVariable(p, s, c, cc, name, false);
+
+        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
+        uint8_t argCount = 0;
+        if (!check(p, TOKEN_RIGHT_PAREN)) {
+            do {
+                expression(p, s, c, cc);
+                argCount++;
+            } while (match(p, s, TOKEN_COMMA));
+        }
+        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+
+        emitBytes(p, c, OP_DO_NEW, argCount);
+
+    } else if (check(p, TOKEN_DOT)) {
+        // do obj.method()
+        namedVariable(p, s, c, cc, name, false);
+
+        consume(p, s, TOKEN_DOT, "Expect '.'.");
+        consume(p, s, TOKEN_IDENTIFIER, "Expect method name.");
+        Token methodName = p->previous;
+
+        int nameConstant = makeConstant(p, c, OBJ_VAL(copyString(c->vm, methodName.start, methodName.length)));
+
+        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
+        uint8_t argCount = 0;
+        if (!check(p, TOKEN_RIGHT_PAREN)) {
+            do {
+                expression(p, s, c, cc);
+                argCount++;
+            } while (match(p, s, TOKEN_COMMA));
+        }
+        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+
+        emitByte(p, c, OP_DO_INVOKE);
+        emitByte(p, c, (uint8_t) nameConstant);
+        emitByte(p, c, argCount);
+
+    } else {
+        errorAt(p, &p->current, "Expect '(' or '.' after identifier in 'do'.");
+    }
+}
+
 // --- Parse Rules Table ---
 
 ParseRule rules [] = {
@@ -1373,7 +1438,8 @@ ParseRule rules [] = {
     [TOKEN_SWITCH] = {switch_,  NULL,   PREC_NONE},
     [TOKEN_COLON] = {NULL,     NULL,   PREC_NONE},
     [TOKEN_PLUS_PLUS] = {prefixIncDec, NULL, PREC_NONE},
-[TOKEN_MINUS_MINUS] = {prefixIncDec, NULL, PREC_NONE},
+    [TOKEN_MINUS_MINUS] = {prefixIncDec, NULL, PREC_NONE},
+    [TOKEN_DO] = {doExpr, NULL, PREC_NONE},
     [TOKEN_EOF] = {NULL,     NULL,   PREC_NONE},
 };
 

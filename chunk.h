@@ -10,7 +10,7 @@ typedef enum {
     // ========================================================================
     OP_CONSTANT,            // [idx:8]        | Push constants[idx]
     OP_CONSTANT_LONG,       // [idx:16]       | Push constants[idx]
-    OP_NIL,                 //                | Push nil
+    OP_NULL,                 //                | Push null
     OP_TRUE,                //                | Push true
     OP_FALSE,               //                | Push false
     OP_0,                   //                | Push 0.0
@@ -139,11 +139,6 @@ typedef enum {
     OP_MODULO,              //                | Push b % a
     OP_NOT,                 //                | Push !pop()
     OP_NEGATE,              //                | Push -pop()
-
-    // ========================================================================
-    // I/O
-    // ========================================================================
-    OP_PRINT,               //                | Print pop() to stdout
 
     // ========================================================================
     // CONTROL FLOW
@@ -291,7 +286,9 @@ typedef enum {
     // MODULES
     // ========================================================================
     OP_IMPORT,              // [path:8]       | Import module, push it
-    OP_IMPORT_LONG          // [path:16]      | Import module, push it
+    OP_IMPORT_LONG,         // [path:16]      | Import module, push it
+    OP_DO_NEW,          // do Class(args) - create actor
+    OP_DO_INVOKE,       // do actor.method(args) - send message
 
 } OpCode;
 
