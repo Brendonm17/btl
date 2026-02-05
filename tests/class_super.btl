@@ -1,0 +1,18 @@
+import "system";
+
+class A {
+  func method() {
+    system.println("A method");
+  }
+}
+
+class B < A {
+  func method() {
+    system.println("B method");
+    super.method();
+  }
+}
+
+B().method();
+// expect: B method
+// expect: A method

@@ -1,0 +1,1 @@
+import "tests/math_lib.btl" as ; // expect error: Expect variable name after 'as'.

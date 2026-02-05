@@ -1,0 +1,25 @@
+import "system";
+
+var functions = [];
+
+for (var i = 0; i < 10; i = i + 1) {
+  var j = i; 
+  func f() { return j; }
+  if (f() != i) system.println("Error: captured wrong value");
+}
+
+// Harder variant: Nested closures with shared upvalues
+func outer() {
+  var x = "initial";
+  func inner() {
+    func innermost() {
+      x = "updated";
+    }
+    innermost();
+  }
+  inner();
+  return x;
+}
+
+if (outer() != "updated") system.println("Error: Upvalue assignment failed");
+else system.println("Closure test passed");   // expect: Closure test passed

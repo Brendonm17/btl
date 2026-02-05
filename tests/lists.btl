@@ -1,0 +1,9 @@
+import "system";
+
+var list = [1, 2, 3];
+system.println(list[0]); // expect: 1
+system.println(list[1]); // expect: 2
+system.println(list[2]); // expect: 3
+
+list[1] = 10;
+system.println(list[1]); // expect: 10

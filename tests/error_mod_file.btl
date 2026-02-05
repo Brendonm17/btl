@@ -1,0 +1,1 @@
+import "ghost_file.btl" as ghost; // expect error: Could not open file "ghost_file.btl".

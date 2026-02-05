@@ -1,0 +1,4 @@
+import "system";
+import "tests/outer.btl" as outer;
+
+system.println(outer.shared); // expect: 42

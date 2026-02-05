@@ -1,0 +1,14 @@
+import "system";
+
+var functions = [0,0,0];
+
+for (var i = 0; i < 3; i = i + 1) {
+  func getI() {
+    return i;
+  }
+  functions[i] = getI;
+}
+
+system.println(functions[0]()); // expect: 0
+system.println(functions[1]()); // expect: 1
+system.println(functions[2]()); // expect: 2

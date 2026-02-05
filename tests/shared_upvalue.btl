@@ -1,0 +1,23 @@
+import "system";
+
+func createCounter() {
+  var count = 0;
+  func increment() {
+    count = count + 1;
+    system.println(count);
+  }
+  func decrement() {
+    count = count - 1;
+    system.println(count);
+  }
+  return [increment, decrement]; // Testing list of functions!
+}
+
+var counters = createCounter();
+var inc = counters[0];
+var dec = counters[1];
+
+inc(); // expect: 1
+inc(); // expect: 2
+dec(); // expect: 1
+inc(); // expect: 2

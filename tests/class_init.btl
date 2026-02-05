@@ -1,0 +1,10 @@
+import "system";
+
+class Coffee {
+  func init(type) {
+    this.type = type;
+  }
+}
+
+var c = Coffee("Espresso");
+system.println(c.type); // expect: Espresso

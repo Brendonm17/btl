@@ -1,0 +1,2 @@
+import "tests/inner.btl" as inner;
+var shared = inner.secret;

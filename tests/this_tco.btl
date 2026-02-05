@@ -1,0 +1,20 @@
+import "system";
+
+class Transformer {
+  func init(val) {
+    this.val = val;
+  }
+
+  func first(n) {
+    if (n == 0) return this.val;
+    return this.second(n - 1); // Tail call involving 'this'
+  }
+
+  func second(n) {
+    return this.first(n); // Mutual method tail call
+  }
+}
+
+
+var t = Transformer("recycled this");
+system.println(t.first(100)); // expect: recycled this
