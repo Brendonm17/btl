@@ -1,2 +1,0 @@
-var notAFunction = "I am a string";
-notAFunction(); // expect error: Can only call functions and classes

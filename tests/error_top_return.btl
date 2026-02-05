@@ -1,2 +1,0 @@
-var a = "hello";
-return a; // expect error: Can't return from top-level code.

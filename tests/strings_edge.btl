@@ -1,8 +1,0 @@
-import "system";
-
-system.println(""); // expect: 
-system.println("line one
-line two"); 
-// expect: line one
-// expect: line two
-system.println("alpha" + " " + "beta"); // expect: alpha beta

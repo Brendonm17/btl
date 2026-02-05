@@ -1,9 +1,0 @@
-import "system";
-
-class Toast { var jam, bread;}
-var t = Toast();
-t.jam = "strawberry";
-t.bread = "wheat";
-
-system.println(t.jam);   // expect: strawberry
-system.println(t.bread); // expect: wheat

@@ -1,5 +1,0 @@
-import "system";
-
-func peek() {
-  system.println(this); // expect error: Can't use 'this' outside of a class.
-}

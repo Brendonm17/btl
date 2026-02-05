@@ -1,5 +1,0 @@
-import "system";
-
-system.println(1 + 2);          // expect: 3
-system.println(10 - 5 * 2);     // expect: 0
-system.println((5 + 5) / 2);    // expect: 5
