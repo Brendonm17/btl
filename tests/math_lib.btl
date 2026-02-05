@@ -1,4 +1,0 @@
-var PI = 3.14159;
-func square(x) {
-  return x * x;
-}

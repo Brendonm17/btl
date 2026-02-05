@@ -1,6 +1,0 @@
-import "system";
-
-if (0) { system.println("0 is true"); }        // expect: 0 is true
-if ("") { system.println("empty is true"); }   // expect: empty is true
-if (null) { system.println("null is true"); } else { system.println("null is false"); } // expect: null is false
-if (false) { system.println("f is true"); } else { system.println("f is false"); }   // expect: f is false

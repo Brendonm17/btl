@@ -1,2 +1,0 @@
-var count = 0;
-func inc() { count = count + 1; return count; }

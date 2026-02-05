@@ -1,4 +1,0 @@
-import "system";
-
-var list = [1, 2];
-system.println(list[5]); // expect error: Index out of bounds

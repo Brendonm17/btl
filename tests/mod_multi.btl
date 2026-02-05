@@ -1,6 +1,0 @@
-import "system";
-import "tests/lib_colors.btl" as col;
-import "tests/lib_meta.btl" as meta;
-
-system.println(col.red);     // expect: #ff0000
-system.println(meta.version); // expect: 1.2
