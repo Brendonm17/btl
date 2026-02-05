@@ -1,0 +1,4 @@
+{
+  var a = "first";
+  var a = "second"; // expect error: Already a variable with this name
+}

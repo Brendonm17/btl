@@ -1,0 +1,12 @@
+import "system";
+
+var big = 1234567.89;
+var result = (big * 2 / 2 + 1) - big;
+if (result == 1) {
+  system.println("Numbers OK");   // expect: Numbers OK
+} else {
+  system.println("Precision Error");
+}
+
+system.println(null == null);   // expect: true
+system.println(true != false); // expect: true

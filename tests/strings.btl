@@ -1,0 +1,70 @@
+import "system";
+
+var a = "hello";
+var b = "he" + "llo";
+system.println(a == b);   // expect: true
+system.println(a == "hi"); // expect: false
+
+// Basic string indexing
+var str = "hello";
+system.println(str[0]);  // expect: h
+system.println(str[1]);  // expect: e
+system.println(str[4]);  // expect: o
+
+// String length
+var word = "test";
+system.println(word[0]);  // expect: t
+system.println(word[1]);  // expect: e
+system.println(word[2]);  // expect: s
+system.println(word[3]);  // expect: t
+
+// Single character strings
+var a = "a";
+system.println(a[0]);  // expect: a
+
+// Strings in expressions
+var greeting = "Hi!";
+var first = greeting[0];
+system.println(first);  // expect: H
+
+// Strings in loops
+var name = "Bob";
+var i = 0;
+while (i < 3) {
+    system.println(name[i]);
+    i = i + 1;
+}
+// expect: B
+// expect: o
+// expect: b
+
+// Strings with spaces
+var phrase = "a b c";
+system.println(phrase[0]);  // expect: a
+system.println(phrase[1]);  // expect:  
+system.println(phrase[2]);  // expect: b
+system.println(phrase[4]);  // expect: c
+
+// Strings in tables
+var data = ["msg": "test"];
+system.println(data["msg"][0]);  // expect: t
+system.println(data["msg"][1]);  // expect: e
+
+// Strings in lists
+var words = ["cat", "dog", "rat"];
+system.println(words[0][0]);  // expect: c
+system.println(words[1][0]);  // expect: d
+system.println(words[2][0]);  // expect: r
+
+// Comparison of indexed chars
+var s1 = "abc";
+var s2 = "xyz";
+if (s1[0] == "a") {
+    system.println("first char is a");  // expect: first char is a
+}
+
+var text = "hello world";
+system.println(text[0]);   // expect: h
+system.println(text[6]);   // expect: w
+
+system.println("String indexing tests passed!");  // expect: String indexing tests passed!

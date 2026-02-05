@@ -1,0 +1,5 @@
+class Bad {
+  func init() {
+    return "something"; // expect error: Can't return a value from an initializer.
+  }
+}

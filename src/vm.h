@@ -60,6 +60,7 @@ struct VM {
     struct Compiler* compiler;
     Value lastReturnValue;
     BTLRuntime* runtime;
+    int runFloor;  // Frame count floor for run() — stops when frameCount reaches this
 };
 
 typedef enum {
@@ -74,5 +75,8 @@ InterpretResult interpret(VM* vm, ObjModule* module, const char* source);
 void push(VM* vm, Value value);
 Value pop(VM* vm);
 void runtimeError(VM* vm, const char* format, ...);
+
+InterpretResult run(VM* vm);
+bool callValue(VM* vm, Value callee, int argCount);
 
 #endif

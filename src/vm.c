@@ -233,7 +233,7 @@ static bool bindMethod(VM* vm, ObjClass* klass, ObjString* name) {
     return false;
 }
 
-static bool call(VM* vm, ObjClosure* closure, int argCount) {
+bool call(VM* vm, ObjClosure* closure, int argCount) {
     if (argCount != closure->function->arity) {
         runtimeError(vm, "Expected %d arguments but got %d.", closure->function->arity, argCount);
         return false;
@@ -249,7 +249,7 @@ static bool call(VM* vm, ObjClosure* closure, int argCount) {
     return true;
 }
 
-static bool callValue(VM* vm, Value callee, int argCount) {
+bool callValue(VM* vm, Value callee, int argCount) {
     if (IS_OBJ(callee)) {
         switch (OBJ_TYPE(callee)) {
         case OBJ_BOUND_METHOD: {
@@ -512,6 +512,7 @@ void initVM(VM* vm) {
     vm->rootModule = newModule(vm, copyString(vm, "main", 4));
     vm->initString = copyString(vm, "init", 4);
     vm->lastReturnValue = NULL_VAL;
+    vm->runFloor = 0;
     //defineNative(vm, "clock", clockNative);
 
     // Initialize native classes
@@ -547,7 +548,7 @@ typedef struct {
     ObjNativeClass* tableClass;
 } AsyncCallTask;
 
-static InterpretResult run(VM* vm);  // Forward declaration
+InterpretResult run(VM* vm);  // Forward declaration
 
 static void asyncCallTaskRun(void* arg) {
     AsyncCallTask* task = (AsyncCallTask*) arg;
@@ -592,7 +593,7 @@ InterpretResult runVM(VM* vm) {
     return run(vm);
 }
 
-static InterpretResult run(VM* vm) {
+InterpretResult run(VM* vm) {
     register CallFrame* frame = &vm->frames[vm->frameCount - 1];
     register uint8_t* ip = frame->ip;
     int argCount;
@@ -1400,6 +1401,9 @@ static InterpretResult run(VM* vm) {
                 }
                 vm->stackTop = frame->slots;
                 push(vm, result);
+                if (vm->frameCount <= vm->runFloor) {
+                    return INTERPRET_OK;
+                }
                 REFRESH_FRAME();
                 DISPATCH();
             }

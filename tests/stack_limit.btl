@@ -1,0 +1,8 @@
+import "system";
+
+func recurse(n) {
+  if (n == 0) return "done";
+  return recurse(n - 1);
+}
+
+system.println(recurse(50)); // expect: done

@@ -5,12 +5,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define NAN_BOXING
-
 //#if defined(__GNUC__) || defined(__clang__)
 #define HAS_COMPUTED_GOTOS
 //#endif
 
+#define NAN_BOXING
 // #define DEBUG_TRACE_EXECUTION
 // #define DEBUG_PRINT_CODE
 // #define DEBUG_STRESS_GC

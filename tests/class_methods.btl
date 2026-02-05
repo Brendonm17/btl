@@ -1,0 +1,11 @@
+import "system";
+
+class Person {
+  func sayName() {
+    system.println(this.name);
+  }
+}
+
+var p = Person();
+p.name = "Brendon";
+p.sayName(); // expect: Brendon

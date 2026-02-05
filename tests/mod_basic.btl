@@ -1,0 +1,5 @@
+import "system";
+import "tests/math_lib.btl" as math;
+
+system.println(math.PI);        // expect: 3.14159
+system.println(math.square(3)); // expect: 9

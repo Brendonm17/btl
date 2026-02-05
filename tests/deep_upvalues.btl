@@ -1,0 +1,17 @@
+import "system";
+
+func level1(a) {
+  func level2(b) {
+    func level3(c) {
+      func level4(d) {
+        return a + b + c + d;
+      }
+      return level4;
+    }
+    return level3;
+  }
+  return level2;
+}
+
+var closure = level1(1)(10)(100)(1000);
+system.println(closure); // expect: 1111

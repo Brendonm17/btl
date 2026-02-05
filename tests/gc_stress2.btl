@@ -1,0 +1,10 @@
+import "system";
+
+class Trash {
+  func init(a) { this.a = a; }
+}
+
+for (var i = 0; i < 10000; i = i + 1) {
+  var t = Trash(i);
+}
+system.println("GC survived classes"); // expect: GC survived classes
