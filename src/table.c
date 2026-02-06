@@ -1,3 +1,17 @@
+// ============================================================================
+// table.c - BTL Hash Table Implementation
+//
+// This file implements a hash table using open addressing with linear probing.
+// The table supports any BTL value as a key and uses tombstones for deletion
+// to maintain probe sequences.
+//
+// Key features:
+// - Power-of-2 capacity for fast modulo (bitwise AND)
+// - 75% load factor threshold before resizing
+// - Tombstone markers for deletion without breaking probe chains
+// - Special string interning support via tableFindString
+// ============================================================================
+
 #include <stdlib.h>
 #include <string.h>
 #include "memory.h"
@@ -5,150 +19,328 @@
 #include "table.h"
 #include "value.h"
 
-#define TABLE_MAX_LOAD 0.75
+// ----------------------------------------------------------------------------
+// Constants
+// ----------------------------------------------------------------------------
 
-void initTable(Table* table) {
-    table->count = 0; table->capacity = 0; table->entries = NULL;
+// Maximum load factor before table is resized
+#define BTL_TABLE_MAX_LOAD 0.75
+
+// ----------------------------------------------------------------------------
+// btl_table_init
+//
+// Initialize a table to empty state.
+//
+// Parameters:
+//   table - The table to initialize
+// ----------------------------------------------------------------------------
+void btl_table_init(BtlTable* table) {
+    table->count = 0;
+    table->capacity = 0;
+    table->entries = NULL;
 }
 
-void freeTable(struct VM* vm, Table* table) {
-    FREE_ARRAY(vm, Entry, table->entries, table->capacity);
-    initTable(table);
+// ----------------------------------------------------------------------------
+// btl_table_free
+//
+// Free all memory used by a table and reset to empty state.
+//
+// Parameters:
+//   vm    - Virtual machine (for memory deallocation)
+//   table - The table to free
+// ----------------------------------------------------------------------------
+void btl_table_free(struct VM* vm, BtlTable* table) {
+    BTL_FREE_ARRAY(vm, BtlEntry, table->entries, table->capacity);
+    btl_table_init(table);
 }
 
-static uint32_t hashValue(Value value) {
-#ifdef NAN_BOXING
+// ----------------------------------------------------------------------------
+// hashValue
+//
+// Compute hash for any BTL value. Strings use their pre-computed hash,
+// other objects use pointer-based hashing, and primitives use bit mixing.
+//
+// Parameters:
+//   value - The value to hash
+//
+// Returns:
+//   32-bit hash value
+// ----------------------------------------------------------------------------
+static uint32_t hashValue(BtlValue value) {
+#ifdef BTL_NAN_BOXING
     if (IS_OBJ(value)) {
-        // Strings have a pre-calculated hash. 
-        // For other objects, we use the pointer itself as the basis for the hash.
-        if (IS_STRING(value)) return AS_STRING(value)->hash;
-        return (uint32_t) ((uintptr_t) AS_OBJ(value) >> 3);
+        // Strings have a pre-calculated hash
+        // Other objects use pointer as hash basis
+        if (IS_STRING(value)) {
+            return AS_STRING(value)->hash;
+        }
+        return (uint32_t)((uintptr_t)AS_OBJ(value) >> 3);
     }
-    // Mixing for Numbers/Bools (ensure identical values produce identical hashes)
+
+    // Mix bits for numbers/bools to get good distribution
     uint64_t bits = value;
     bits ^= bits >> 33;
     bits *= 0xff51afd7ed558ccd;
     bits ^= bits >> 33;
-    return (uint32_t) bits;
+    return (uint32_t)bits;
 #else
     switch (value.type) {
-    case VAL_BOOL:   return AS_BOOL(value) ? 3 : 4;
-    case VAL_NIL:    return 5;
-    case VAL_NUMBER: {
-        uint64_t bits;
-        memcpy(&bits, &value.as.number, sizeof(double));
-        return (uint32_t) (bits ^ (bits >> 32));
-    }
-    case VAL_OBJ:    return AS_OBJ(value)->hash;
-    default:         return 0;
+        case BTL_VAL_BOOL:
+            return AS_BOOL(value) ? 3 : 4;
+
+        case BTL_VAL_NIL:
+            return 5;
+
+        case BTL_VAL_NUMBER: {
+            uint64_t bits;
+            memcpy(&bits, &value.as.number, sizeof(double));
+            return (uint32_t)(bits ^ (bits >> 32));
+        }
+
+        case BTL_VAL_OBJ:
+            return AS_OBJ(value)->hash;
+
+        default:
+            return 0;
     }
 #endif
 }
 
-static Entry* findEntry(Entry* entries, int capacity, Value key) {
+// ----------------------------------------------------------------------------
+// findEntry
+//
+// Find the entry for a key using linear probing. Returns either:
+// - The entry containing the key
+// - An empty slot where the key should be inserted
+// - A tombstone slot (if no empty slot found before it)
+//
+// Parameters:
+//   entries  - The entries array to search
+//   capacity - Size of the entries array
+//   key      - The key to find
+//
+// Returns:
+//   Pointer to the entry (may be empty/tombstone if key not found)
+// ----------------------------------------------------------------------------
+static BtlEntry* findEntry(BtlEntry* entries, int capacity, BtlValue key) {
     uint32_t hash = hashValue(key);
     uint32_t index = hash & (capacity - 1);
-    Entry* tombstone = NULL;
+    BtlEntry* tombstone = NULL;
 
     for (;;) {
-        Entry* entry = &entries[index];
+        BtlEntry* entry = &entries[index];
 
         if (IS_EMPTY(entry->key)) {
             if (IS_NULL(entry->value)) {
-                // Empty slot
+                // Truly empty slot - return tombstone if we found one, else this slot
                 return tombstone != NULL ? tombstone : entry;
             } else {
-                // Tombstone found
-                if (tombstone == NULL) tombstone = entry;
+                // This is a tombstone - remember first one found
+                if (tombstone == NULL) {
+                    tombstone = entry;
+                }
             }
-        } else if (valuesEqual(entry->key, key)) {
+        } else if (btl_values_equal(entry->key, key)) {
             // Found the key
             return entry;
         }
 
+        // Linear probe to next slot
         index = (index + 1) & (capacity - 1);
     }
 }
 
-bool tableGet(Table* table, Value key, Value* value) {
-    if (table->count == 0)
+// ----------------------------------------------------------------------------
+// btl_table_get
+//
+// Look up a value by key.
+//
+// Parameters:
+//   table - The table to search
+//   key   - The key to look up
+//   value - Output parameter for the value
+//
+// Returns:
+//   true if key was found (value stored in *value), false otherwise
+// ----------------------------------------------------------------------------
+bool btl_table_get(BtlTable* table, BtlValue key, BtlValue* value) {
+    if (table->count == 0) {
         return false;
-    Entry* entry = findEntry(table->entries, table->capacity, key);
-    if (IS_EMPTY(entry->key))
+    }
+
+    BtlEntry* entry = findEntry(table->entries, table->capacity, key);
+    if (IS_EMPTY(entry->key)) {
         return false;
+    }
+
     *value = entry->value;
     return true;
 }
 
-static void adjustCapacity(struct VM* vm, Table* table, int capacity) {
-    Entry* entries = ALLOCATE(vm, Entry, capacity);
+// ----------------------------------------------------------------------------
+// adjustCapacity
+//
+// Resize the table to the new capacity. All entries are rehashed into
+// the new array. Tombstones are not copied.
+//
+// Parameters:
+//   vm       - Virtual machine (for memory allocation)
+//   table    - The table to resize
+//   capacity - New capacity (must be power of 2)
+// ----------------------------------------------------------------------------
+static void adjustCapacity(struct VM* vm, BtlTable* table, int capacity) {
+    // Allocate new entries array
+    BtlEntry* entries = BTL_ALLOCATE(vm, BtlEntry, capacity);
+
+    // Initialize all slots to empty
     for (int i = 0; i < capacity; i++) {
-        entries[i].key = EMPTY_VAL;
-        entries[i].value = NULL_VAL;
+        entries[i].key = BTL_EMPTY_VAL;
+        entries[i].value = BTL_NULL_VAL;
     }
+
+    // Rehash all existing entries (skip tombstones)
     table->count = 0;
     for (int i = 0; i < table->capacity; i++) {
-        Entry* entry = &table->entries[i];
-        if (IS_EMPTY(entry->key)) continue;
+        BtlEntry* entry = &table->entries[i];
+        if (IS_EMPTY(entry->key)) {
+            continue;
+        }
 
-        Entry* dest = findEntry(entries, capacity, entry->key);
+        BtlEntry* dest = findEntry(entries, capacity, entry->key);
         dest->key = entry->key;
         dest->value = entry->value;
         table->count++;
     }
-    FREE_ARRAY(vm, Entry, table->entries, table->capacity);
+
+    // Free old array and install new one
+    BTL_FREE_ARRAY(vm, BtlEntry, table->entries, table->capacity);
     table->entries = entries;
     table->capacity = capacity;
 }
 
-bool tableSet(struct VM* vm, Table* table, Value key, Value value) {
-    if (table->count + 1 > table->capacity * TABLE_MAX_LOAD) {
-        int capacity = GROW_CAPACITY(table->capacity);
+// ----------------------------------------------------------------------------
+// btl_table_set
+//
+// Insert or update a key-value pair.
+//
+// Parameters:
+//   vm    - Virtual machine (for memory allocation if resize needed)
+//   table - The table to modify
+//   key   - The key to set
+//   value - The value to associate with the key
+//
+// Returns:
+//   true if this was a new key, false if updating existing key
+// ----------------------------------------------------------------------------
+bool btl_table_set(struct VM* vm, BtlTable* table, BtlValue key, BtlValue value) {
+    // Check if we need to grow the table
+    if (table->count + 1 > table->capacity * BTL_TABLE_MAX_LOAD) {
+        int capacity = BTL_GROW_CAPACITY(table->capacity);
         adjustCapacity(vm, table, capacity);
     }
-    Entry* entry = findEntry(table->entries, table->capacity, key);
+
+    BtlEntry* entry = findEntry(table->entries, table->capacity, key);
     bool isNewKey = IS_EMPTY(entry->key);
-    if (isNewKey && IS_NULL(entry->value))
+
+    // Only increment count for truly new keys (not tombstones)
+    if (isNewKey && IS_NULL(entry->value)) {
         table->count++;
+    }
+
     entry->key = key;
     entry->value = value;
     return isNewKey;
 }
 
-bool tableDelete(Table* table, Value key) {
-    if (table->count == 0)
+// ----------------------------------------------------------------------------
+// btl_table_delete
+//
+// Remove an entry from the table. Uses tombstone markers to preserve
+// probe chains for other entries.
+//
+// Parameters:
+//   table - The table to modify
+//   key   - The key to delete
+//
+// Returns:
+//   true if key was found and deleted, false if not found
+// ----------------------------------------------------------------------------
+bool btl_table_delete(BtlTable* table, BtlValue key) {
+    if (table->count == 0) {
         return false;
-    Entry* entry = findEntry(table->entries, table->capacity, key);
-    if (IS_EMPTY(entry->key))
+    }
+
+    BtlEntry* entry = findEntry(table->entries, table->capacity, key);
+    if (IS_EMPTY(entry->key)) {
         return false;
-    // Place a tombstone: key is EMPTY, value is NULL (false/true marker)
-    // In our findEntry, IS_EMPTY key + NULL value = truly empty
-    // IS_EMPTY key + BOOL true value = tombstone
-    entry->key = EMPTY_VAL;
+    }
+
+    // Place a tombstone: key = EMPTY, value = true (marks it as tombstone)
+    entry->key = BTL_EMPTY_VAL;
     entry->value = BOOL_VAL(true);
     table->count--;
     return true;
 }
 
-void tableAddAll(struct VM* vm, Table* from, Table* to) {
-    if (from == to) return;
+// ----------------------------------------------------------------------------
+// btl_table_add_all
+//
+// Copy all entries from one table to another.
+//
+// Parameters:
+//   vm   - Virtual machine (for memory allocation)
+//   from - Source table
+//   to   - Destination table
+// ----------------------------------------------------------------------------
+void btl_table_add_all(struct VM* vm, BtlTable* from, BtlTable* to) {
+    if (from == to) {
+        return;
+    }
+
     for (int i = 0; i < from->capacity; i++) {
-        Entry* entry = &from->entries[i];
-        if (!IS_EMPTY(entry->key)) tableSet(vm, to, entry->key, entry->value);
+        BtlEntry* entry = &from->entries[i];
+        if (!IS_EMPTY(entry->key)) {
+            btl_table_set(vm, to, entry->key, entry->value);
+        }
     }
 }
 
-struct ObjString* tableFindString(Table* table, const char* chars, int length, uint32_t hash) {
-    if (table->capacity == 0) return NULL;
+// ----------------------------------------------------------------------------
+// btl_table_find_string
+//
+// Find an interned string by its content and hash. This is used during
+// string creation to check if an identical string already exists.
+//
+// Unlike regular lookup, this compares string contents directly since
+// we're searching for string interning (not by identity).
+//
+// Parameters:
+//   table  - The string intern table
+//   chars  - The string content to find
+//   length - Length of the string
+//   hash   - Pre-computed hash of the string
+//
+// Returns:
+//   Pointer to existing interned string, or NULL if not found
+// ----------------------------------------------------------------------------
+struct ObjString* btl_table_find_string(BtlTable* table, const char* chars,
+                                         int length, uint32_t hash) {
+    if (table->capacity == 0) {
+        return NULL;
+    }
 
     uint32_t index = hash & (table->capacity - 1);
+
     for (;;) {
-        Entry* entry = &table->entries[index];
+        BtlEntry* entry = &table->entries[index];
+
         if (IS_EMPTY(entry->key)) {
             // Stop if we hit a truly empty slot (not a tombstone)
-            if (IS_NULL(entry->value)) return NULL;
+            if (IS_NULL(entry->value)) {
+                return NULL;
+            }
         } else if (IS_STRING(entry->key)) {
-            // We must extract the string object from the Value key first
+            // Compare string contents
             ObjString* string = AS_STRING(entry->key);
             if (string->length == length &&
                 string->hash == hash &&
@@ -161,25 +353,44 @@ struct ObjString* tableFindString(Table* table, const char* chars, int length, u
     }
 }
 
-void tableRemoveWhite(Table* table) {
+// ----------------------------------------------------------------------------
+// btl_table_remove_white
+//
+// Remove entries whose keys are unmarked (white) objects. Used during
+// GC sweep phase for weak references like the string intern table.
+//
+// Parameters:
+//   table - The table to clean
+// ----------------------------------------------------------------------------
+void btl_table_remove_white(BtlTable* table) {
     for (int i = 0; i < table->capacity; i++) {
-        Entry* entry = &table->entries[i];
+        BtlEntry* entry = &table->entries[i];
+
         if (!IS_EMPTY(entry->key) && IS_OBJ(entry->key)) {
-            Obj* obj = AS_OBJ(entry->key);
+            BtlObj* obj = AS_OBJ(entry->key);
             if (!obj->isMarked) {
-                // Don't use tableDelete - just mark as truly empty
-                entry->key = EMPTY_VAL;
-                entry->value = NULL_VAL;
+                // Mark slot as truly empty (not tombstone)
+                entry->key = BTL_EMPTY_VAL;
+                entry->value = BTL_NULL_VAL;
                 table->count--;
             }
         }
     }
 }
 
-void markTable(struct VM* vm, Table* table) {
+// ----------------------------------------------------------------------------
+// btl_table_mark
+//
+// Mark all keys and values in the table as reachable for garbage collection.
+//
+// Parameters:
+//   vm    - Virtual machine (for GC marking)
+//   table - The table to mark
+// ----------------------------------------------------------------------------
+void btl_table_mark(struct VM* vm, BtlTable* table) {
     for (int i = 0; i < table->capacity; i++) {
-        Entry* entry = &table->entries[i];
-        markValue(vm, entry->key);
-        markValue(vm, entry->value);
+        BtlEntry* entry = &table->entries[i];
+        btl_gc_mark_value(vm, entry->key);
+        btl_gc_mark_value(vm, entry->value);
     }
 }

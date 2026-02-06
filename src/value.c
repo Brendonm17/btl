@@ -1,56 +1,153 @@
+// ============================================================================
+// value.c - BTL Value Operations
+//
+// This file implements operations on BTL values including equality comparison,
+// printing, and dynamic array management for value collections.
+// ============================================================================
+
 #include <stdio.h>
 #include <string.h>
 #include "object.h"
 #include "memory.h"
 #include "value.h"
 
-void initValueArray(ValueArray* array) {
-    array->values = NULL; array->capacity = 0; array->count = 0;
+// ----------------------------------------------------------------------------
+// btl_value_array_init
+//
+// Initialize a value array to empty state. Must be called before using
+// the array.
+// ----------------------------------------------------------------------------
+void btl_value_array_init(BtlValueArray* array) {
+    array->values = NULL;
+    array->capacity = 0;
+    array->count = 0;
 }
 
-void writeValueArray(struct VM* vm, ValueArray* array, Value value) {
+// ----------------------------------------------------------------------------
+// btl_value_array_write
+//
+// Append a value to the array. If the array is full, it will be grown
+// automatically. This may trigger garbage collection.
+//
+// Parameters:
+//   vm    - Virtual machine (for memory allocation)
+//   array - The value array to append to
+//   value - The value to append
+// ----------------------------------------------------------------------------
+void btl_value_array_write(struct VM* vm, BtlValueArray* array, BtlValue value) {
+    // Check if we need to grow the array
     if (array->capacity < array->count + 1) {
-        int old = array->capacity; array->capacity = GROW_CAPACITY(old);
-        array->values = GROW_ARRAY(vm, Value, array->values, old, array->capacity);
+        int oldCapacity = array->capacity;
+        array->capacity = BTL_GROW_CAPACITY(oldCapacity);
+        array->values = BTL_GROW_ARRAY(vm, BtlValue, array->values,
+                                        oldCapacity, array->capacity);
     }
-    array->values[array->count] = value; array->count++;
+
+    // Store the value and increment count
+    array->values[array->count] = value;
+    array->count++;
 }
 
-void freeValueArray(struct VM* vm, ValueArray* array) {
-    FREE_ARRAY(vm, Value, array->values, array->capacity); initValueArray(array);
+// ----------------------------------------------------------------------------
+// btl_value_array_free
+//
+// Free all memory used by a value array and reset it to empty state.
+//
+// Parameters:
+//   vm    - Virtual machine (for memory deallocation)
+//   array - The value array to free
+// ----------------------------------------------------------------------------
+void btl_value_array_free(struct VM* vm, BtlValueArray* array) {
+    BTL_FREE_ARRAY(vm, BtlValue, array->values, array->capacity);
+    btl_value_array_init(array);
 }
 
-void printValue(Value value) {
-#ifdef NAN_BOXING
-    if (IS_BOOL(value)) printf(AS_BOOL(value) ? "true" : "false");
-    else if (IS_NULL(value)) printf("null");
-    else if (IS_NUMBER(value)) printf("%g", AS_NUMBER(value));
-    else if (IS_EMPTY(value)) printf("<empty>");
-    else if (IS_OBJ(value)) printObject(value);
+// ----------------------------------------------------------------------------
+// btl_value_print
+//
+// Print a value to stdout. Used for debugging and the REPL.
+// Handles all value types including objects.
+//
+// Parameters:
+//   value - The value to print
+// ----------------------------------------------------------------------------
+void btl_value_print(BtlValue value) {
+#ifdef BTL_NAN_BOXING
+    // NaN boxing: check type by examining bit patterns
+    if (IS_BOOL(value)) {
+        printf(AS_BOOL(value) ? "true" : "false");
+    } else if (IS_NULL(value)) {
+        printf("null");
+    } else if (IS_NUMBER(value)) {
+        printf("%g", AS_NUMBER(value));
+    } else if (IS_EMPTY(value)) {
+        printf("<empty>");
+    } else if (IS_OBJ(value)) {
+        btl_object_print(value);
+    }
 #else
+    // Tagged union: switch on type field
     switch (value.type) {
-    case VAL_BOOL: printf(AS_BOOL(value) ? "true" : "false"); break;
-    case VAL_NIL: printf("null"); break;
-    case VAL_NUMBER: printf("%g", AS_NUMBER(value)); break;
-    case VAL_OBJ: printObject(value); break;
-    case VAL_EMPTY: printf("<empty>"); break;
+        case BTL_VAL_BOOL:
+            printf(AS_BOOL(value) ? "true" : "false");
+            break;
+        case BTL_VAL_NIL:
+            printf("null");
+            break;
+        case BTL_VAL_NUMBER:
+            printf("%g", AS_NUMBER(value));
+            break;
+        case BTL_VAL_OBJ:
+            btl_object_print(value);
+            break;
+        case BTL_VAL_EMPTY:
+            printf("<empty>");
+            break;
     }
 #endif
 }
 
-bool valuesEqual(Value a, Value b) {
-#ifdef NAN_BOXING
-    if (IS_NUMBER(a) && IS_NUMBER(b)) return AS_NUMBER(a) == AS_NUMBER(b);
+// ----------------------------------------------------------------------------
+// btl_values_equal
+//
+// Compare two values for equality. Numbers are compared by value,
+// objects are compared by identity (pointer equality), and other
+// types use direct comparison.
+//
+// Parameters:
+//   a - First value
+//   b - Second value
+//
+// Returns:
+//   true if values are equal, false otherwise
+// ----------------------------------------------------------------------------
+bool btl_values_equal(BtlValue a, BtlValue b) {
+#ifdef BTL_NAN_BOXING
+    // Special case for numbers: must compare by value since NaN != NaN
+    if (IS_NUMBER(a) && IS_NUMBER(b)) {
+        return AS_NUMBER(a) == AS_NUMBER(b);
+    }
+    // All other types: direct bit comparison works
     return a == b;
 #else
-    if (a.type != b.type) return false;
+    // Tagged union: types must match first
+    if (a.type != b.type) {
+        return false;
+    }
+
     switch (a.type) {
-    case VAL_BOOL: return AS_BOOL(a) == AS_BOOL(b);
-    case VAL_NIL: return true;
-    case VAL_NUMBER: return AS_NUMBER(a) == AS_NUMBER(b);
-    case VAL_OBJ: return AS_OBJ(a) == AS_OBJ(b);
-    case VAL_EMPTY: return true;
-    default: return false;
+        case BTL_VAL_BOOL:
+            return AS_BOOL(a) == AS_BOOL(b);
+        case BTL_VAL_NIL:
+            return true;  // All nils are equal
+        case BTL_VAL_NUMBER:
+            return AS_NUMBER(a) == AS_NUMBER(b);
+        case BTL_VAL_OBJ:
+            return AS_OBJ(a) == AS_OBJ(b);  // Identity comparison
+        case BTL_VAL_EMPTY:
+            return true;  // All emptys are equal
+        default:
+            return false;
     }
 #endif
 }

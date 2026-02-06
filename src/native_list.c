@@ -1,41 +1,56 @@
+// ============================================================================
+// native_list.c - BTL List Native Methods
+//
+// Implements built-in methods for list (array) objects including push, pop,
+// shift, unshift, insert, remove, slice, join, reverse, and clone operations.
+// ============================================================================
+
 #include <string.h>
 #include "native_list.h"
 #include "object.h"
 #include "memory.h"
 
-static Value listLength(VM* vm, Value receiver, int argCount, Value* args) {
+// ----------------------------------------------------------------------------
+// List Methods
+// ----------------------------------------------------------------------------
+
+// length() - returns the number of elements in the list
+static BtlValue listLength(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
     return NUMBER_VAL(list->items.count);
 }
 
-static Value listPush(VM* vm, Value receiver, int argCount, Value* args) {
+// push(value) - adds value to end of list, returns list
+static BtlValue listPush(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
-    writeValueArray(vm, &list->items, args[0]);
-    writeBarrier(vm, (Obj*) list, args[0]);
+    btl_value_array_write(vm, &list->items, args[0]);
+    btl_gc_write_barrier(vm, (BtlObj*) list, args[0]);
     return receiver;
 }
 
-static Value listPop(VM* vm, Value receiver, int argCount, Value* args) {
+// pop() - removes and returns last element
+static BtlValue listPop(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
     if (list->items.count == 0) {
-        runtimeError(vm, "Cannot pop from empty list.");
-        return NULL_VAL;
+        btl_runtime_error(vm, "Cannot pop from empty list.");
+        return BTL_NULL_VAL;
     }
-    Value val = list->items.values[--list->items.count];
+    BtlValue val = list->items.values[--list->items.count];
     return val;
 }
 
-static Value listShift(VM* vm, Value receiver, int argCount, Value* args) {
+// shift() - removes and returns first element
+static BtlValue listShift(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
     if (list->items.count == 0) {
-        runtimeError(vm, "Cannot shift from empty list.");
-        return NULL_VAL;
+        btl_runtime_error(vm, "Cannot shift from empty list.");
+        return BTL_NULL_VAL;
     }
-    Value val = list->items.values[0];
+    BtlValue val = list->items.values[0];
     for (int i = 0; i < list->items.count - 1; i++) {
         list->items.values[i] = list->items.values[i + 1];
     }
@@ -43,52 +58,55 @@ static Value listShift(VM* vm, Value receiver, int argCount, Value* args) {
     return val;
 }
 
-static Value listUnshift(VM* vm, Value receiver, int argCount, Value* args) {
+// unshift(value) - adds value to beginning of list, returns list
+static BtlValue listUnshift(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
-    writeValueArray(vm, &list->items, NULL_VAL);
+    btl_value_array_write(vm, &list->items, BTL_NULL_VAL);
     for (int i = list->items.count - 1; i > 0; i--) {
         list->items.values[i] = list->items.values[i - 1];
     }
     list->items.values[0] = args[0];
-    writeBarrier(vm, (Obj*) list, args[0]);
+    btl_gc_write_barrier(vm, (BtlObj*) list, args[0]);
     return receiver;
 }
 
-static Value listInsert(VM* vm, Value receiver, int argCount, Value* args) {
+// insert(index, value) - inserts value at index, returns list
+static BtlValue listInsert(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
     if (!IS_NUMBER(args[0])) {
-        runtimeError(vm, "Index must be a number.");
-        return NULL_VAL;
+        btl_runtime_error(vm, "Index must be a number.");
+        return BTL_NULL_VAL;
     }
     int index = (int) AS_NUMBER(args[0]);
     if (index < 0 || index > list->items.count) {
-        runtimeError(vm, "Index out of bounds.");
-        return NULL_VAL;
+        btl_runtime_error(vm, "Index out of bounds.");
+        return BTL_NULL_VAL;
     }
-    writeValueArray(vm, &list->items, NULL_VAL);
+    btl_value_array_write(vm, &list->items, BTL_NULL_VAL);
     for (int i = list->items.count - 1; i > index; i--) {
         list->items.values[i] = list->items.values[i - 1];
     }
     list->items.values[index] = args[1];
-    writeBarrier(vm, (Obj*) list, args[1]);
+    btl_gc_write_barrier(vm, (BtlObj*) list, args[1]);
     return receiver;
 }
 
-static Value listRemove(VM* vm, Value receiver, int argCount, Value* args) {
+// remove(index) - removes and returns element at index
+static BtlValue listRemove(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
     if (!IS_NUMBER(args[0])) {
-        runtimeError(vm, "Index must be a number.");
-        return NULL_VAL;
+        btl_runtime_error(vm, "Index must be a number.");
+        return BTL_NULL_VAL;
     }
     int index = (int) AS_NUMBER(args[0]);
     if (index < 0 || index >= list->items.count) {
-        runtimeError(vm, "Index out of bounds.");
-        return NULL_VAL;
+        btl_runtime_error(vm, "Index out of bounds.");
+        return BTL_NULL_VAL;
     }
-    Value val = list->items.values[index];
+    BtlValue val = list->items.values[index];
     for (int i = index; i < list->items.count - 1; i++) {
         list->items.values[i] = list->items.values[i + 1];
     }
@@ -96,42 +114,46 @@ static Value listRemove(VM* vm, Value receiver, int argCount, Value* args) {
     return val;
 }
 
-static Value listClear(VM* vm, Value receiver, int argCount, Value* args) {
+// clear() - removes all elements, returns list
+static BtlValue listClear(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
     list->items.count = 0;
     return receiver;
 }
 
-static Value listIndexOf(VM* vm, Value receiver, int argCount, Value* args) {
+// indexOf(value) - returns index of first occurrence, or -1 if not found
+static BtlValue listIndexOf(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount;
     ObjList* list = AS_LIST(receiver);
     for (int i = 0; i < list->items.count; i++) {
-        if (valuesEqual(list->items.values[i], args[0])) {
+        if (btl_values_equal(list->items.values[i], args[0])) {
             return NUMBER_VAL(i);
         }
     }
     return NUMBER_VAL(-1);
 }
 
-static Value listContains(VM* vm, Value receiver, int argCount, Value* args) {
+// contains(value) - returns true if list contains value
+static BtlValue listContains(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount;
     ObjList* list = AS_LIST(receiver);
     for (int i = 0; i < list->items.count; i++) {
-        if (valuesEqual(list->items.values[i], args[0])) {
-            return TRUE_VAL;
+        if (btl_values_equal(list->items.values[i], args[0])) {
+            return BTL_TRUE_VAL;
         }
     }
-    return FALSE_VAL;
+    return BTL_FALSE_VAL;
 }
 
-static Value listReverse(VM* vm, Value receiver, int argCount, Value* args) {
+// reverse() - reverses list in place, returns list
+static BtlValue listReverse(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
     int left = 0;
     int right = list->items.count - 1;
     while (left < right) {
-        Value temp = list->items.values[left];
+        BtlValue temp = list->items.values[left];
         list->items.values[left] = list->items.values[right];
         list->items.values[right] = temp;
         left++;
@@ -140,58 +162,63 @@ static Value listReverse(VM* vm, Value receiver, int argCount, Value* args) {
     return receiver;
 }
 
-static Value listSlice(VM* vm, Value receiver, int argCount, Value* args) {
+// slice(start, end?) - returns new list with elements from start to end
+static BtlValue listSlice(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     ObjList* list = AS_LIST(receiver);
     if (!IS_NUMBER(args[0])) {
-        runtimeError(vm, "Start index must be a number.");
-        return NULL_VAL;
+        btl_runtime_error(vm, "Start index must be a number.");
+        return BTL_NULL_VAL;
     }
     int start = (int) AS_NUMBER(args[0]);
     int end = list->items.count;
     if (argCount >= 2 && IS_NUMBER(args[1])) {
         end = (int) AS_NUMBER(args[1]);
     }
+    // Handle negative indices
     if (start < 0) start = list->items.count + start;
     if (end < 0) end = list->items.count + end;
     if (start < 0) start = 0;
     if (end > list->items.count) end = list->items.count;
     if (start >= end) {
-        return OBJ_VAL(newList(vm));
+        return OBJ_VAL(btl_list_new(vm));
     }
-    ObjList* result = newList(vm);
-    push(vm, OBJ_VAL(result));
+    ObjList* result = btl_list_new(vm);
+    btl_push(vm, OBJ_VAL(result));
     for (int i = start; i < end; i++) {
-        writeValueArray(vm, &result->items, list->items.values[i]);
-        writeBarrier(vm, (Obj*) result, list->items.values[i]);  // Fixed: was 'list'
+        btl_value_array_write(vm, &result->items, list->items.values[i]);
+        btl_gc_write_barrier(vm, (BtlObj*) result, list->items.values[i]);
     }
-    pop(vm);
+    btl_pop(vm);
     return OBJ_VAL(result);
 }
 
-static Value listJoin(VM* vm, Value receiver, int argCount, Value* args) {
+// join(separator) - joins list elements with separator, returns string
+static BtlValue listJoin(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
     if (!IS_STRING(args[0])) {
-        runtimeError(vm, "Separator must be a string.");
-        return NULL_VAL;
+        btl_runtime_error(vm, "Separator must be a string.");
+        return BTL_NULL_VAL;
     }
     ObjString* sep = AS_STRING(args[0]);
 
     if (list->items.count == 0) {
-        return OBJ_VAL(copyString(vm, "", 0));
+        return OBJ_VAL(btl_string_copy(vm, "", 0));
     }
 
+    // Calculate total length
     int totalLen = 0;
     for (int i = 0; i < list->items.count; i++) {
         if (!IS_STRING(list->items.values[i])) {
-            runtimeError(vm, "All list elements must be strings.");
-            return NULL_VAL;
+            btl_runtime_error(vm, "All list elements must be strings.");
+            return BTL_NULL_VAL;
         }
         totalLen += AS_STRING(list->items.values[i])->length;
     }
     totalLen += sep->length * (list->items.count - 1);
 
-    char* result = ALLOCATE(vm, char, totalLen + 1);
+    // Build result string
+    char* result = BTL_ALLOCATE(vm, char, totalLen + 1);
     char* dst = result;
     for (int i = 0; i < list->items.count; i++) {
         if (i > 0) {
@@ -204,36 +231,41 @@ static Value listJoin(VM* vm, Value receiver, int argCount, Value* args) {
     }
     *dst = '\0';
 
-    return OBJ_VAL(takeString(vm, result, totalLen));
+    return OBJ_VAL(btl_string_take(vm, result, totalLen));
 }
 
-static Value listClone(VM* vm, Value receiver, int argCount, Value* args) {
+// clone() - returns shallow copy of list
+static BtlValue listClone(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
-    ObjList* result = newList(vm);
-    push(vm, OBJ_VAL(result));
+    ObjList* result = btl_list_new(vm);
+    btl_push(vm, OBJ_VAL(result));
     for (int i = 0; i < list->items.count; i++) {
-        writeValueArray(vm, &result->items, list->items.values[i]);
-        writeBarrier(vm, (Obj*) result, list->items.values[i]);  // Fixed: was 'list'
+        btl_value_array_write(vm, &result->items, list->items.values[i]);
+        btl_gc_write_barrier(vm, (BtlObj*) result, list->items.values[i]);
     }
-    pop(vm);
+    btl_pop(vm);
     return OBJ_VAL(result);
 }
 
-void initListClass(VM* vm) {
-    vm->listClass = newNativeClass(vm, "List");
-    defineNativeMethod(vm, vm->listClass, "length", listLength, 0);
-    defineNativeMethod(vm, vm->listClass, "push", listPush, 1);
-    defineNativeMethod(vm, vm->listClass, "pop", listPop, 0);
-    defineNativeMethod(vm, vm->listClass, "shift", listShift, 0);
-    defineNativeMethod(vm, vm->listClass, "unshift", listUnshift, 1);
-    defineNativeMethod(vm, vm->listClass, "insert", listInsert, 2);
-    defineNativeMethod(vm, vm->listClass, "remove", listRemove, 1);
-    defineNativeMethod(vm, vm->listClass, "clear", listClear, 0);
-    defineNativeMethod(vm, vm->listClass, "indexOf", listIndexOf, 1);
-    defineNativeMethod(vm, vm->listClass, "contains", listContains, 1);
-    defineNativeMethod(vm, vm->listClass, "reverse", listReverse, 0);
-    defineNativeMethod(vm, vm->listClass, "slice", listSlice, -1);
-    defineNativeMethod(vm, vm->listClass, "join", listJoin, 1);
-    defineNativeMethod(vm, vm->listClass, "clone", listClone, 0);
+// ----------------------------------------------------------------------------
+// List Class Initialization
+// ----------------------------------------------------------------------------
+
+void btl_list_class_init(VM* vm) {
+    vm->listClass = btl_native_class_new(vm, "List");
+    btl_native_class_add_method(vm, vm->listClass, "length", listLength, 0);
+    btl_native_class_add_method(vm, vm->listClass, "push", listPush, 1);
+    btl_native_class_add_method(vm, vm->listClass, "pop", listPop, 0);
+    btl_native_class_add_method(vm, vm->listClass, "shift", listShift, 0);
+    btl_native_class_add_method(vm, vm->listClass, "unshift", listUnshift, 1);
+    btl_native_class_add_method(vm, vm->listClass, "insert", listInsert, 2);
+    btl_native_class_add_method(vm, vm->listClass, "remove", listRemove, 1);
+    btl_native_class_add_method(vm, vm->listClass, "clear", listClear, 0);
+    btl_native_class_add_method(vm, vm->listClass, "indexOf", listIndexOf, 1);
+    btl_native_class_add_method(vm, vm->listClass, "contains", listContains, 1);
+    btl_native_class_add_method(vm, vm->listClass, "reverse", listReverse, 0);
+    btl_native_class_add_method(vm, vm->listClass, "slice", listSlice, -1);
+    btl_native_class_add_method(vm, vm->listClass, "join", listJoin, 1);
+    btl_native_class_add_method(vm, vm->listClass, "clone", listClone, 0);
 }

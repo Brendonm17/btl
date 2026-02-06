@@ -8,6 +8,7 @@
 #   make transpile    → transpile INPUT file to C
 #   make compiled     → build/btl_compiled (native binary from transpiled C)
 #   make bench        → transpile + compile + run (with timing)
+#   make perf         → run comprehensive VM vs transpiled performance comparison
 #   make test         → run test suite against normal VM
 #   make test_compiled→ run test suite against transpiled binary
 #   make clean
@@ -17,10 +18,11 @@
 #   ├── Makefile            ← This file
 #   ├── main.c              ← Entry point (REPL + file runner)
 #   ├── src/                ← BTL VM source files (.c and .h)
-#   ├── transpiler/          ← Transpiler source files
+#   ├── transpiler/         ← Transpiler source files
 #   ├── obj/                ← VM object files (created by make)
 #   ├── build/              ← Transpiler outputs (created by make)
 #   ├── test.py             ← Test runner
+#   ├── perf_compare.py     ← Performance comparison script
 #   └── tests/              ← Test files
 # ============================================================================
 
@@ -47,8 +49,8 @@ MAIN_OBJ        = $(OBJ_DIR)/main.o
 # Source file discovery
 # ============================================================================
 
-# All VM .c files in src/, excluding btl_bin.c
-VM_SRCS = $(filter-out $(SRC_DIR)/btl_bin.c, $(wildcard $(SRC_DIR)/*.c))
+# All VM .c files in src/
+VM_SRCS = $(wildcard $(SRC_DIR)/*.c)
 
 # VM object files (for release build)
 VM_OBJS = $(VM_SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
@@ -147,6 +149,13 @@ bench: transpile compiled
 	@time $(BUILD_DIR)/btl_compiled $(INPUT) 2>&1 || true
 
 # ============================================================================
+# Performance comparison (VM vs Transpiled)
+# ============================================================================
+
+perf: all transpiler
+	@python3 perf_compare.py
+
+# ============================================================================
 # Test suite
 # ============================================================================
 
@@ -164,4 +173,4 @@ test_compiled: compiled
 clean:
 	rm -rf $(OBJ_DIR) $(BUILD_DIR) $(TARGET) $(DEBUG_TARGET)
 
-.PHONY: all clean debug test test_compiled transpiler transpile compiled bench
+.PHONY: all clean debug test test_compiled transpiler transpile compiled bench perf

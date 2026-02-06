@@ -18,12 +18,13 @@
 #include "vm.h"
 #include "object.h"
 #include "memory.h"
+#include "runtime.h"
 
 // Store command line args
 static int sysArgc = 0;
 static const char** sysArgv = NULL;
 
-void setSystemArgs(int argc, const char* argv []) {
+void btl_set_system_args(int argc, const char* argv []) {
     sysArgc = argc;
     sysArgv = argv;
 }
@@ -32,26 +33,26 @@ void setSystemArgs(int argc, const char* argv []) {
 // Print functions - use btl_print for output
 // ============================================================================
 
-static Value printNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue printNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
     for (int i = 0; i < argCount; i++) {
         btl_print_value(vm, args[i]);
         if (i < argCount - 1) btl_print(vm, " ");
     }
-    return NULL_VAL;
+    return BTL_NULL_VAL;
 }
 
-static Value printlnNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue printlnNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
     for (int i = 0; i < argCount; i++) {
         btl_print_value(vm, args[i]);
         if (i < argCount - 1) btl_print(vm, " ");
     }
     btl_print(vm, "\n");
-    return NULL_VAL;
+    return BTL_NULL_VAL;
 }
 
-static Value inputNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue inputNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
 
     if (argCount > 0 && IS_STRING(args[0])) {
@@ -65,111 +66,124 @@ static Value inputNative(VM* vm, Value receiver, int argCount, Value* args) {
             buffer[len - 1] = '\0';
             len--;
         }
-        return OBJ_VAL(copyString(vm, buffer, (int) len));
+        return OBJ_VAL(btl_string_copy(vm, buffer, (int) len));
     }
 
-    return NULL_VAL;
+    return BTL_NULL_VAL;
 }
 
 // ============================================================================
 // Time functions
 // ============================================================================
 
-static Value clockNative(VM* vm, Value receiver, int argCount, Value* args) {
-    (void) vm; (void) receiver; (void) argCount; (void) args;
+static BtlValue clockNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
+    (void) receiver; (void) argCount; (void) args;
+    // Use platform time handles for portability
+    if (vm != NULL && vm->runtime != NULL) {
+        BtlTimeHandles* time = &vm->runtime->config.platform.time;
+        return NUMBER_VAL(time->clock(time->user_data));
+    }
+    // Fallback to system clock
     return NUMBER_VAL((double) clock() / CLOCKS_PER_SEC);
 }
 
-static Value timeNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue timeNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver; (void) argCount; (void) args;
     return NUMBER_VAL((double) time(NULL));
 }
 
-static Value sleepNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue sleepNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
     if (argCount < 1 || !IS_NUMBER(args[0])) {
         btl_error(vm, "sleep() requires a number argument.\n");
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
 
     double seconds = AS_NUMBER(args[0]);
 
+    // Use platform time handles for portability
+    if (vm != NULL && vm->runtime != NULL) {
+        BtlTimeHandles* time = &vm->runtime->config.platform.time;
+        time->sleep_ms((uint32_t)(seconds * 1000), time->user_data);
+    } else {
+        // Fallback to system sleep
 #ifdef _WIN32
-    Sleep((DWORD) (seconds * 1000));
+        Sleep((DWORD) (seconds * 1000));
 #else
-    struct timespec ts;
-    ts.tv_sec = (time_t) seconds;
-    ts.tv_nsec = (long) ((seconds - ts.tv_sec) * 1e9);
-    nanosleep(&ts, NULL);
+        struct timespec ts;
+        ts.tv_sec = (time_t) seconds;
+        ts.tv_nsec = (long) ((seconds - ts.tv_sec) * 1e9);
+        nanosleep(&ts, NULL);
 #endif
+    }
 
-    return NULL_VAL;
+    return BTL_NULL_VAL;
 }
 
 // ============================================================================
 // Type checking functions
 // ============================================================================
 
-static Value typeofNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue typeofNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
-    if (argCount < 1) return OBJ_VAL(copyString(vm, "null", 4));
+    if (argCount < 1) return OBJ_VAL(btl_string_copy(vm, "null", 4));
 
-    Value value = args[0];
+    BtlValue value = args[0];
 
-    if (IS_BOOL(value)) return OBJ_VAL(copyString(vm, "bool", 4));
-    if (IS_NULL(value)) return OBJ_VAL(copyString(vm, "null", 4));
-    if (IS_NUMBER(value)) return OBJ_VAL(copyString(vm, "number", 6));
-    if (IS_STRING(value)) return OBJ_VAL(copyString(vm, "string", 6));
-    if (IS_LIST(value)) return OBJ_VAL(copyString(vm, "list", 4));
-    if (IS_TABLE(value)) return OBJ_VAL(copyString(vm, "table", 5));
+    if (IS_BOOL(value)) return OBJ_VAL(btl_string_copy(vm, "bool", 4));
+    if (IS_NULL(value)) return OBJ_VAL(btl_string_copy(vm, "null", 4));
+    if (IS_NUMBER(value)) return OBJ_VAL(btl_string_copy(vm, "number", 6));
+    if (IS_STRING(value)) return OBJ_VAL(btl_string_copy(vm, "string", 6));
+    if (IS_LIST(value)) return OBJ_VAL(btl_string_copy(vm, "list", 4));
+    if (IS_TABLE(value)) return OBJ_VAL(btl_string_copy(vm, "table", 5));
     if (IS_FUNCTION(value) || IS_CLOSURE(value) || IS_NATIVE(value))
-        return OBJ_VAL(copyString(vm, "function", 8));
-    if (IS_CLASS(value)) return OBJ_VAL(copyString(vm, "class", 5));
-    if (IS_INSTANCE(value)) return OBJ_VAL(copyString(vm, "instance", 8));
-    if (IS_FUTURE(value)) return OBJ_VAL(copyString(vm, "future", 6));
-    if (IS_ACTOR(value)) return OBJ_VAL(copyString(vm, "actor", 5));
+        return OBJ_VAL(btl_string_copy(vm, "function", 8));
+    if (IS_CLASS(value)) return OBJ_VAL(btl_string_copy(vm, "class", 5));
+    if (IS_INSTANCE(value)) return OBJ_VAL(btl_string_copy(vm, "instance", 8));
+    if (IS_FUTURE(value)) return OBJ_VAL(btl_string_copy(vm, "future", 6));
+    if (IS_ACTOR(value)) return OBJ_VAL(btl_string_copy(vm, "actor", 5));
 
-    return OBJ_VAL(copyString(vm, "object", 6));
+    return OBJ_VAL(btl_string_copy(vm, "object", 6));
 }
 
-static Value isNumberNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue isNumberNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return BOOL_VAL(false);
     return BOOL_VAL(IS_NUMBER(args[0]));
 }
 
-static Value isStringNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue isStringNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return BOOL_VAL(false);
     return BOOL_VAL(IS_STRING(args[0]));
 }
 
-static Value isBoolNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue isBoolNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return BOOL_VAL(false);
     return BOOL_VAL(IS_BOOL(args[0]));
 }
 
-static Value isListNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue isListNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return BOOL_VAL(false);
     return BOOL_VAL(IS_LIST(args[0]));
 }
 
-static Value isTableNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue isTableNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return BOOL_VAL(false);
     return BOOL_VAL(IS_TABLE(args[0]));
 }
 
-static Value isFunctionNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue isFunctionNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return BOOL_VAL(false);
-    Value v = args[0];
+    BtlValue v = args[0];
     return BOOL_VAL(IS_FUNCTION(v) || IS_CLOSURE(v) || IS_NATIVE(v) || IS_BOUND_METHOD(v));
 }
 
-static Value isNullNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue isNullNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return BOOL_VAL(true);
     return BOOL_VAL(IS_NULL(args[0]));
@@ -179,11 +193,11 @@ static Value isNullNative(VM* vm, Value receiver, int argCount, Value* args) {
 // Conversion functions
 // ============================================================================
 
-static Value toStringNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue toStringNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
-    if (argCount < 1) return OBJ_VAL(copyString(vm, "", 0));
+    if (argCount < 1) return OBJ_VAL(btl_string_copy(vm, "", 0));
 
-    Value value = args[0];
+    BtlValue value = args[0];
 
     if (IS_STRING(value)) return value;
 
@@ -194,49 +208,49 @@ static Value toStringNative(VM* vm, Value receiver, int argCount, Value* args) {
         len = snprintf(buffer, sizeof(buffer), "%g", AS_NUMBER(value));
     } else if (IS_BOOL(value)) {
         const char* str = AS_BOOL(value) ? "true" : "false";
-        return OBJ_VAL(copyString(vm, str, (int) strlen(str)));
+        return OBJ_VAL(btl_string_copy(vm, str, (int) strlen(str)));
     } else if (IS_NULL(value)) {
-        return OBJ_VAL(copyString(vm, "null", 4));
+        return OBJ_VAL(btl_string_copy(vm, "null", 4));
     } else {
-        return OBJ_VAL(copyString(vm, "<object>", 8));
+        return OBJ_VAL(btl_string_copy(vm, "<object>", 8));
     }
 
-    return OBJ_VAL(copyString(vm, buffer, len));
+    return OBJ_VAL(btl_string_copy(vm, buffer, len));
 }
 
-static Value toNumberNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue toNumberNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return NUMBER_VAL(0);
 
-    Value value = args[0];
+    BtlValue value = args[0];
 
     if (IS_NUMBER(value)) return value;
     if (IS_BOOL(value)) return NUMBER_VAL(AS_BOOL(value) ? 1 : 0);
     if (IS_STRING(value)) {
         char* end;
         double num = strtod(AS_CSTRING(value), &end);
-        if (end == AS_CSTRING(value)) return NULL_VAL;
+        if (end == AS_CSTRING(value)) return BTL_NULL_VAL;
         return NUMBER_VAL(num);
     }
 
-    return NULL_VAL;
+    return BTL_NULL_VAL;
 }
 
 // ============================================================================
 // File I/O functions
 // ============================================================================
 
-static Value readFileNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue readFileNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
     if (argCount < 1 || !IS_STRING(args[0])) {
         btl_error(vm, "readFile() requires a string path.\n");
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
 
     const char* path = AS_CSTRING(args[0]);
     FILE* file = fopen(path, "rb");
     if (file == NULL) {
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
 
     fseek(file, 0, SEEK_END);
@@ -246,7 +260,7 @@ static Value readFileNative(VM* vm, Value receiver, int argCount, Value* args) {
     char* buffer = btl_realloc(vm, NULL, 0, size + 1);
     if (buffer == NULL) {
         fclose(file);
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
 
     size_t bytesRead = fread(buffer, 1, size, file);
@@ -254,14 +268,14 @@ static Value readFileNative(VM* vm, Value receiver, int argCount, Value* args) {
 
     buffer[bytesRead] = '\0';
 
-    ObjString* result = copyString(vm, buffer, (int) bytesRead);
+    ObjString* result = btl_string_copy(vm, buffer, (int) bytesRead);
 
     btl_realloc(vm, buffer, size + 1, 0);
 
     return OBJ_VAL(result);
 }
 
-static Value writeFileNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue writeFileNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
     if (argCount < 2 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
         btl_error(vm, "writeFile() requires path and content strings.\n");
@@ -282,7 +296,7 @@ static Value writeFileNative(VM* vm, Value receiver, int argCount, Value* args) 
     return BOOL_VAL(written == (size_t) content->length);
 }
 
-static Value appendFileNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue appendFileNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
     if (argCount < 2 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
         btl_error(vm, "appendFile() requires path and content strings.\n");
@@ -303,7 +317,7 @@ static Value appendFileNative(VM* vm, Value receiver, int argCount, Value* args)
     return BOOL_VAL(written == (size_t) content->length);
 }
 
-static Value fileExistsNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue fileExistsNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1 || !IS_STRING(args[0])) {
         return BOOL_VAL(false);
@@ -321,42 +335,42 @@ static Value fileExistsNative(VM* vm, Value receiver, int argCount, Value* args)
 // System functions
 // ============================================================================
 
-static Value exitNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue exitNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     int code = 0;
     if (argCount > 0 && IS_NUMBER(args[0])) {
         code = (int) AS_NUMBER(args[0]);
     }
     exit(code);
-    return NULL_VAL;
+    return BTL_NULL_VAL;
 }
 
-static Value getenvNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue getenvNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
     if (argCount < 1 || !IS_STRING(args[0])) {
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
 
     const char* value = getenv(AS_CSTRING(args[0]));
     if (value == NULL) {
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
 
-    return OBJ_VAL(copyString(vm, value, (int) strlen(value)));
+    return OBJ_VAL(btl_string_copy(vm, value, (int) strlen(value)));
 }
 
-static Value argsNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue argsNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver; (void) argCount; (void) args;
 
-    ObjList* list = newList(vm);
-    push(vm, OBJ_VAL(list));
+    ObjList* list = btl_list_new(vm);
+    btl_push(vm, OBJ_VAL(list));
 
     for (int i = 0; i < sysArgc; i++) {
-        Value arg = OBJ_VAL(copyString(vm, sysArgv[i], (int) strlen(sysArgv[i])));
-        writeValueArray(vm, &list->items, arg);
+        BtlValue arg = OBJ_VAL(btl_string_copy(vm, sysArgv[i], (int) strlen(sysArgv[i])));
+        btl_value_array_write(vm, &list->items, arg);
     }
 
-    pop(vm);
+    btl_pop(vm);
     return OBJ_VAL(list);
 }
 
@@ -364,7 +378,7 @@ static Value argsNative(VM* vm, Value receiver, int argCount, Value* args) {
 // Assert function
 // ============================================================================
 
-static Value assertNative(VM* vm, Value receiver, int argCount, Value* args) {
+static BtlValue assertNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
     if (argCount < 1) {
         btl_error(vm, "Assertion failed: no condition provided\n");
@@ -389,7 +403,7 @@ static Value assertNative(VM* vm, Value receiver, int argCount, Value* args) {
         exit(1);
     }
 
-    return NULL_VAL;
+    return BTL_NULL_VAL;
 }
 
 // ============================================================================
@@ -397,27 +411,27 @@ static Value assertNative(VM* vm, Value receiver, int argCount, Value* args) {
 // ============================================================================
 
 static void defineModuleFunction(VM* vm, ObjNativeModule* module, const char* name,
-    NativeMethodFn function, int arity) {
-    ObjString* nameStr = copyString(vm, name, (int) strlen(name));
-    push(vm, OBJ_VAL(nameStr));
+    BtlNativeMethodFn function, int arity) {
+    ObjString* nameStr = btl_string_copy(vm, name, (int) strlen(name));
+    btl_push(vm, OBJ_VAL(nameStr));
 
     // Fixed: correct argument order (fn, name, arity) and use const char*
-    ObjNativeMethod* method = newNativeMethod(vm, function, name, arity);
-    push(vm, OBJ_VAL(method));
+    ObjNativeMethod* method = btl_native_method_new(vm, function, name, arity);
+    btl_push(vm, OBJ_VAL(method));
 
-    tableSet(vm, &module->globals, OBJ_VAL(nameStr), OBJ_VAL(method));
+    btl_table_set(vm, &module->globals, OBJ_VAL(nameStr), OBJ_VAL(method));
 
-    pop(vm);
-    pop(vm);
+    btl_pop(vm);
+    btl_pop(vm);
 }
 
-void initSystemModule(VM* vm) {
-    ObjString* name = copyString(vm, "system", 6);
-    push(vm, OBJ_VAL(name));
+void btl_system_module_init(VM* vm) {
+    ObjString* name = btl_string_copy(vm, "system", 6);
+    btl_push(vm, OBJ_VAL(name));
 
     // Fixed: use name->chars (const char*) instead of name (ObjString*)
-    ObjNativeModule* module = newNativeModule(vm, name->chars);
-    push(vm, OBJ_VAL(module));
+    ObjNativeModule* module = btl_native_module_new(vm, name->chars);
+    btl_push(vm, OBJ_VAL(module));
 
     // I/O
     defineModuleFunction(vm, module, "print", printNative, -1);
@@ -455,8 +469,8 @@ void initSystemModule(VM* vm) {
     defineModuleFunction(vm, module, "args", argsNative, 0);
     defineModuleFunction(vm, module, "assert", assertNative, -1);
 
-    tableSet(vm, &vm->nativeModules, OBJ_VAL(name), OBJ_VAL(module));
+    btl_table_set(vm, &vm->nativeModules, OBJ_VAL(name), OBJ_VAL(module));
 
-    pop(vm);
-    pop(vm);
+    btl_pop(vm);
+    btl_pop(vm);
 }
