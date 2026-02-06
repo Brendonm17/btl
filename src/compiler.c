@@ -10,18 +10,19 @@
 #include "scanner.h"
 #include "runtime.h"
 
-#ifdef DEBUG_PRINT_CODE
+#ifdef BTL_DEBUG_PRINT_CODE
 #include "debug.h"
 #endif
 
 // --- Parser & Grammar ---
 
+// Parser state for the compiler
 typedef struct {
-    Token current;
-    Token previous;
-    bool hadError;
-    bool panicMode;
-    struct VM* vm;
+    BtlToken current;       // Current token being processed
+    BtlToken previous;      // Previously consumed token
+    bool hadError;          // True if any error occurred
+    bool panicMode;         // True when recovering from error
+    struct VM* vm;          // VM for error reporting
 } Parser;
 
 typedef enum {
@@ -38,7 +39,7 @@ typedef enum {
     PREC_PRIMARY
 } Precedence;
 
-typedef void (*ParseFn)(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign);
+typedef void (*ParseFn)(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign);
 
 typedef struct {
     ParseFn prefix;
@@ -48,62 +49,66 @@ typedef struct {
 
 typedef struct {
     bool isConstant;
-    Value value;
+    BtlValue value;
     int length;
 } LastInstruction;
 
 // --- Forward Declarations ---
 
-static void expression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
-static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
-static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc);
-static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, FunctionType type);
-static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool isStatement);
-static int parseVariable(Parser* p, Scanner* s, Compiler* c, const char* errorMessage);
-static void defineVariable(Parser* p, Compiler* c, int global);
-static ParseRule* getRule(TokenType type);
-static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Precedence precedence);
-static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index);
-static int makeConstant(Parser* p, Compiler* c, Value value);
-static void emitConstant(Parser* p, Compiler* c, Value value);
-static int resolveLocal(Parser* p, Compiler* c, Token* name);
-static int resolveUpvalue(Parser* p, Compiler* c, Token* name);
-static void emitVariableSet(Parser* p, Compiler* c, ClassCompiler* cc, Token name);
-static void prefixIncDec(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign);
-static void doExpr(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign);
+static void expression(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc);
+static void statement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc);
+static void declaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc);
+static void function(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, BtlFunctionType type);
+static void switchStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool isStatement);
+static int parseVariable(Parser* p, BtlScanner* s, BtlCompiler* c, const char* errorMessage);
+static void defineVariable(Parser* p, BtlCompiler* c, int global);
+static ParseRule* getRule(BtlTokenType type);
+static void parsePrecedence(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, Precedence precedence);
+static void emitLong(Parser* p, BtlCompiler* c, BtlOpCode shortOp, BtlOpCode longOp, uint32_t index);
+static int makeConstant(Parser* p, BtlCompiler* c, BtlValue value);
+static void emitConstant(Parser* p, BtlCompiler* c, BtlValue value);
+static int resolveLocal(Parser* p, BtlCompiler* c, BtlToken* name);
+static int resolveUpvalue(Parser* p, BtlCompiler* c, BtlToken* name);
+static void emitVariableSet(Parser* p, BtlCompiler* c, BtlClassCompiler* cc, BtlToken name);
+static void prefixIncDec(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign);
+static void doExpr(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign);
 
 
 // --- Chunk Management ---
 
-static Chunk* currentChunk(Compiler* c) {
+// Returns the bytecode chunk for the current function being compiled
+static BtlChunk* currentChunk(BtlCompiler* c) {
     return &c->function->chunk;
 }
 
-static void errorAt(Parser* p, Token* token, const char* message) {
+// Report an error at a specific token location
+static void errorAt(Parser* p, BtlToken* token, const char* message) {
     if (p->panicMode) return;
     p->panicMode = true;
     p->hadError = true;
     btl_errorf(p->vm, "[line %d] Error", token->line);
 
-    if (token->type == TOKEN_EOF) {
+    if (token->type == BTL_TOKEN_EOF) {
         btl_error(p->vm, " at end");
-    } else if (token->type != TOKEN_ERROR) {
+    } else if (token->type != BTL_TOKEN_ERROR) {
         btl_errorf(p->vm, " at '%.*s'", token->length, token->start);
     }
 
     btl_errorf(p->vm, ": %s\n", message);
 }
 
-static void advance(Parser* p, Scanner* s) {
+// Advance to the next token from the scanner
+static void advance(Parser* p, BtlScanner* s) {
     p->previous = p->current;
     for (;;) {
-        p->current = scanToken(s);
-        if (p->current.type != TOKEN_ERROR) break;
+        p->current = btl_scanner_scan_token(s);
+        if (p->current.type != BTL_TOKEN_ERROR) break;
         errorAt(p, &p->current, p->current.start);
     }
 }
 
-static void consume(Parser* p, Scanner* s, TokenType type, const char* message) {
+// Consume expected token type or report error
+static void consume(Parser* p, BtlScanner* s, BtlTokenType type, const char* message) {
     if (p->current.type == type) {
         advance(p, s);
         return;
@@ -111,104 +116,109 @@ static void consume(Parser* p, Scanner* s, TokenType type, const char* message) 
     errorAt(p, &p->current, message);
 }
 
-static bool check(Parser* p, TokenType type) {
+// Check if current token matches type
+static bool check(Parser* p, BtlTokenType type) {
     return p->current.type == type;
 }
 
-static bool match(Parser* p, Scanner* s, TokenType type) {
+// Match current token and advance if it matches
+static bool match(Parser* p, BtlScanner* s, BtlTokenType type) {
     if (!check(p, type)) return false;
     advance(p, s);
     return true;
 }
 
-static void emitByte(Parser* p, Compiler* c, uint8_t byte) {
+// Emit a single bytecode instruction
+static void emitByte(Parser* p, BtlCompiler* c, uint8_t byte) {
     c->previousInstruction = c->lastInstruction;
     c->lastInstruction = currentChunk(c)->count;
-    writeChunk(c->vm, currentChunk(c), byte, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), byte, p->previous.line);
 }
 
-static void emitBytes(Parser* p, Compiler* c, uint8_t byte1, uint8_t byte2) {
+// Emit two bytecode bytes
+static void emitBytes(Parser* p, BtlCompiler* c, uint8_t byte1, uint8_t byte2) {
     emitByte(p, c, byte1);
-    writeChunk(c->vm, currentChunk(c), byte2, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), byte2, p->previous.line);
 }
 
-// Creates method signature string: "methodName/arity"
-static ObjString* createMethodSignature(Compiler* c, Token* name, int arity) {
+// Creates method signature string: "methodName\arity"
+static ObjString* createMethodSignature(BtlCompiler* c, BtlToken* name, int arity) {
     int nameLen = name->length;
-    char* buffer = ALLOCATE(c->vm, char, nameLen + 2);
+    char* buffer = BTL_ALLOCATE(c->vm, char, nameLen + 2);
     memcpy(buffer, name->start, nameLen);
     buffer[nameLen] = (char) arity;
     buffer[nameLen + 1] = '\0';
-    ObjString* signature = copyString(c->vm, buffer, nameLen + 1);
-    FREE_ARRAY(c->vm, char, buffer, nameLen + 2);
+    ObjString* signature = btl_string_copy(c->vm, buffer, nameLen + 1);
+    BTL_FREE_ARRAY(c->vm, char, buffer, nameLen + 2);
     return signature;
 }
 
 // Emit indexed invoke with optimized opcodes for 0-8 args
-static void emitInvokeIndexed(Parser* p, Compiler* c, int methodIndex, int argCount) {
+static void emitInvokeIndexed(Parser* p, BtlCompiler* c, int methodIndex, int argCount) {
     if (argCount <= 8 && methodIndex < 256) {
-        emitBytes(p, c, (uint8_t) (OP_INVOKE_0 + argCount), (uint8_t) methodIndex);
+        emitBytes(p, c, (uint8_t) (BTL_OP_INVOKE_0 + argCount), (uint8_t) methodIndex);
     } else if (methodIndex < 256) {
-        emitByte(p, c, OP_INVOKE);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+        emitByte(p, c, BTL_OP_INVOKE);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
     } else {
-        emitByte(p, c, OP_INVOKE_LONG);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+        emitByte(p, c, BTL_OP_INVOKE_LONG);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
     }
 }
 
-static void emitSuperInvokeIndexed(Parser* p, Compiler* c, int methodIndex, int argCount) {
+// Emit indexed super invoke with optimized opcodes for 0-8 args
+static void emitSuperInvokeIndexed(Parser* p, BtlCompiler* c, int methodIndex, int argCount) {
     if (argCount <= 8 && methodIndex < 256) {
-        emitBytes(p, c, (uint8_t) (OP_SUPER_INVOKE_0 + argCount), (uint8_t) methodIndex);
+        emitBytes(p, c, (uint8_t) (BTL_OP_SUPER_INVOKE_0 + argCount), (uint8_t) methodIndex);
     } else if (methodIndex < 256) {
-        emitByte(p, c, OP_SUPER_INVOKE);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+        emitByte(p, c, BTL_OP_SUPER_INVOKE);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
     } else {
-        emitByte(p, c, OP_SUPER_INVOKE_LONG);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+        emitByte(p, c, BTL_OP_SUPER_INVOKE_LONG);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
     }
 }
 
 // Try to resolve method index at compile time
 // Returns -1 if not possible (polymorphic call)
-static int tryResolveMethodIndex(Compiler* c, ClassCompiler* cc, Token* name, int argCount) {
+static int tryResolveMethodIndex(BtlCompiler* c, BtlClassCompiler* cc, BtlToken* name, int argCount) {
     if (cc == NULL) return -1;
 
     ObjString* signature = createMethodSignature(c, name, argCount);
-    push(c->vm, OBJ_VAL(signature));
+    btl_push(c->vm, OBJ_VAL(signature));
 
-    Value indexValue;
+    BtlValue indexValue;
     int methodIndex = -1;
-    if (tableGet(&cc->methodIndices, OBJ_VAL(signature), &indexValue)) {
+    if (btl_table_get(&cc->methodIndices, OBJ_VAL(signature), &indexValue)) {
         methodIndex = (int) AS_NUMBER(indexValue);
     }
 
-    pop(c->vm);
+    btl_pop(c->vm);
     return methodIndex;
 }
 
-static Token syntheticToken(const char* text) {
-    Token token;
+static BtlToken syntheticToken(const char* text) {
+    BtlToken token;
     token.start = text;
     token.length = (int) strlen(text);
     token.line = 0;
-    token.type = TOKEN_IDENTIFIER;
+    token.type = BTL_TOKEN_IDENTIFIER;
     return token;
 }
 
-static void addLocal(Parser* p, Compiler* c, Token name) {
+static void addLocal(Parser* p, BtlCompiler* c, BtlToken name) {
     if (c->localCount == 256) {
         errorAt(p, &name, "Too many local variables in function.");
         return;
     }
 
-    Local* local = &c->locals[c->localCount++];
+    BtlLocal* local = &c->locals[c->localCount++];
     local->name = name;
     local->depth = -1;
     local->isCaptured = false;
@@ -217,7 +227,7 @@ static void addLocal(Parser* p, Compiler* c, Token name) {
 
 // --- Back-Patching Logic ---
 
-static void markLocalAsModified(Compiler* c, int localIndex) {
+static void markLocalAsModified(BtlCompiler* c, int localIndex) {
     c->locals[localIndex].isModified = true;
     for (int i = 0; i < c->patchCount; i++) {
         if (c->patches[i].localIndex == localIndex) {
@@ -227,8 +237,8 @@ static void markLocalAsModified(Compiler* c, int localIndex) {
     }
 }
 
-static void addPatch(Compiler* c, int localIndex, int codeOffset) {
-    if (c->patchCount < UINT8_COUNT) {
+static void addPatch(BtlCompiler* c, int localIndex, int codeOffset) {
+    if (c->patchCount < BTL_UINT8_COUNT) {
         c->patches[c->patchCount].localIndex = localIndex;
         c->patches[c->patchCount].codeOffset = codeOffset;
         c->patchCount++;
@@ -237,24 +247,24 @@ static void addPatch(Compiler* c, int localIndex, int codeOffset) {
 
 // --- Bytecode Helpers ---
 
-static void removeChunkTail(Chunk* chunk, int n) {
+static void removeChunkTail(BtlChunk* chunk, int n) {
     if (n <= 0) return;
     if (n > chunk->count) n = chunk->count;
     chunk->count -= n;
 }
 
-static void emitPopOrRemoveLoad(Parser* p, Compiler* c) {
-    Chunk* chunk = currentChunk(c);
+static void emitPopOrRemoveLoad(Parser* p, BtlCompiler* c) {
+    BtlChunk* chunk = currentChunk(c);
     if (c->lastInstruction >= 0 && c->lastInstruction < chunk->count) {
         uint8_t prevOp = chunk->code[c->lastInstruction];
-        if (prevOp == OP_RETURN) return;
+        if (prevOp == BTL_OP_RETURN) return;
     }
     if (chunk->count >= 2) {
         int lastIndex = chunk->count - 1;
         int opcodeIndex = lastIndex - 1;
         if (opcodeIndex >= 0) {
             uint8_t possibleOp = chunk->code[opcodeIndex];
-            if (possibleOp == OP_GET_LOCAL || possibleOp == OP_GET_UPVALUE) {
+            if (possibleOp == BTL_OP_GET_LOCAL || possibleOp == BTL_OP_GET_UPVALUE) {
                 removeChunkTail(chunk, 2);
                 c->lastInstruction = (chunk->count > 0) ? chunk->count - 1 : -1;
                 c->previousInstruction = -1;
@@ -262,10 +272,10 @@ static void emitPopOrRemoveLoad(Parser* p, Compiler* c) {
             }
         }
     }
-    emitByte(p, c, OP_POP);
+    emitByte(p, c, BTL_OP_POP);
 }
 
-static void emitPopN(Parser* p, Compiler* c, unsigned int count) {
+static void emitPopN(Parser* p, BtlCompiler* c, unsigned int count) {
     if (count == 0) return;
     if (count == 1) {
         emitPopOrRemoveLoad(p, c);
@@ -273,32 +283,32 @@ static void emitPopN(Parser* p, Compiler* c, unsigned int count) {
     }
     const unsigned int CHUNK = 255;
     while (count > CHUNK) {
-        emitBytes(p, c, OP_POP_N, (uint8_t) CHUNK);
+        emitBytes(p, c, BTL_OP_POP_N, (uint8_t) CHUNK);
         count -= CHUNK;
     }
     if (count == 1) {
         emitPopOrRemoveLoad(p, c);
     } else {
-        emitBytes(p, c, OP_POP_N, (uint8_t) count);
+        emitBytes(p, c, BTL_OP_POP_N, (uint8_t) count);
     }
 }
 
-static void emitConstant(Parser* p, Compiler* c, Value value) {
-    emitLong(p, c, OP_CONSTANT, OP_CONSTANT_LONG, makeConstant(p, c, value));
+static void emitConstant(Parser* p, BtlCompiler* c, BtlValue value) {
+    emitLong(p, c, BTL_OP_CONSTANT, BTL_OP_CONSTANT_LONG, makeConstant(p, c, value));
 }
 
-static LastInstruction getInstructionAt(Compiler* c, int offset) {
-    Chunk* chunk = currentChunk(c);
-    LastInstruction result = { .isConstant = false, .value = NULL_VAL, .length = 0 };
+static LastInstruction getInstructionAt(BtlCompiler* c, int offset) {
+    BtlChunk* chunk = currentChunk(c);
+    LastInstruction result = { .isConstant = false, .value = BTL_NULL_VAL, .length = 0 };
     if (offset < 0 || offset >= chunk->count) return result;
 
     uint8_t op = chunk->code[offset];
-    if (op == OP_CONSTANT) {
+    if (op == BTL_OP_CONSTANT) {
         uint8_t index = chunk->code[offset + 1];
         result.isConstant = true;
         result.value = chunk->constants.values[index];
         result.length = 2;
-    } else if (op == OP_CONSTANT_LONG) {
+    } else if (op == BTL_OP_CONSTANT_LONG) {
         uint8_t lo = chunk->code[offset + 1];
         uint8_t hi = chunk->code[offset + 2];
         uint16_t index = (hi << 8) | lo;
@@ -309,36 +319,44 @@ static LastInstruction getInstructionAt(Compiler* c, int offset) {
     return result;
 }
 
-static void emitLoop(Parser* p, Compiler* c, int loopStart) {
-    emitByte(p, c, OP_LOOP);
+static void emitLoop(Parser* p, BtlCompiler* c, int loopStart) {
+    emitByte(p, c, BTL_OP_LOOP);
     int offset = currentChunk(c)->count - loopStart + 2;
     emitByte(p, c, (offset >> 8) & 0xff);
     emitByte(p, c, offset & 0xff);
 }
 
-static int emitJump(Parser* p, Compiler* c, uint8_t instruction) {
+static int emitJump(Parser* p, BtlCompiler* c, uint8_t instruction) {
     emitByte(p, c, instruction);
-    writeChunk(c->vm, currentChunk(c), 0xff, p->previous.line);
-    writeChunk(c->vm, currentChunk(c), 0xff, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), 0xff, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), 0xff, p->previous.line);
     return currentChunk(c)->count - 2;
 }
 
-static int emitFusedJump(Parser* p, Compiler* c, uint8_t defaultJump) {
-    Chunk* chunk = currentChunk(c);
+static int emitFusedJump(Parser* p, BtlCompiler* c, uint8_t defaultJump) {
+    BtlChunk* chunk = currentChunk(c);
+
+    // Don't fuse if an and_/or_ short-circuit jump was just patched to
+    // chunk->count.  Removing the last comparison opcode would shift the
+    // chunk boundary and leave that jump pointing into an operand byte.
+    if (c->inhibitFusion) {
+        c->inhibitFusion = false;
+        return emitJump(p, c, defaultJump);
+    }
 
     if (chunk->count > 0) {
         uint8_t lastOp = chunk->code[chunk->count - 1];
         uint8_t fusedOp = 0;
 
         switch (lastOp) {
-        case OP_EQUAL:   fusedOp = OP_JUMP_IF_NOT_EQUAL; break;
-        case OP_GREATER: fusedOp = OP_JUMP_IF_NOT_GREATER; break;
-        case OP_LESS:    fusedOp = OP_JUMP_IF_NOT_LESS; break;
-        case OP_NOT:
-            if (chunk->count > 1 && chunk->code[chunk->count - 2] == OP_EQUAL) {
+        case BTL_OP_EQUAL:   fusedOp = BTL_OP_JUMP_IF_NOT_EQUAL; break;
+        case BTL_OP_GREATER: fusedOp = BTL_OP_JUMP_IF_NOT_GREATER; break;
+        case BTL_OP_LESS:    fusedOp = BTL_OP_JUMP_IF_NOT_LESS; break;
+        case BTL_OP_NOT:
+            if (chunk->count > 1 && chunk->code[chunk->count - 2] == BTL_OP_EQUAL) {
                 removeChunkTail(chunk, 1);
-                lastOp = OP_EQUAL;
-                fusedOp = OP_JUMP_IF_EQUAL;
+                lastOp = BTL_OP_EQUAL;
+                fusedOp = BTL_OP_JUMP_IF_EQUAL;
             }
             break;
         }
@@ -352,73 +370,73 @@ static int emitFusedJump(Parser* p, Compiler* c, uint8_t defaultJump) {
     return emitJump(p, c, defaultJump);
 }
 
-static int makeConstant(Parser* p, Compiler* c, Value value) {
-    Value existingIndex;
-    if (tableGet(&c->constants, value, &existingIndex)) {
+static int makeConstant(Parser* p, BtlCompiler* c, BtlValue value) {
+    BtlValue existingIndex;
+    if (btl_table_get(&c->constants, value, &existingIndex)) {
         return (int) AS_NUMBER(existingIndex);
     }
-    push(c->vm, value);
-    int constant = addConstant(c->vm, currentChunk(c), value);
+    btl_push(c->vm, value);
+    int constant = btl_chunk_add_constant(c->vm, currentChunk(c), value);
     if (constant > UINT16_MAX) {
         errorAt(p, &p->previous, "Too many constants in chunk.");
-        pop(c->vm);
+        btl_pop(c->vm);
         return 0;
     }
-    tableSet(c->vm, &c->constants, value, NUMBER_VAL((double) constant));
-    pop(c->vm);
+    btl_table_set(c->vm, &c->constants, value, NUMBER_VAL((double) constant));
+    btl_pop(c->vm);
     return constant;
 }
 
-static void emitLong(Parser* p, Compiler* c, OpCode shortOp, OpCode longOp, uint32_t index) {
+static void emitLong(Parser* p, BtlCompiler* c, BtlOpCode shortOp, BtlOpCode longOp, uint32_t index) {
     if (index < 256) {
         emitByte(p, c, shortOp);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) index, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) index, p->previous.line);
     } else {
         emitByte(p, c, longOp);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) (index & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) ((index >> 8) & 0xff), p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) (index & 0xff), p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) ((index >> 8) & 0xff), p->previous.line);
     }
 }
 
-static void patchJump(Parser* p, Compiler* c, int offset) {
+static void patchJump(Parser* p, BtlCompiler* c, int offset) {
     int jump = currentChunk(c)->count - offset - 2;
     if (jump > UINT16_MAX) errorAt(p, &p->previous, "Too much code to jump over.");
     currentChunk(c)->code[offset] = (jump >> 8) & 0xff;
     currentChunk(c)->code[offset + 1] = jump & 0xff;
 }
 
-static void emitGetPropertyIC(Parser* p, Compiler* c, int nameIdx) {
+static void emitGetPropertyIC(Parser* p, BtlCompiler* c, int nameIdx) {
     if (nameIdx > 255 || c->fieldICCount > 255) {
         errorAt(p, &p->previous, "Too many property accesses in function.");
         return;
     }
-    emitByte(p, c, OP_GET_PROPERTY_IC);
-    writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
-    writeChunk(c->vm, currentChunk(c), (uint8_t) c->fieldICCount++, p->previous.line);
+    emitByte(p, c, BTL_OP_GET_PROPERTY_IC);
+    btl_chunk_write(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), (uint8_t) c->fieldICCount++, p->previous.line);
 }
 
-static void emitSetPropertyIC(Parser* p, Compiler* c, int nameIdx) {
+static void emitSetPropertyIC(Parser* p, BtlCompiler* c, int nameIdx) {
     if (nameIdx > 255 || c->fieldICCount > 255) {
         errorAt(p, &p->previous, "Too many property accesses in function.");
         return;
     }
-    emitByte(p, c, OP_SET_PROPERTY_IC);
-    writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
-    writeChunk(c->vm, currentChunk(c), (uint8_t) c->fieldICCount++, p->previous.line);
+    emitByte(p, c, BTL_OP_SET_PROPERTY_IC);
+    btl_chunk_write(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), (uint8_t) c->fieldICCount++, p->previous.line);
 }
 
-static void emitInvokeIC(Parser* p, Compiler* c, int nameIdx, int argCount) {
+static void emitInvokeIC(Parser* p, BtlCompiler* c, int nameIdx, int argCount) {
     if (nameIdx > 255 || c->methodICCount > 255) {
         errorAt(p, &p->previous, "Too many method calls in function.");
         return;
     }
-    emitByte(p, c, OP_INVOKE_IC);
-    writeChunk(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
-    writeChunk(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
-    writeChunk(c->vm, currentChunk(c), (uint8_t) c->methodICCount++, p->previous.line);
+    emitByte(p, c, BTL_OP_INVOKE_IC);
+    btl_chunk_write(c->vm, currentChunk(c), (uint8_t) nameIdx, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), (uint8_t) argCount, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), (uint8_t) c->methodICCount++, p->previous.line);
 }
 
-static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionType type, ObjModule* module) {
+static void initCompiler(Parser* p, BtlCompiler* c, BtlCompiler* enclosing, BtlFunctionType type, ObjModule* module) {
     c->enclosing = enclosing;
     c->function = NULL;
     c->type = type;
@@ -429,25 +447,26 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
     c->vm = p->vm;
     c->module = module;
     c->patchCount = 0;
-    initTable(&c->constants);
+    btl_table_init(&c->constants);
     c->currentLoop = NULL;
     c->currentSwitch = NULL;
     c->fieldICCount = 0;
     c->methodICCount = 0;
-    c->function = newFunction(p->vm, module);
+    c->inhibitFusion = false;
+    c->function = btl_function_new(p->vm, module);
     c->vm->compiler = (void*) c;
 
-    if (type != TYPE_SCRIPT) {
-        c->function->name = copyString(p->vm, p->previous.start, p->previous.length);
+    if (type != BTL_TYPE_SCRIPT) {
+        c->function->name = btl_string_copy(p->vm, p->previous.start, p->previous.length);
     }
 
-    Local* local = &c->locals[c->localCount++];
+    BtlLocal* local = &c->locals[c->localCount++];
     local->depth = 0;
     local->isCaptured = false;
     local->isModified = false;
 
-    if (type != TYPE_SCRIPT) {
-        if (type == TYPE_METHOD || type == TYPE_INITIALIZER) {
+    if (type != BTL_TYPE_SCRIPT) {
+        if (type == BTL_TYPE_METHOD || type == BTL_TYPE_INITIALIZER) {
             local->name.start = "this";
             local->name.length = 4;
         } else {
@@ -460,29 +479,29 @@ static void initCompiler(Parser* p, Compiler* c, Compiler* enclosing, FunctionTy
     }
 }
 
-static ObjFunction* endCompiler(Parser* p, Compiler* c) {
-    if (c->type == TYPE_INITIALIZER || c->type == TYPE_SCRIPT) {
-        emitBytes(p, c, OP_GET_LOCAL, 0);
+static ObjFunction* endCompiler(Parser* p, BtlCompiler* c) {
+    if (c->type == BTL_TYPE_INITIALIZER || c->type == BTL_TYPE_SCRIPT) {
+        emitBytes(p, c, BTL_OP_GET_LOCAL, 0);
     } else {
-        emitByte(p, c, OP_NULL);
+        emitByte(p, c, BTL_OP_NULL);
     }
-    emitByte(p, c, OP_RETURN);
+    emitByte(p, c, BTL_OP_RETURN);
     ObjFunction* function = c->function;
     function->fieldICCount = c->fieldICCount;
     function->methodICCount = c->methodICCount;
-#ifdef DEBUG_PRINT_CODE
-    if (!p->hadError) disassembleChunk(c->vm->runtime, currentChunk(c), function->name != NULL ? function->name->chars : "<script>");
+#ifdef BTL_DEBUG_PRINT_CODE
+    if (!p->hadError) btl_disassemble_chunk(c->vm->runtime, currentChunk(c), function->name != NULL ? function->name->chars : "<script>");
 #endif
-    freeTable(c->vm, &c->constants);
+    btl_table_free(c->vm, &c->constants);
     c->vm->compiler = (void*) c->enclosing;
     return function;
 }
 
-static void beginScope(Compiler* c) {
+static void beginScope(BtlCompiler* c) {
     c->scopeDepth++;
 }
 
-static void endScope(Parser* p, Compiler* c) {
+static void endScope(Parser* p, BtlCompiler* c) {
     c->scopeDepth--;
     int popCount = 0;
     while (c->localCount > 0 && c->locals[c->localCount - 1].depth > c->scopeDepth) {
@@ -491,7 +510,7 @@ static void endScope(Parser* p, Compiler* c) {
                 emitPopN(p, c, popCount);
                 popCount = 0;
             }
-            emitByte(p, c, OP_CLOSE_UPVALUE);
+            emitByte(p, c, BTL_OP_CLOSE_UPVALUE);
         } else {
             popCount++;
         }
@@ -500,27 +519,27 @@ static void endScope(Parser* p, Compiler* c) {
     if (popCount) emitPopN(p, c, popCount);
 }
 
-static bool identifiersEqual(Token* a, Token* b) {
+static bool identifiersEqual(BtlToken* a, BtlToken* b) {
     if (a->length != b->length) return false;
     return memcmp(a->start, b->start, a->length) == 0;
 }
 
-static int identifierConstant(Compiler* c, Token* name) {
-    ObjString* nameString = copyString(c->vm, name->start, name->length);
-    push(c->vm, OBJ_VAL(nameString));
-    Value indexValue;
-    if (tableGet(&c->module->globalNames, OBJ_VAL(nameString), &indexValue)) {
-        pop(c->vm);
+static int identifierConstant(BtlCompiler* c, BtlToken* name) {
+    ObjString* nameString = btl_string_copy(c->vm, name->start, name->length);
+    btl_push(c->vm, OBJ_VAL(nameString));
+    BtlValue indexValue;
+    if (btl_table_get(&c->module->globalNames, OBJ_VAL(nameString), &indexValue)) {
+        btl_pop(c->vm);
         return (int) AS_NUMBER(indexValue);
     }
     int index = c->module->globalValues.count;
-    writeValueArray(c->vm, &c->module->globalValues, EMPTY_VAL);
-    tableSet(c->vm, &c->module->globalNames, OBJ_VAL(nameString), NUMBER_VAL((double) index));
-    pop(c->vm);
+    btl_value_array_write(c->vm, &c->module->globalValues, BTL_EMPTY_VAL);
+    btl_table_set(c->vm, &c->module->globalNames, OBJ_VAL(nameString), NUMBER_VAL((double) index));
+    btl_pop(c->vm);
     return index;
 }
 
-static int resolveLocal(Parser* p, Compiler* c, Token* name) {
+static int resolveLocal(Parser* p, BtlCompiler* c, BtlToken* name) {
     for (int i = c->localCount - 1; i >= 0; i--) {
         if (identifiersEqual(name, &c->locals[i].name)) {
             if (c->locals[i].depth == -1) errorAt(p, name, "Can't read local variable in its own initializer.");
@@ -530,7 +549,7 @@ static int resolveLocal(Parser* p, Compiler* c, Token* name) {
     return -1;
 }
 
-static int addUpvalue(Compiler* c, uint8_t index, bool isLocal, bool isMutable) {
+static int addUpvalue(BtlCompiler* c, uint8_t index, bool isLocal, bool isMutable) {
     int count = c->function->upvalueCount;
     for (int i = 0; i < count; i++) {
         if (c->upvalues[i].index == index && c->upvalues[i].isLocal == isLocal) return i;
@@ -541,7 +560,7 @@ static int addUpvalue(Compiler* c, uint8_t index, bool isLocal, bool isMutable) 
     return c->function->upvalueCount++;
 }
 
-static int resolveUpvalue(Parser* p, Compiler* c, Token* name) {
+static int resolveUpvalue(Parser* p, BtlCompiler* c, BtlToken* name) {
     if (c->enclosing == NULL) return -1;
 
     int local = resolveLocal(p, c->enclosing, name);
@@ -557,31 +576,31 @@ static int resolveUpvalue(Parser* p, Compiler* c, Token* name) {
     return -1;
 }
 
-static void emitUpvalue(Parser* p, Compiler* c, uint8_t arg, bool isSet) {
+static void emitUpvalue(Parser* p, BtlCompiler* c, uint8_t arg, bool isSet) {
     if (isSet) {
-        if (arg == 0) emitByte(p, c, OP_SET_UPVALUE_0);
-        else if (arg == 1) emitByte(p, c, OP_SET_UPVALUE_1);
-        else if (arg == 2) emitByte(p, c, OP_SET_UPVALUE_2);
-        else if (arg == 3) emitByte(p, c, OP_SET_UPVALUE_3);
-        else emitBytes(p, c, OP_SET_UPVALUE, arg);
+        if (arg == 0) emitByte(p, c, BTL_OP_SET_UPVALUE_0);
+        else if (arg == 1) emitByte(p, c, BTL_OP_SET_UPVALUE_1);
+        else if (arg == 2) emitByte(p, c, BTL_OP_SET_UPVALUE_2);
+        else if (arg == 3) emitByte(p, c, BTL_OP_SET_UPVALUE_3);
+        else emitBytes(p, c, BTL_OP_SET_UPVALUE, arg);
     } else {
-        if (arg == 0) emitByte(p, c, OP_GET_UPVALUE_0);
-        else if (arg == 1) emitByte(p, c, OP_GET_UPVALUE_1);
-        else if (arg == 2) emitByte(p, c, OP_GET_UPVALUE_2);
-        else if (arg == 3) emitByte(p, c, OP_GET_UPVALUE_3);
-        else emitBytes(p, c, OP_GET_UPVALUE, arg);
+        if (arg == 0) emitByte(p, c, BTL_OP_GET_UPVALUE_0);
+        else if (arg == 1) emitByte(p, c, BTL_OP_GET_UPVALUE_1);
+        else if (arg == 2) emitByte(p, c, BTL_OP_GET_UPVALUE_2);
+        else if (arg == 3) emitByte(p, c, BTL_OP_GET_UPVALUE_3);
+        else emitBytes(p, c, BTL_OP_GET_UPVALUE, arg);
     }
 }
 
-static void emitVariableSet(Parser* p, Compiler* c, ClassCompiler* cc, Token name) {
+static void emitVariableSet(Parser* p, BtlCompiler* c, BtlClassCompiler* cc, BtlToken name) {
     int arg = resolveLocal(p, c, &name);
 
     if (arg != -1) {
         markLocalAsModified(c, arg);
         if (arg <= 7) {
-            emitByte(p, c, (uint8_t) (OP_SET_LOCAL_0 + arg));
+            emitByte(p, c, (uint8_t) (BTL_OP_SET_LOCAL_0 + arg));
         } else {
-            emitBytes(p, c, OP_SET_LOCAL, (uint8_t) arg);
+            emitBytes(p, c, BTL_OP_SET_LOCAL, (uint8_t) arg);
         }
         return;
     }
@@ -596,78 +615,78 @@ static void emitVariableSet(Parser* p, Compiler* c, ClassCompiler* cc, Token nam
     }
 
     if (cc != NULL) {
-        ObjString* fieldName = copyString(c->vm, name.start, name.length);
-        Value indexVal;
-        if (tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+        ObjString* fieldName = btl_string_copy(c->vm, name.start, name.length);
+        BtlValue indexVal;
+        if (btl_table_get(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
             uint8_t index = (uint8_t) AS_NUMBER(indexVal);
-            emitBytes(p, c, OP_SET_FIELD_THIS, index);
+            emitBytes(p, c, BTL_OP_SET_FIELD_THIS, index);
             return;
         }
     }
 
     arg = identifierConstant(c, &name);
-    emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
+    emitLong(p, c, BTL_OP_SET_GLOBAL, BTL_OP_SET_GLOBAL_LONG, arg);
 }
 
-static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Token name, bool canAssign) {
+static void namedVariable(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, BtlToken name, bool canAssign) {
     int arg = resolveLocal(p, c, &name);
 
     if (arg != -1) {
         // --- LOCAL VARIABLE ---
-        if (canAssign && match(p, s, TOKEN_EQUAL)) {
+        if (canAssign && match(p, s, BTL_TOKEN_EQUAL)) {
             int exprStart = currentChunk(c)->count;
             expression(p, s, c, cc);
 
             // Lookback Optimization for ++ (e.g., i = i + 1)
-            Chunk* chunk = currentChunk(c);
+            BtlChunk* chunk = currentChunk(c);
             if (chunk->count >= exprStart + 3) {
                 uint8_t op1 = chunk->code[exprStart];
                 uint8_t op2 = chunk->code[exprStart + 1];
                 uint8_t op3 = chunk->code[exprStart + 2];
-                bool isCorrectVar = ((op1 == (uint8_t) (OP_GET_LOCAL_0 + arg)) && arg <= 7) ||
-                    (op1 == OP_GET_LOCAL && chunk->code[exprStart + 1] == arg);
-                bool isPlusOne = (op2 == OP_1 && op3 == OP_ADD) || (op3 == OP_1 && op2 == OP_ADD);
+                bool isCorrectVar = ((op1 == (uint8_t) (BTL_OP_GET_LOCAL_0 + arg)) && arg <= 7) ||
+                    (op1 == BTL_OP_GET_LOCAL && chunk->code[exprStart + 1] == arg);
+                bool isPlusOne = (op2 == BTL_OP_1 && op3 == BTL_OP_ADD) || (op3 == BTL_OP_1 && op2 == BTL_OP_ADD);
                 if (isCorrectVar && isPlusOne) {
                     chunk->count = exprStart;
-                    emitBytes(p, c, OP_INC_LOCAL, (uint8_t) arg);
+                    emitBytes(p, c, BTL_OP_INC_LOCAL, (uint8_t) arg);
                     markLocalAsModified(c, arg);
                     return;
                 }
             }
             markLocalAsModified(c, arg);
-            if (arg <= 7) emitByte(p, c, (uint8_t) (OP_SET_LOCAL_0 + arg));
-            else emitBytes(p, c, OP_SET_LOCAL, (uint8_t) arg);
-        } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
-            match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
-            match(p, s, TOKEN_PERCENT_EQUAL))) {
+            if (arg <= 7) emitByte(p, c, (uint8_t) (BTL_OP_SET_LOCAL_0 + arg));
+            else emitBytes(p, c, BTL_OP_SET_LOCAL, (uint8_t) arg);
+        } else if (canAssign && (match(p, s, BTL_TOKEN_PLUS_EQUAL) || match(p, s, BTL_TOKEN_MINUS_EQUAL) ||
+            match(p, s, BTL_TOKEN_STAR_EQUAL) || match(p, s, BTL_TOKEN_SLASH_EQUAL) ||
+            match(p, s, BTL_TOKEN_PERCENT_EQUAL))) {
 
-            TokenType assignOp = p->previous.type;
+            BtlTokenType assignOp = p->previous.type;
 
             // Load current value
             if (arg <= 7) {
-                emitByte(p, c, (uint8_t) (OP_GET_LOCAL_0 + arg));
+                emitByte(p, c, (uint8_t) (BTL_OP_GET_LOCAL_0 + arg));
             } else {
-                emitBytes(p, c, OP_GET_LOCAL, (uint8_t) arg);
+                emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) arg);
             }
 
             expression(p, s, c, cc);
 
             // Apply the operation
             switch (assignOp) {
-            case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
-            case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
-            case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
-            case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
-            case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+            case BTL_TOKEN_PLUS_EQUAL:    emitByte(p, c, BTL_OP_ADD); break;
+            case BTL_TOKEN_MINUS_EQUAL:   emitByte(p, c, BTL_OP_SUBTRACT); break;
+            case BTL_TOKEN_STAR_EQUAL:    emitByte(p, c, BTL_OP_MULTIPLY); break;
+            case BTL_TOKEN_SLASH_EQUAL:   emitByte(p, c, BTL_OP_DIVIDE); break;
+            case BTL_TOKEN_PERCENT_EQUAL: emitByte(p, c, BTL_OP_MODULO); break;
             default: break;
             }
 
             markLocalAsModified(c, arg);
-            if (arg <= 7) emitByte(p, c, (uint8_t) (OP_SET_LOCAL_0 + arg));
-            else emitBytes(p, c, OP_SET_LOCAL, (uint8_t) arg);
+            if (arg <= 7) emitByte(p, c, (uint8_t) (BTL_OP_SET_LOCAL_0 + arg));
+            else emitBytes(p, c, BTL_OP_SET_LOCAL, (uint8_t) arg);
         } else {
-            if (arg <= 7) emitByte(p, c, (uint8_t) (OP_GET_LOCAL_0 + arg));
-            else emitBytes(p, c, OP_GET_LOCAL, (uint8_t) arg);
+            if (arg <= 7) emitByte(p, c, (uint8_t) (BTL_OP_GET_LOCAL_0 + arg));
+            else emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) arg);
         }
         return;
     }
@@ -675,17 +694,17 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
     arg = resolveUpvalue(p, c, &name);
     if (arg != -1) {
         // --- UPVALUE ---
-        if (canAssign && match(p, s, TOKEN_EQUAL)) {
+        if (canAssign && match(p, s, BTL_TOKEN_EQUAL)) {
             if (c->upvalues[arg].isLocal && c->enclosing != NULL) {
                 markLocalAsModified(c->enclosing, c->upvalues[arg].index);
             }
             expression(p, s, c, cc);
             emitUpvalue(p, c, (uint8_t) arg, true);
-        } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
-            match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
-            match(p, s, TOKEN_PERCENT_EQUAL))) {
+        } else if (canAssign && (match(p, s, BTL_TOKEN_PLUS_EQUAL) || match(p, s, BTL_TOKEN_MINUS_EQUAL) ||
+            match(p, s, BTL_TOKEN_STAR_EQUAL) || match(p, s, BTL_TOKEN_SLASH_EQUAL) ||
+            match(p, s, BTL_TOKEN_PERCENT_EQUAL))) {
 
-            TokenType assignOp = p->previous.type;
+            BtlTokenType assignOp = p->previous.type;
 
             if (c->upvalues[arg].isLocal && c->enclosing != NULL) {
                 markLocalAsModified(c->enclosing, c->upvalues[arg].index);
@@ -697,11 +716,11 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
             expression(p, s, c, cc);
 
             switch (assignOp) {
-            case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
-            case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
-            case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
-            case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
-            case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+            case BTL_TOKEN_PLUS_EQUAL:    emitByte(p, c, BTL_OP_ADD); break;
+            case BTL_TOKEN_MINUS_EQUAL:   emitByte(p, c, BTL_OP_SUBTRACT); break;
+            case BTL_TOKEN_STAR_EQUAL:    emitByte(p, c, BTL_OP_MULTIPLY); break;
+            case BTL_TOKEN_SLASH_EQUAL:   emitByte(p, c, BTL_OP_DIVIDE); break;
+            case BTL_TOKEN_PERCENT_EQUAL: emitByte(p, c, BTL_OP_MODULO); break;
             default: break;
             }
 
@@ -714,36 +733,36 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
 
     if (cc != NULL) {
         // --- CLASS FIELD ---
-        ObjString* fieldName = copyString(c->vm, name.start, name.length);
-        Value indexVal;
-        if (tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+        ObjString* fieldName = btl_string_copy(c->vm, name.start, name.length);
+        BtlValue indexVal;
+        if (btl_table_get(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
             uint8_t index = (uint8_t) AS_NUMBER(indexVal);
-            if (canAssign && match(p, s, TOKEN_EQUAL)) {
+            if (canAssign && match(p, s, BTL_TOKEN_EQUAL)) {
                 expression(p, s, c, cc);
-                emitBytes(p, c, OP_SET_FIELD_THIS, index);
-            } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
-                match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
-                match(p, s, TOKEN_PERCENT_EQUAL))) {
+                emitBytes(p, c, BTL_OP_SET_FIELD_THIS, index);
+            } else if (canAssign && (match(p, s, BTL_TOKEN_PLUS_EQUAL) || match(p, s, BTL_TOKEN_MINUS_EQUAL) ||
+                match(p, s, BTL_TOKEN_STAR_EQUAL) || match(p, s, BTL_TOKEN_SLASH_EQUAL) ||
+                match(p, s, BTL_TOKEN_PERCENT_EQUAL))) {
 
-                TokenType assignOp = p->previous.type;
+                BtlTokenType assignOp = p->previous.type;
 
                 // Load current value
-                emitBytes(p, c, OP_GET_FIELD_THIS, index);
+                emitBytes(p, c, BTL_OP_GET_FIELD_THIS, index);
 
                 expression(p, s, c, cc);
 
                 switch (assignOp) {
-                case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
-                case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
-                case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
-                case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
-                case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+                case BTL_TOKEN_PLUS_EQUAL:    emitByte(p, c, BTL_OP_ADD); break;
+                case BTL_TOKEN_MINUS_EQUAL:   emitByte(p, c, BTL_OP_SUBTRACT); break;
+                case BTL_TOKEN_STAR_EQUAL:    emitByte(p, c, BTL_OP_MULTIPLY); break;
+                case BTL_TOKEN_SLASH_EQUAL:   emitByte(p, c, BTL_OP_DIVIDE); break;
+                case BTL_TOKEN_PERCENT_EQUAL: emitByte(p, c, BTL_OP_MODULO); break;
                 default: break;
                 }
 
-                emitBytes(p, c, OP_SET_FIELD_THIS, index);
+                emitBytes(p, c, BTL_OP_SET_FIELD_THIS, index);
             } else {
-                emitBytes(p, c, OP_GET_FIELD_THIS, index);
+                emitBytes(p, c, BTL_OP_GET_FIELD_THIS, index);
             }
             return;
         }
@@ -751,45 +770,45 @@ static void namedVariable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc,
 
     // --- GLOBAL VARIABLE ---
     arg = identifierConstant(c, &name);
-    if (canAssign && match(p, s, TOKEN_EQUAL)) {
+    if (canAssign && match(p, s, BTL_TOKEN_EQUAL)) {
         expression(p, s, c, cc);
-        emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
-    } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
-        match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
-        match(p, s, TOKEN_PERCENT_EQUAL))) {
+        emitLong(p, c, BTL_OP_SET_GLOBAL, BTL_OP_SET_GLOBAL_LONG, arg);
+    } else if (canAssign && (match(p, s, BTL_TOKEN_PLUS_EQUAL) || match(p, s, BTL_TOKEN_MINUS_EQUAL) ||
+        match(p, s, BTL_TOKEN_STAR_EQUAL) || match(p, s, BTL_TOKEN_SLASH_EQUAL) ||
+        match(p, s, BTL_TOKEN_PERCENT_EQUAL))) {
 
-        TokenType assignOp = p->previous.type;
+        BtlTokenType assignOp = p->previous.type;
 
         // Load current value
-        emitLong(p, c, OP_GET_GLOBAL, OP_GET_GLOBAL_LONG, arg);
+        emitLong(p, c, BTL_OP_GET_GLOBAL, BTL_OP_GET_GLOBAL_LONG, arg);
 
         expression(p, s, c, cc);
 
         switch (assignOp) {
-        case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
-        case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
-        case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
-        case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
-        case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+        case BTL_TOKEN_PLUS_EQUAL:    emitByte(p, c, BTL_OP_ADD); break;
+        case BTL_TOKEN_MINUS_EQUAL:   emitByte(p, c, BTL_OP_SUBTRACT); break;
+        case BTL_TOKEN_STAR_EQUAL:    emitByte(p, c, BTL_OP_MULTIPLY); break;
+        case BTL_TOKEN_SLASH_EQUAL:   emitByte(p, c, BTL_OP_DIVIDE); break;
+        case BTL_TOKEN_PERCENT_EQUAL: emitByte(p, c, BTL_OP_MODULO); break;
         default: break;
         }
 
-        emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
+        emitLong(p, c, BTL_OP_SET_GLOBAL, BTL_OP_SET_GLOBAL_LONG, arg);
     } else {
-        emitLong(p, c, OP_GET_GLOBAL, OP_GET_GLOBAL_LONG, arg);
+        emitLong(p, c, BTL_OP_GET_GLOBAL, BTL_OP_GET_GLOBAL_LONG, arg);
     }
 }
 
-static void markInitialized(Compiler* c) {
+static void markInitialized(BtlCompiler* c) {
     if (c->scopeDepth == 0) return;
     c->locals[c->localCount - 1].depth = c->scopeDepth;
 }
 
-static void declareVariable(Parser* p, Compiler* c) {
+static void declareVariable(Parser* p, BtlCompiler* c) {
     if (c->scopeDepth == 0) return;
-    Token* name = &p->previous;
+    BtlToken* name = &p->previous;
     for (int i = c->localCount - 1; i >= 0; i--) {
-        Local* local = &c->locals[i];
+        BtlLocal* local = &c->locals[i];
         if (local->depth != -1 && local->depth < c->scopeDepth) break;
         if (identifiersEqual(name, &local->name)) errorAt(p, name, "Already a variable with this name in this scope.");
     }
@@ -798,14 +817,14 @@ static void declareVariable(Parser* p, Compiler* c) {
 
 // --- Expression Parse Functions ---
 
-static void func(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void func(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    function(p, s, c, cc, TYPE_FUNCTION);
+    function(p, s, c, cc, BTL_TYPE_FUNCTION);
 }
 
-static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void binary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    TokenType opType = p->previous.type;
+    BtlTokenType opType = p->previous.type;
     ParseRule* rule = getRule(opType);
     int lhsOffset = c->lastInstruction;
     LastInstruction lhs = getInstructionAt(c, lhsOffset);
@@ -820,17 +839,17 @@ static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
             double res;
             bool folded = true;
             switch (opType) {
-            case TOKEN_PLUS:    res = a + b; break;
-            case TOKEN_MINUS:   res = a - b; break;
-            case TOKEN_STAR:    res = a * b; break;
-            case TOKEN_SLASH:
+            case BTL_TOKEN_PLUS:    res = a + b; break;
+            case BTL_TOKEN_MINUS:   res = a - b; break;
+            case BTL_TOKEN_STAR:    res = a * b; break;
+            case BTL_TOKEN_SLASH:
                 if (b == 0) {
                     errorAt(p, &p->previous, "Division by zero.");
                     return;
                 }
                 res = a / b;
                 break;
-            case TOKEN_PERCENT: res = fmod(a, b); break;
+            case BTL_TOKEN_PERCENT: res = fmod(a, b); break;
             default: folded = false;
             }
             if (folded) {
@@ -843,63 +862,63 @@ static void binary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
     }
 
     switch (opType) {
-    case TOKEN_BANG_EQUAL:    emitBytes(p, c, OP_EQUAL, OP_NOT); break;
-    case TOKEN_EQUAL_EQUAL:   emitByte(p, c, OP_EQUAL); break;
-    case TOKEN_GREATER:       emitByte(p, c, OP_GREATER); break;
-    case TOKEN_GREATER_EQUAL: emitBytes(p, c, OP_LESS, OP_NOT); break;
-    case TOKEN_LESS:          emitByte(p, c, OP_LESS); break;
-    case TOKEN_LESS_EQUAL:    emitBytes(p, c, OP_GREATER, OP_NOT); break;
-    case TOKEN_PLUS:          emitByte(p, c, OP_ADD); break;
-    case TOKEN_MINUS:         emitByte(p, c, OP_SUBTRACT); break;
-    case TOKEN_STAR:          emitByte(p, c, OP_MULTIPLY); break;
-    case TOKEN_SLASH:         emitByte(p, c, OP_DIVIDE); break;
-    case TOKEN_PERCENT:       emitByte(p, c, OP_MODULO); break;
+    case BTL_TOKEN_BANG_EQUAL:    emitBytes(p, c, BTL_OP_EQUAL, BTL_OP_NOT); break;
+    case BTL_TOKEN_EQUAL_EQUAL:   emitByte(p, c, BTL_OP_EQUAL); break;
+    case BTL_TOKEN_GREATER:       emitByte(p, c, BTL_OP_GREATER); break;
+    case BTL_TOKEN_GREATER_EQUAL: emitBytes(p, c, BTL_OP_LESS, BTL_OP_NOT); break;
+    case BTL_TOKEN_LESS:          emitByte(p, c, BTL_OP_LESS); break;
+    case BTL_TOKEN_LESS_EQUAL:    emitBytes(p, c, BTL_OP_GREATER, BTL_OP_NOT); break;
+    case BTL_TOKEN_PLUS:          emitByte(p, c, BTL_OP_ADD); break;
+    case BTL_TOKEN_MINUS:         emitByte(p, c, BTL_OP_SUBTRACT); break;
+    case BTL_TOKEN_STAR:          emitByte(p, c, BTL_OP_MULTIPLY); break;
+    case BTL_TOKEN_SLASH:         emitByte(p, c, BTL_OP_DIVIDE); break;
+    case BTL_TOKEN_PERCENT:       emitByte(p, c, BTL_OP_MODULO); break;
     default: return;
     }
 }
 
-static void literal(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void literal(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
     switch (p->previous.type) {
-    case TOKEN_FALSE: emitByte(p, c, OP_FALSE); break;
-    case TOKEN_NULL:   emitByte(p, c, OP_NULL); break;
-    case TOKEN_TRUE:  emitByte(p, c, OP_TRUE); break;
+    case BTL_TOKEN_FALSE: emitByte(p, c, BTL_OP_FALSE); break;
+    case BTL_TOKEN_NULL:   emitByte(p, c, BTL_OP_NULL); break;
+    case BTL_TOKEN_TRUE:  emitByte(p, c, BTL_OP_TRUE); break;
     default: return;
     }
 }
 
-static void grouping(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void grouping(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     expression(p, s, c, cc);
-    consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')' after expression.");
+    consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')' after expression.");
 }
 
-static void number(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void number(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
     double value = strtod(p->previous.start, NULL);
 
     if (value == 0.0) {
-        emitByte(p, c, OP_0);
+        emitByte(p, c, BTL_OP_0);
     } else if (value == 1.0) {
-        emitByte(p, c, OP_1);
+        emitByte(p, c, BTL_OP_1);
     } else if (value == 2.0) {
-        emitByte(p, c, OP_2);
+        emitByte(p, c, BTL_OP_2);
     } else {
         emitConstant(p, c, NUMBER_VAL(value));
     }
 }
 
-static void string(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void string(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
-    emitConstant(p, c, OBJ_VAL(copyString(c->vm, p->previous.start + 1, p->previous.length - 2)));
+    emitConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, p->previous.start + 1, p->previous.length - 2)));
 }
 
-static void variable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    Token name = p->previous;
+static void variable(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
+    BtlToken name = p->previous;
 
     // Check for postfix ++ or -- BEFORE calling namedVariable
-    if (canAssign && (check(p, TOKEN_PLUS_PLUS) || check(p, TOKEN_MINUS_MINUS))) {
-        bool isInc = check(p, TOKEN_PLUS_PLUS);
+    if (canAssign && (check(p, BTL_TOKEN_PLUS_PLUS) || check(p, BTL_TOKEN_MINUS_MINUS))) {
+        bool isInc = check(p, BTL_TOKEN_PLUS_PLUS);
         advance(p, s);  // consume ++ or --
 
         // Resolve variable location once
@@ -907,19 +926,19 @@ static void variable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool
         if (arg != -1) {
             // Local variable
             if (arg <= 7) {
-                emitByte(p, c, (uint8_t) (OP_GET_LOCAL_0 + arg));
+                emitByte(p, c, (uint8_t) (BTL_OP_GET_LOCAL_0 + arg));
             } else {
-                emitBytes(p, c, OP_GET_LOCAL, (uint8_t) arg);
+                emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) arg);
             }
-            emitByte(p, c, OP_DUP);
-            emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+            emitByte(p, c, BTL_OP_DUP);
+            emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
             markLocalAsModified(c, arg);
             if (arg <= 7) {
-                emitByte(p, c, (uint8_t) (OP_SET_LOCAL_0 + arg));
+                emitByte(p, c, (uint8_t) (BTL_OP_SET_LOCAL_0 + arg));
             } else {
-                emitBytes(p, c, OP_SET_LOCAL, (uint8_t) arg);
+                emitBytes(p, c, BTL_OP_SET_LOCAL, (uint8_t) arg);
             }
-            emitByte(p, c, OP_POP);
+            emitByte(p, c, BTL_OP_POP);
             return;
         }
 
@@ -930,107 +949,107 @@ static void variable(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool
                 markLocalAsModified(c->enclosing, c->upvalues[arg].index);
             }
             emitUpvalue(p, c, (uint8_t) arg, false);
-            emitByte(p, c, OP_DUP);
-            emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+            emitByte(p, c, BTL_OP_DUP);
+            emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
             emitUpvalue(p, c, (uint8_t) arg, true);
-            emitByte(p, c, OP_POP);
+            emitByte(p, c, BTL_OP_POP);
             return;
         }
 
         if (cc != NULL) {
             // Class field
-            ObjString* fieldName = copyString(c->vm, name.start, name.length);
-            Value indexVal;
-            if (tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+            ObjString* fieldName = btl_string_copy(c->vm, name.start, name.length);
+            BtlValue indexVal;
+            if (btl_table_get(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
                 uint8_t index = (uint8_t) AS_NUMBER(indexVal);
-                emitBytes(p, c, OP_GET_FIELD_THIS, index);
-                emitByte(p, c, OP_DUP);
-                emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
-                emitBytes(p, c, OP_SET_FIELD_THIS, index);
-                emitByte(p, c, OP_POP);
+                emitBytes(p, c, BTL_OP_GET_FIELD_THIS, index);
+                emitByte(p, c, BTL_OP_DUP);
+                emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
+                emitBytes(p, c, BTL_OP_SET_FIELD_THIS, index);
+                emitByte(p, c, BTL_OP_POP);
                 return;
             }
         }
 
         // Global variable - get index once and reuse
         arg = identifierConstant(c, &name);
-        emitLong(p, c, OP_GET_GLOBAL, OP_GET_GLOBAL_LONG, arg);
-        emitByte(p, c, OP_DUP);
-        emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
-        emitLong(p, c, OP_SET_GLOBAL, OP_SET_GLOBAL_LONG, arg);
-        emitByte(p, c, OP_POP);
+        emitLong(p, c, BTL_OP_GET_GLOBAL, BTL_OP_GET_GLOBAL_LONG, arg);
+        emitByte(p, c, BTL_OP_DUP);
+        emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
+        emitLong(p, c, BTL_OP_SET_GLOBAL, BTL_OP_SET_GLOBAL_LONG, arg);
+        emitByte(p, c, BTL_OP_POP);
         return;
     }
 
     namedVariable(p, s, c, cc, name, canAssign);
 }
 
-static void prefixIncDec(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void prefixIncDec(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    TokenType op = p->previous.type;
-    bool isInc = (op == TOKEN_PLUS_PLUS);
+    BtlTokenType op = p->previous.type;
+    bool isInc = (op == BTL_TOKEN_PLUS_PLUS);
 
     // Check if this is a property access (++this.field or ++obj.prop)
-    if (check(p, TOKEN_THIS) || check(p, TOKEN_IDENTIFIER)) {
-        Token possibleObj = p->current;
+    if (check(p, BTL_TOKEN_THIS) || check(p, BTL_TOKEN_IDENTIFIER)) {
+        BtlToken possibleObj = p->current;
         advance(p, s);
 
-        if (match(p, s, TOKEN_DOT)) {
+        if (match(p, s, BTL_TOKEN_DOT)) {
             // It's a property access: ++this.field or ++obj.prop
-            consume(p, s, TOKEN_IDENTIFIER, "Expect property name after '.'.");
-            Token propName = p->previous;
+            consume(p, s, BTL_TOKEN_IDENTIFIER, "Expect property name after '.'.");
+            BtlToken propName = p->previous;
 
             // Check if it's 'this'
             bool isThis = (possibleObj.length == 4 && memcmp(possibleObj.start, "this", 4) == 0);
 
             if (isThis && cc != NULL) {
                 // ++this.field
-                ObjString* fieldName = copyString(c->vm, propName.start, propName.length);
-                Value indexVal;
-                if (!tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+                ObjString* fieldName = btl_string_copy(c->vm, propName.start, propName.length);
+                BtlValue indexVal;
+                if (!btl_table_get(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
                     indexVal = NUMBER_VAL((double) cc->fieldCount);
-                    tableSet(c->vm, &cc->fields, OBJ_VAL(fieldName), indexVal);
+                    btl_table_set(c->vm, &cc->fields, OBJ_VAL(fieldName), indexVal);
                     cc->fieldCount++;
                 }
                 uint8_t index = (uint8_t) AS_NUMBER(indexVal);
 
                 // Get, increment, dup, set, pop (leaves new value on stack)
-                emitBytes(p, c, OP_GET_FIELD_THIS, index);
-                emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
-                emitByte(p, c, OP_DUP);
-                emitBytes(p, c, OP_SET_FIELD_THIS, index);
-                emitByte(p, c, OP_POP);
+                emitBytes(p, c, BTL_OP_GET_FIELD_THIS, index);
+                emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
+                emitByte(p, c, BTL_OP_DUP);
+                emitBytes(p, c, BTL_OP_SET_FIELD_THIS, index);
+                emitByte(p, c, BTL_OP_POP);
             } else {
                 // ++obj.prop
                 namedVariable(p, s, c, cc, possibleObj, false);
-                int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, propName.start, propName.length)));
+                int nameIdx = makeConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, propName.start, propName.length)));
                 emitGetPropertyIC(p, c, nameIdx);
-                emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
-                emitByte(p, c, OP_DUP);
+                emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
+                emitByte(p, c, BTL_OP_DUP);
                 emitSetPropertyIC(p, c, nameIdx);
-                emitByte(p, c, OP_POP);
+                emitByte(p, c, BTL_OP_POP);
             }
             return;
         } else {
             // Not a property access, it's a simple variable
             // possibleObj is the variable name
-            Token name = possibleObj;
+            BtlToken name = possibleObj;
 
             // Special optimization for local variables
             int arg = resolveLocal(p, c, &name);
             if (arg != -1 && isInc) {
-                // Use optimized OP_INC_LOCAL
+                // Use optimized BTL_OP_INC_LOCAL
                 markLocalAsModified(c, arg);
-                emitBytes(p, c, OP_INC_LOCAL, (uint8_t) arg);
+                emitBytes(p, c, BTL_OP_INC_LOCAL, (uint8_t) arg);
                 return;
             }
 
             // General case: get, modify, dup, set, pop
             namedVariable(p, s, c, cc, name, false);
-            emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
-            emitByte(p, c, OP_DUP);
+            emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
+            emitByte(p, c, BTL_OP_DUP);
             emitVariableSet(p, c, cc, name);
-            emitByte(p, c, OP_POP);
+            emitByte(p, c, BTL_OP_POP);
             return;
         }
     }
@@ -1038,130 +1057,130 @@ static void prefixIncDec(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, 
     errorAt(p, &p->previous, "Expect variable or property after '++' or '--'.");
 }
 
-static void list(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void list(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
 
     // Check for empty dictionary [:] 
-    if (check(p, TOKEN_COLON)) {
+    if (check(p, BTL_TOKEN_COLON)) {
         advance(p, s);
-        consume(p, s, TOKEN_RIGHT_BRACKET, "Expect ']' after '[:'.");
-        emitBytes(p, c, OP_BUILD_TABLE, 0);
+        consume(p, s, BTL_TOKEN_RIGHT_BRACKET, "Expect ']' after '[:'.");
+        emitBytes(p, c, BTL_OP_BUILD_TABLE, 0);
         return;
     }
 
     int count = 0;
-    if (!check(p, TOKEN_RIGHT_BRACKET)) {
+    if (!check(p, BTL_TOKEN_RIGHT_BRACKET)) {
         do {
             expression(p, s, c, cc);
 
             // After first expression, check for colon (dictionary)
-            if (count == 0 && check(p, TOKEN_COLON)) {
+            if (count == 0 && check(p, BTL_TOKEN_COLON)) {
                 // This is a dictionary, not a list
                 // The first key is already on the stack
-                consume(p, s, TOKEN_COLON, "Expect ':'.");
+                consume(p, s, BTL_TOKEN_COLON, "Expect ':'.");
                 expression(p, s, c, cc);
                 count = 1;
 
                 // Continue parsing remaining key:value pairs
-                while (match(p, s, TOKEN_COMMA)) {
+                while (match(p, s, BTL_TOKEN_COMMA)) {
                     parsePrecedence(p, s, c, cc, PREC_COMPARISON);
-                    consume(p, s, TOKEN_COLON, "Expect ':' after dictionary key.");
+                    consume(p, s, BTL_TOKEN_COLON, "Expect ':' after dictionary key.");
                     expression(p, s, c, cc);
 
                     if (count == 255) errorAt(p, &p->previous, "Dictionary too large.");
                     count++;
                 }
 
-                consume(p, s, TOKEN_RIGHT_BRACKET, "Expect ']'.");
-                emitBytes(p, c, OP_BUILD_TABLE, (uint8_t) count);
+                consume(p, s, BTL_TOKEN_RIGHT_BRACKET, "Expect ']'.");
+                emitBytes(p, c, BTL_OP_BUILD_TABLE, (uint8_t) count);
                 return;
             }
 
             if (count == 255) errorAt(p, &p->previous, "List too large.");
             count++;
-        } while (match(p, s, TOKEN_COMMA));
+        } while (match(p, s, BTL_TOKEN_COMMA));
     }
 
-    consume(p, s, TOKEN_RIGHT_BRACKET, "Expect ']'.");
-    emitBytes(p, c, OP_BUILD_LIST, (uint8_t) count);
+    consume(p, s, BTL_TOKEN_RIGHT_BRACKET, "Expect ']'.");
+    emitBytes(p, c, BTL_OP_BUILD_LIST, (uint8_t) count);
 }
 
-static void subscript(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void subscript(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     expression(p, s, c, cc);
-    consume(p, s, TOKEN_RIGHT_BRACKET, "Expect ']'.");
-    if (canAssign && match(p, s, TOKEN_EQUAL)) {
+    consume(p, s, BTL_TOKEN_RIGHT_BRACKET, "Expect ']'.");
+    if (canAssign && match(p, s, BTL_TOKEN_EQUAL)) {
         expression(p, s, c, cc);
-        emitByte(p, c, OP_INDEX_SET);
+        emitByte(p, c, BTL_OP_INDEX_SET);
     } else {
-        emitByte(p, c, OP_INDEX_GET);
+        emitByte(p, c, BTL_OP_INDEX_GET);
     }
 }
 
-static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
-    consume(p, s, TOKEN_IDENTIFIER, "Expect property name after '.'.");
-    Token name = p->previous;
-    ObjString* fieldName = copyString(c->vm, name.start, name.length);
+static void dot(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
+    consume(p, s, BTL_TOKEN_IDENTIFIER, "Expect property name after '.'.");
+    BtlToken name = p->previous;
+    ObjString* fieldName = btl_string_copy(c->vm, name.start, name.length);
 
     bool isThis = false;
     if (cc != NULL && c->lastInstruction != -1) {
         uint8_t lastOp = currentChunk(c)->code[c->lastInstruction];
-        if (lastOp == OP_GET_LOCAL_0) isThis = true;
+        if (lastOp == BTL_OP_GET_LOCAL_0) isThis = true;
     }
 
     // Specialized 'this' field access
-    if (isThis && !check(p, TOKEN_LEFT_PAREN)) {
-        Value indexVal;
-        if (!tableGet(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
+    if (isThis && !check(p, BTL_TOKEN_LEFT_PAREN)) {
+        BtlValue indexVal;
+        if (!btl_table_get(&cc->fields, OBJ_VAL(fieldName), &indexVal)) {
             indexVal = NUMBER_VAL((double) cc->fieldCount);
-            tableSet(c->vm, &cc->fields, OBJ_VAL(fieldName), indexVal);
+            btl_table_set(c->vm, &cc->fields, OBJ_VAL(fieldName), indexVal);
             cc->fieldCount++;
         }
         uint8_t index = (uint8_t) AS_NUMBER(indexVal);
         removeChunkTail(currentChunk(c), 1);
 
-        if (canAssign && match(p, s, TOKEN_EQUAL)) {
+        if (canAssign && match(p, s, BTL_TOKEN_EQUAL)) {
             expression(p, s, c, cc);
-            emitBytes(p, c, OP_SET_FIELD_THIS, index);
-        } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
-            match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
-            match(p, s, TOKEN_PERCENT_EQUAL))) {
-            TokenType assignOp = p->previous.type;
-            emitBytes(p, c, OP_GET_FIELD_THIS, index);
+            emitBytes(p, c, BTL_OP_SET_FIELD_THIS, index);
+        } else if (canAssign && (match(p, s, BTL_TOKEN_PLUS_EQUAL) || match(p, s, BTL_TOKEN_MINUS_EQUAL) ||
+            match(p, s, BTL_TOKEN_STAR_EQUAL) || match(p, s, BTL_TOKEN_SLASH_EQUAL) ||
+            match(p, s, BTL_TOKEN_PERCENT_EQUAL))) {
+            BtlTokenType assignOp = p->previous.type;
+            emitBytes(p, c, BTL_OP_GET_FIELD_THIS, index);
             expression(p, s, c, cc);
             switch (assignOp) {
-            case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
-            case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
-            case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
-            case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
-            case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+            case BTL_TOKEN_PLUS_EQUAL:    emitByte(p, c, BTL_OP_ADD); break;
+            case BTL_TOKEN_MINUS_EQUAL:   emitByte(p, c, BTL_OP_SUBTRACT); break;
+            case BTL_TOKEN_STAR_EQUAL:    emitByte(p, c, BTL_OP_MULTIPLY); break;
+            case BTL_TOKEN_SLASH_EQUAL:   emitByte(p, c, BTL_OP_DIVIDE); break;
+            case BTL_TOKEN_PERCENT_EQUAL: emitByte(p, c, BTL_OP_MODULO); break;
             default: break;
             }
-            emitBytes(p, c, OP_SET_FIELD_THIS, index);
-        } else if (match(p, s, TOKEN_PLUS_PLUS) || match(p, s, TOKEN_MINUS_MINUS)) {
-            TokenType op = p->previous.type;
-            bool isInc = (op == TOKEN_PLUS_PLUS);
-            emitBytes(p, c, OP_GET_FIELD_THIS, index);
-            emitByte(p, c, OP_DUP);
-            emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
-            emitBytes(p, c, OP_SET_FIELD_THIS, index);
-            emitByte(p, c, OP_POP);
+            emitBytes(p, c, BTL_OP_SET_FIELD_THIS, index);
+        } else if (match(p, s, BTL_TOKEN_PLUS_PLUS) || match(p, s, BTL_TOKEN_MINUS_MINUS)) {
+            BtlTokenType op = p->previous.type;
+            bool isInc = (op == BTL_TOKEN_PLUS_PLUS);
+            emitBytes(p, c, BTL_OP_GET_FIELD_THIS, index);
+            emitByte(p, c, BTL_OP_DUP);
+            emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
+            emitBytes(p, c, BTL_OP_SET_FIELD_THIS, index);
+            emitByte(p, c, BTL_OP_POP);
         } else {
-            emitBytes(p, c, OP_GET_FIELD_THIS, index);
+            emitBytes(p, c, BTL_OP_GET_FIELD_THIS, index);
         }
         return;
     }
 
     // Method call
-    if (match(p, s, TOKEN_LEFT_PAREN)) {
+    if (match(p, s, BTL_TOKEN_LEFT_PAREN)) {
         if (isThis && cc != NULL) {
             uint8_t args = 0;
-            if (!check(p, TOKEN_RIGHT_PAREN)) {
+            if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
                 do {
                     expression(p, s, c, cc);
                     args++;
-                } while (match(p, s, TOKEN_COMMA));
+                } while (match(p, s, BTL_TOKEN_COMMA));
             }
-            consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+            consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
 
             int methodIndex = tryResolveMethodIndex(c, cc, &name, args);
 
@@ -1177,43 +1196,43 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
             int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
 
             uint8_t args = 0;
-            if (!check(p, TOKEN_RIGHT_PAREN)) {
+            if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
                 do {
                     expression(p, s, c, cc);
                     args++;
-                } while (match(p, s, TOKEN_COMMA));
+                } while (match(p, s, BTL_TOKEN_COMMA));
             }
-            consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+            consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
 
             emitInvokeIC(p, c, nameIdx, args);
         }
     } else {
         int nameIdx = makeConstant(p, c, OBJ_VAL(fieldName));
 
-        if (canAssign && match(p, s, TOKEN_EQUAL)) {
+        if (canAssign && match(p, s, BTL_TOKEN_EQUAL)) {
             expression(p, s, c, cc);
             emitSetPropertyIC(p, c, nameIdx);
-        } else if (canAssign && (match(p, s, TOKEN_PLUS_EQUAL) || match(p, s, TOKEN_MINUS_EQUAL) ||
-            match(p, s, TOKEN_STAR_EQUAL) || match(p, s, TOKEN_SLASH_EQUAL) ||
-            match(p, s, TOKEN_PERCENT_EQUAL))) {
-            TokenType assignOp = p->previous.type;
+        } else if (canAssign && (match(p, s, BTL_TOKEN_PLUS_EQUAL) || match(p, s, BTL_TOKEN_MINUS_EQUAL) ||
+            match(p, s, BTL_TOKEN_STAR_EQUAL) || match(p, s, BTL_TOKEN_SLASH_EQUAL) ||
+            match(p, s, BTL_TOKEN_PERCENT_EQUAL))) {
+            BtlTokenType assignOp = p->previous.type;
             emitGetPropertyIC(p, c, nameIdx);
             expression(p, s, c, cc);
             switch (assignOp) {
-            case TOKEN_PLUS_EQUAL:    emitByte(p, c, OP_ADD); break;
-            case TOKEN_MINUS_EQUAL:   emitByte(p, c, OP_SUBTRACT); break;
-            case TOKEN_STAR_EQUAL:    emitByte(p, c, OP_MULTIPLY); break;
-            case TOKEN_SLASH_EQUAL:   emitByte(p, c, OP_DIVIDE); break;
-            case TOKEN_PERCENT_EQUAL: emitByte(p, c, OP_MODULO); break;
+            case BTL_TOKEN_PLUS_EQUAL:    emitByte(p, c, BTL_OP_ADD); break;
+            case BTL_TOKEN_MINUS_EQUAL:   emitByte(p, c, BTL_OP_SUBTRACT); break;
+            case BTL_TOKEN_STAR_EQUAL:    emitByte(p, c, BTL_OP_MULTIPLY); break;
+            case BTL_TOKEN_SLASH_EQUAL:   emitByte(p, c, BTL_OP_DIVIDE); break;
+            case BTL_TOKEN_PERCENT_EQUAL: emitByte(p, c, BTL_OP_MODULO); break;
             default: break;
             }
             emitSetPropertyIC(p, c, nameIdx);
-        } else if (match(p, s, TOKEN_PLUS_PLUS) || match(p, s, TOKEN_MINUS_MINUS)) {
-            TokenType op = p->previous.type;
-            bool isInc = (op == TOKEN_PLUS_PLUS);
+        } else if (match(p, s, BTL_TOKEN_PLUS_PLUS) || match(p, s, BTL_TOKEN_MINUS_MINUS)) {
+            BtlTokenType op = p->previous.type;
+            bool isInc = (op == BTL_TOKEN_PLUS_PLUS);
             emitGetPropertyIC(p, c, nameIdx);
-            emitByte(p, c, OP_DUP);
-            emitByte(p, c, isInc ? OP_INCREMENT : OP_DECREMENT);
+            emitByte(p, c, BTL_OP_DUP);
+            emitByte(p, c, isInc ? BTL_OP_INCREMENT : BTL_OP_DECREMENT);
             emitSetPropertyIC(p, c, nameIdx);
         } else {
             emitGetPropertyIC(p, c, nameIdx);
@@ -1221,75 +1240,81 @@ static void dot(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canA
     }
 }
 
-static void unary(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void unary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    TokenType opType = p->previous.type;
+    BtlTokenType opType = p->previous.type;
     parsePrecedence(p, s, c, cc, PREC_UNARY);
     int operandOffset = c->lastInstruction;
     LastInstruction operand = getInstructionAt(c, operandOffset);
     if (operand.isConstant) {
-        if (opType == TOKEN_MINUS && IS_NUMBER(operand.value)) {
+        if (opType == BTL_TOKEN_MINUS && IS_NUMBER(operand.value)) {
             currentChunk(c)->count = operandOffset;
             c->lastInstruction = c->previousInstruction;
             emitConstant(p, c, NUMBER_VAL(-AS_NUMBER(operand.value)));
             return;
         }
-        if (opType == TOKEN_BANG) {
+        if (opType == BTL_TOKEN_BANG) {
             currentChunk(c)->count = operandOffset;
             c->lastInstruction = c->previousInstruction;
             bool isFalsey = IS_NULL(operand.value) || (IS_BOOL(operand.value) && !AS_BOOL(operand.value));
-            emitByte(p, c, isFalsey ? OP_TRUE : OP_FALSE);
+            emitByte(p, c, isFalsey ? BTL_OP_TRUE : BTL_OP_FALSE);
             return;
         }
     }
     switch (opType) {
-    case TOKEN_BANG:  emitByte(p, c, OP_NOT); break;
-    case TOKEN_MINUS: emitByte(p, c, OP_NEGATE); break;
+    case BTL_TOKEN_BANG:  emitByte(p, c, BTL_OP_NOT); break;
+    case BTL_TOKEN_MINUS: emitByte(p, c, BTL_OP_NEGATE); break;
     default: return;
     }
 }
 
-static void and_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void and_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    int endJump = emitJump(p, c, OP_JUMP_IF_FALSE);
+    int endJump = emitJump(p, c, BTL_OP_JUMP_IF_FALSE);
     emitPopOrRemoveLoad(p, c);
     parsePrecedence(p, s, c, cc, PREC_AND);
     patchJump(p, c, endJump);
+    // The short-circuit jump now targets chunk->count.  If emitFusedJump
+    // later removes the last comparison opcode, that target becomes invalid.
+    // Inhibit fusion so the jump target stays on a valid instruction boundary.
+    c->inhibitFusion = true;
 }
 
-static void or_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void or_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
-    int elseJump = emitJump(p, c, OP_JUMP_IF_TRUE);
+    int elseJump = emitJump(p, c, BTL_OP_JUMP_IF_TRUE);
     emitPopOrRemoveLoad(p, c);
     parsePrecedence(p, s, c, cc, PREC_OR);
     patchJump(p, c, elseJump);
+    // Same reasoning as and_() above.
+    c->inhibitFusion = true;
 }
 
-static void call(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void call(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     uint8_t args = 0;
-    if (!check(p, TOKEN_RIGHT_PAREN)) {
+    if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
         do {
             expression(p, s, c, cc);
             args++;
-        } while (match(p, s, TOKEN_COMMA));
+        } while (match(p, s, BTL_TOKEN_COMMA));
     }
-    consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+    consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
     switch (args) {
-    case 0: emitByte(p, c, OP_CALL_0); break;
-    case 1: emitByte(p, c, OP_CALL_1); break;
-    case 2: emitByte(p, c, OP_CALL_2); break;
-    case 3: emitByte(p, c, OP_CALL_3); break;
-    case 4: emitByte(p, c, OP_CALL_4); break;
-    case 5: emitByte(p, c, OP_CALL_5); break;
-    case 6: emitByte(p, c, OP_CALL_6); break;
-    case 7: emitByte(p, c, OP_CALL_7); break;
-    case 8: emitByte(p, c, OP_CALL_8); break;
-    default: emitBytes(p, c, OP_CALL, args); break;
+    case 0: emitByte(p, c, BTL_OP_CALL_0); break;
+    case 1: emitByte(p, c, BTL_OP_CALL_1); break;
+    case 2: emitByte(p, c, BTL_OP_CALL_2); break;
+    case 3: emitByte(p, c, BTL_OP_CALL_3); break;
+    case 4: emitByte(p, c, BTL_OP_CALL_4); break;
+    case 5: emitByte(p, c, BTL_OP_CALL_5); break;
+    case 6: emitByte(p, c, BTL_OP_CALL_6); break;
+    case 7: emitByte(p, c, BTL_OP_CALL_7); break;
+    case 8: emitByte(p, c, BTL_OP_CALL_8); break;
+    default: emitBytes(p, c, BTL_OP_CALL, args); break;
     }
 }
 
-static void this_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void this_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     if (cc == NULL) {
         errorAt(p, &p->previous, "Can't use 'this' outside of a class.");
@@ -1298,7 +1323,7 @@ static void this_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool ca
     variable(p, s, c, cc, false);
 }
 
-static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void super_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     if (cc == NULL) {
         errorAt(p, &p->previous, "Can't use 'super' outside of a class.");
@@ -1306,24 +1331,24 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
         errorAt(p, &p->previous, "Can't use 'super' in a class with no superclass.");
     }
 
-    consume(p, s, TOKEN_DOT, "Expect '.'.");
-    consume(p, s, TOKEN_IDENTIFIER, "Expect superclass method name.");
-    Token name = p->previous;
+    consume(p, s, BTL_TOKEN_DOT, "Expect '.'.");
+    consume(p, s, BTL_TOKEN_IDENTIFIER, "Expect superclass method name.");
+    BtlToken name = p->previous;
 
-    Token thisT = { .start = "this", .length = 4 };
+    BtlToken thisT = { .start = "this", .length = 4 };
     namedVariable(p, s, c, cc, thisT, false);
-    Token superT = { .start = "super", .length = 5 };
+    BtlToken superT = { .start = "super", .length = 5 };
     namedVariable(p, s, c, cc, superT, false);
 
-    if (match(p, s, TOKEN_LEFT_PAREN)) {
+    if (match(p, s, BTL_TOKEN_LEFT_PAREN)) {
         uint8_t args = 0;
-        if (!check(p, TOKEN_RIGHT_PAREN)) {
+        if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
             do {
                 expression(p, s, c, cc);
                 args++;
-            } while (match(p, s, TOKEN_COMMA));
+            } while (match(p, s, BTL_TOKEN_COMMA));
         }
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
         int methodIndex = tryResolveMethodIndex(c, cc, &name, args);
 
         if (methodIndex < 0) {
@@ -1333,71 +1358,71 @@ static void super_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
 
         emitSuperInvokeIndexed(p, c, methodIndex, args);
     } else {
-        int nameIdx = makeConstant(p, c, OBJ_VAL(copyString(c->vm, name.start, name.length)));
-        emitLong(p, c, OP_GET_SUPER, OP_GET_SUPER_LONG, nameIdx);
+        int nameIdx = makeConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, name.start, name.length)));
+        emitLong(p, c, BTL_OP_GET_SUPER, BTL_OP_GET_SUPER_LONG, nameIdx);
     }
 }
 
-static void switch_(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void switch_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
     switchStatement(p, s, c, cc, false);
 }
 
-static void doExpr(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool canAssign) {
+static void doExpr(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) canAssign;
 
     // do func() { ... } - anonymous async function
-    if (match(p, s, TOKEN_FUNC)) {
-        function(p, s, c, cc, TYPE_FUNCTION);
-        emitBytes(p, c, OP_DO_NEW, 0);
+    if (match(p, s, BTL_TOKEN_FUNC)) {
+        function(p, s, c, cc, BTL_TYPE_FUNCTION);
+        emitBytes(p, c, BTL_OP_DO_NEW, 0);
         return;
     }
 
-    if (!check(p, TOKEN_IDENTIFIER)) {
+    if (!check(p, BTL_TOKEN_IDENTIFIER)) {
         errorAt(p, &p->current, "Expect identifier or 'func' after 'do'.");
         return;
     }
 
     advance(p, s);
-    Token name = p->previous;
+    BtlToken name = p->previous;
 
-    if (check(p, TOKEN_LEFT_PAREN)) {
+    if (check(p, BTL_TOKEN_LEFT_PAREN)) {
         // do identifier() - Class or function call
         namedVariable(p, s, c, cc, name, false);
 
-        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
+        consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '('.");
         uint8_t argCount = 0;
-        if (!check(p, TOKEN_RIGHT_PAREN)) {
+        if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
             do {
                 expression(p, s, c, cc);
                 argCount++;
-            } while (match(p, s, TOKEN_COMMA));
+            } while (match(p, s, BTL_TOKEN_COMMA));
         }
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
 
-        emitBytes(p, c, OP_DO_NEW, argCount);
+        emitBytes(p, c, BTL_OP_DO_NEW, argCount);
 
-    } else if (check(p, TOKEN_DOT)) {
+    } else if (check(p, BTL_TOKEN_DOT)) {
         // do obj.method()
         namedVariable(p, s, c, cc, name, false);
 
-        consume(p, s, TOKEN_DOT, "Expect '.'.");
-        consume(p, s, TOKEN_IDENTIFIER, "Expect method name.");
-        Token methodName = p->previous;
+        consume(p, s, BTL_TOKEN_DOT, "Expect '.'.");
+        consume(p, s, BTL_TOKEN_IDENTIFIER, "Expect method name.");
+        BtlToken methodName = p->previous;
 
-        int nameConstant = makeConstant(p, c, OBJ_VAL(copyString(c->vm, methodName.start, methodName.length)));
+        int nameConstant = makeConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, methodName.start, methodName.length)));
 
-        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
+        consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '('.");
         uint8_t argCount = 0;
-        if (!check(p, TOKEN_RIGHT_PAREN)) {
+        if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
             do {
                 expression(p, s, c, cc);
                 argCount++;
-            } while (match(p, s, TOKEN_COMMA));
+            } while (match(p, s, BTL_TOKEN_COMMA));
         }
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
 
-        emitByte(p, c, OP_DO_INVOKE);
+        emitByte(p, c, BTL_OP_DO_INVOKE);
         emitByte(p, c, (uint8_t) nameConstant);
         emitByte(p, c, argCount);
 
@@ -1409,41 +1434,41 @@ static void doExpr(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool c
 // --- Parse Rules Table ---
 
 ParseRule rules [] = {
-    [TOKEN_LEFT_PAREN] = {grouping, call,   PREC_CALL},
-    [TOKEN_LEFT_BRACKET] = {list,     subscript, PREC_CALL},
-    [TOKEN_DOT] = {NULL,     dot,    PREC_CALL},
-    [TOKEN_MINUS] = {unary,    binary, PREC_TERM},
-    [TOKEN_PLUS] = {NULL,     binary, PREC_TERM},
-    [TOKEN_STAR] = {NULL,     binary, PREC_FACTOR},
-    [TOKEN_SLASH] = {NULL,     binary, PREC_FACTOR},
-    [TOKEN_PERCENT] = {NULL,     binary, PREC_FACTOR},
-    [TOKEN_BANG] = {unary,    NULL,   PREC_NONE},
-    [TOKEN_BANG_EQUAL] = {NULL,     binary, PREC_EQUALITY},
-    [TOKEN_EQUAL_EQUAL] = {NULL,     binary, PREC_EQUALITY},
-    [TOKEN_GREATER] = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_GREATER_EQUAL] = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_LESS] = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_LESS_EQUAL] = {NULL,     binary, PREC_COMPARISON},
-    [TOKEN_IDENTIFIER] = {variable, NULL,   PREC_NONE},
-    [TOKEN_STRING] = {string,   NULL,   PREC_NONE},
-    [TOKEN_NUMBER] = {number,   NULL,   PREC_NONE},
-    [TOKEN_AND] = {NULL,     and_,   PREC_AND},
-    [TOKEN_OR] = {NULL,     or_,    PREC_OR},
-    [TOKEN_FALSE] = {literal,  NULL,   PREC_NONE},
-    [TOKEN_NULL] = {literal,  NULL,   PREC_NONE},
-    [TOKEN_TRUE] = {literal,  NULL,   PREC_NONE},
-    [TOKEN_SUPER] = {super_,   NULL,   PREC_NONE},
-    [TOKEN_THIS] = {this_,    NULL,   PREC_NONE},
-    [TOKEN_FUNC] = {func,     NULL,   PREC_NONE},
-    [TOKEN_SWITCH] = {switch_,  NULL,   PREC_NONE},
-    [TOKEN_COLON] = {NULL,     NULL,   PREC_NONE},
-    [TOKEN_PLUS_PLUS] = {prefixIncDec, NULL, PREC_NONE},
-    [TOKEN_MINUS_MINUS] = {prefixIncDec, NULL, PREC_NONE},
-    [TOKEN_DO] = {doExpr, NULL, PREC_NONE},
-    [TOKEN_EOF] = {NULL,     NULL,   PREC_NONE},
+    [BTL_TOKEN_LEFT_PAREN] = {grouping, call,   PREC_CALL},
+    [BTL_TOKEN_LEFT_BRACKET] = {list,     subscript, PREC_CALL},
+    [BTL_TOKEN_DOT] = {NULL,     dot,    PREC_CALL},
+    [BTL_TOKEN_MINUS] = {unary,    binary, PREC_TERM},
+    [BTL_TOKEN_PLUS] = {NULL,     binary, PREC_TERM},
+    [BTL_TOKEN_STAR] = {NULL,     binary, PREC_FACTOR},
+    [BTL_TOKEN_SLASH] = {NULL,     binary, PREC_FACTOR},
+    [BTL_TOKEN_PERCENT] = {NULL,     binary, PREC_FACTOR},
+    [BTL_TOKEN_BANG] = {unary,    NULL,   PREC_NONE},
+    [BTL_TOKEN_BANG_EQUAL] = {NULL,     binary, PREC_EQUALITY},
+    [BTL_TOKEN_EQUAL_EQUAL] = {NULL,     binary, PREC_EQUALITY},
+    [BTL_TOKEN_GREATER] = {NULL,     binary, PREC_COMPARISON},
+    [BTL_TOKEN_GREATER_EQUAL] = {NULL,     binary, PREC_COMPARISON},
+    [BTL_TOKEN_LESS] = {NULL,     binary, PREC_COMPARISON},
+    [BTL_TOKEN_LESS_EQUAL] = {NULL,     binary, PREC_COMPARISON},
+    [BTL_TOKEN_IDENTIFIER] = {variable, NULL,   PREC_NONE},
+    [BTL_TOKEN_STRING] = {string,   NULL,   PREC_NONE},
+    [BTL_TOKEN_NUMBER] = {number,   NULL,   PREC_NONE},
+    [BTL_TOKEN_AND] = {NULL,     and_,   PREC_AND},
+    [BTL_TOKEN_OR] = {NULL,     or_,    PREC_OR},
+    [BTL_TOKEN_FALSE] = {literal,  NULL,   PREC_NONE},
+    [BTL_TOKEN_NULL] = {literal,  NULL,   PREC_NONE},
+    [BTL_TOKEN_TRUE] = {literal,  NULL,   PREC_NONE},
+    [BTL_TOKEN_SUPER] = {super_,   NULL,   PREC_NONE},
+    [BTL_TOKEN_THIS] = {this_,    NULL,   PREC_NONE},
+    [BTL_TOKEN_FUNC] = {func,     NULL,   PREC_NONE},
+    [BTL_TOKEN_SWITCH] = {switch_,  NULL,   PREC_NONE},
+    [BTL_TOKEN_COLON] = {NULL,     NULL,   PREC_NONE},
+    [BTL_TOKEN_PLUS_PLUS] = {prefixIncDec, NULL, PREC_NONE},
+    [BTL_TOKEN_MINUS_MINUS] = {prefixIncDec, NULL, PREC_NONE},
+    [BTL_TOKEN_DO] = {doExpr, NULL, PREC_NONE},
+    [BTL_TOKEN_EOF] = {NULL,     NULL,   PREC_NONE},
 };
 
-static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Precedence prec) {
+static void parsePrecedence(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, Precedence prec) {
     advance(p, s);
 
     ParseFn prefix = getRule(p->previous.type)->prefix;
@@ -1459,52 +1484,52 @@ static void parsePrecedence(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
         ParseFn infix = getRule(p->previous.type)->infix;
         infix(p, s, c, cc, canAssign);
     }
-    if (canAssign && match(p, s, TOKEN_EQUAL)) {
+    if (canAssign && match(p, s, BTL_TOKEN_EQUAL)) {
         errorAt(p, &p->previous, "Invalid assignment target.");
     }
 }
 
-static ParseRule* getRule(TokenType type) {
+static ParseRule* getRule(BtlTokenType type) {
     return &rules[type];
 }
 
-static void expression(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
+static void expression(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
     parsePrecedence(p, s, c, cc, PREC_ASSIGNMENT);
 }
 
 // --- Statement Functions ---
 
-static void block(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
+static void block(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
+    while (!check(p, BTL_TOKEN_RIGHT_BRACE) && !check(p, BTL_TOKEN_EOF)) {
         declaration(p, s, c, cc);
     }
-    consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after block.");
+    consume(p, s, BTL_TOKEN_RIGHT_BRACE, "Expect '}' after block.");
 }
 
-static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, FunctionType type) {
-    Compiler sub;
+static void function(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, BtlFunctionType type) {
+    BtlCompiler sub;
     initCompiler(p, &sub, c, type, c->module);
     beginScope(&sub);
-    consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
-    if (!check(p, TOKEN_RIGHT_PAREN)) {
+    consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '('.");
+    if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
         do {
             sub.function->arity++;
             int constant = parseVariable(p, s, &sub, "Expect parameter name.");
             defineVariable(p, &sub, constant);
-        } while (match(p, s, TOKEN_COMMA));
+        } while (match(p, s, BTL_TOKEN_COMMA));
     }
-    consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
+    consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
+    consume(p, s, BTL_TOKEN_LEFT_BRACE, "Expect '{'.");
     block(p, s, &sub, cc);
     ObjFunction* f = endCompiler(p, &sub);
-    push(c->vm, OBJ_VAL(f));
+    btl_push(c->vm, OBJ_VAL(f));
     int index = makeConstant(p, c, OBJ_VAL(f));
-    emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, index);
-    pop(c->vm);
+    emitLong(p, c, BTL_OP_CLOSURE, BTL_OP_CLOSURE_LONG, index);
+    btl_pop(c->vm);
 
     for (int i = 0; i < f->upvalueCount; i++) {
-        writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
-        writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
 
         bool isMut = sub.upvalues[i].isMutable;
         if (sub.upvalues[i].isLocal) {
@@ -1514,41 +1539,41 @@ static void function(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, Func
                 addPatch(c, sub.upvalues[i].index, currentChunk(c)->count);
             }
         }
-        writeChunk(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
     }
 }
 
-static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    consume(p, s, TOKEN_IDENTIFIER, "Expect method name.");
-    Token nameToken = p->previous;
-    FunctionType type = TYPE_METHOD;
+static void method(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
+    consume(p, s, BTL_TOKEN_IDENTIFIER, "Expect method name.");
+    BtlToken nameToken = p->previous;
+    BtlFunctionType type = BTL_TYPE_METHOD;
     bool isInit = false;
 
     if (p->previous.length == 4 && memcmp(p->previous.start, "init", 4) == 0) {
-        type = TYPE_INITIALIZER;
+        type = BTL_TYPE_INITIALIZER;
         isInit = true;
     }
 
-    Compiler sub;
+    BtlCompiler sub;
     initCompiler(p, &sub, c, type, c->module);
     beginScope(&sub);
 
-    consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
-    if (!check(p, TOKEN_RIGHT_PAREN)) {
+    consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '('.");
+    if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
         do {
             sub.function->arity++;
             int constant = parseVariable(p, s, &sub, "Expect parameter name.");
             defineVariable(p, &sub, constant);
-        } while (match(p, s, TOKEN_COMMA));
+        } while (match(p, s, BTL_TOKEN_COMMA));
     }
-    consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{'.");
+    consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
+    consume(p, s, BTL_TOKEN_LEFT_BRACE, "Expect '{'.");
 
     // INJECT FIELD INITIALIZERS at the start of init()
     if (isInit && cc != NULL) {
         for (int i = 0; i < cc->fieldCount; i++) {
             if (cc->fieldInfos[i].hasInit) {
-                Scanner initScanner;
+                BtlScanner initScanner;
                 initScanner.start = cc->fieldInfos[i].initSource;
                 initScanner.current = cc->fieldInfos[i].initSource;
                 initScanner.line = 1;
@@ -1560,7 +1585,7 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
                 advance(&initParser, &initScanner);
                 expression(&initParser, &initScanner, &sub, cc);
 
-                emitBytes(p, &sub, OP_SET_FIELD_THIS, (uint8_t) i);
+                emitBytes(p, &sub, BTL_OP_SET_FIELD_THIS, (uint8_t) i);
                 emitPopOrRemoveLoad(p, &sub);
 
                 if (initParser.hadError) {
@@ -1573,14 +1598,14 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     block(p, s, &sub, cc);
     ObjFunction* f = endCompiler(p, &sub);
 
-    push(c->vm, OBJ_VAL(f));
+    btl_push(c->vm, OBJ_VAL(f));
     int fnIdx = makeConstant(p, c, OBJ_VAL(f));
-    emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, fnIdx);
-    pop(c->vm);
+    emitLong(p, c, BTL_OP_CLOSURE, BTL_OP_CLOSURE_LONG, fnIdx);
+    btl_pop(c->vm);
 
     for (int i = 0; i < f->upvalueCount; i++) {
-        writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
-        writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
         bool isMut = sub.upvalues[i].isMutable;
         if (sub.upvalues[i].isLocal) {
             if (c->locals[sub.upvalues[i].index].isModified) {
@@ -1589,74 +1614,74 @@ static void method(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
                 addPatch(c, sub.upvalues[i].index, currentChunk(c)->count);
             }
         }
-        writeChunk(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
     }
 
     ObjString* signature = createMethodSignature(c, &nameToken, f->arity);
-    push(c->vm, OBJ_VAL(signature));
+    btl_push(c->vm, OBJ_VAL(signature));
 
-    Value indexValue;
+    BtlValue indexValue;
     int methodIndex;
-    if (tableGet(&cc->methodIndices, OBJ_VAL(signature), &indexValue)) {
+    if (btl_table_get(&cc->methodIndices, OBJ_VAL(signature), &indexValue)) {
         methodIndex = (int) AS_NUMBER(indexValue);
     } else {
         methodIndex = cc->nextMethodIndex++;
-        tableSet(c->vm, &cc->methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
+        btl_table_set(c->vm, &cc->methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
     }
 
-    pop(c->vm);
+    btl_pop(c->vm);
 
     if (methodIndex < 256) {
-        emitByte(p, c, OP_METHOD);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
+        emitByte(p, c, BTL_OP_METHOD);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
     } else {
-        emitByte(p, c, OP_METHOD_LONG);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
-        writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
+        emitByte(p, c, BTL_OP_METHOD_LONG);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
+        btl_chunk_write(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
     }
 }
 
-static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    consume(p, s, TOKEN_IDENTIFIER, "Expect class name.");
-    Token nameToken = p->previous;
-    int nameStringConst = makeConstant(p, c, OBJ_VAL(copyString(c->vm, nameToken.start, nameToken.length)));
+static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
+    consume(p, s, BTL_TOKEN_IDENTIFIER, "Expect class name.");
+    BtlToken nameToken = p->previous;
+    int nameStringConst = makeConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, nameToken.start, nameToken.length)));
     int nameGlobalIdx = identifierConstant(c, &nameToken);
 
     declareVariable(p, c);
-    emitLong(p, c, OP_CLASS, OP_CLASS_LONG, nameStringConst);
+    emitLong(p, c, BTL_OP_CLASS, BTL_OP_CLASS_LONG, nameStringConst);
     defineVariable(p, c, nameGlobalIdx);
 
-    ClassCompiler classC;
+    BtlClassCompiler classC;
     classC.enclosing = cc;
     classC.hasSuperclass = false;
     classC.fieldCount = 0;
-    initTable(&classC.fields);
-    initTable(&classC.methodIndices);
+    btl_table_init(&classC.fields);
+    btl_table_init(&classC.methodIndices);
     classC.nextMethodIndex = 0;
 
     classC.fieldInfoCapacity = 8;
-    classC.fieldInfos = ALLOCATE(c->vm, FieldInfo, classC.fieldInfoCapacity);
+    classC.fieldInfos = BTL_ALLOCATE(c->vm, BtlFieldInfo, classC.fieldInfoCapacity);
 
     bool userDefinedInit = false;
     bool hasFieldInitializers = false;
 
-    if (match(p, s, TOKEN_LESS)) {
-        consume(p, s, TOKEN_IDENTIFIER, "Expect superclass name.");
-        Token superClassName = p->previous;
+    if (match(p, s, BTL_TOKEN_LESS)) {
+        consume(p, s, BTL_TOKEN_IDENTIFIER, "Expect superclass name.");
+        BtlToken superClassName = p->previous;
 
-        ObjString* parentName = copyString(c->vm, superClassName.start, superClassName.length);
-        push(c->vm, OBJ_VAL(parentName));
+        ObjString* parentName = btl_string_copy(c->vm, superClassName.start, superClassName.length);
+        btl_push(c->vm, OBJ_VAL(parentName));
 
-        Value savedIndicesValue;
-        if (tableGet(&c->module->classInfo, OBJ_VAL(parentName), &savedIndicesValue)) {
-            Table* parentIndices = (Table*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-            tableAddAll(c->vm, parentIndices, &classC.methodIndices);
+        BtlValue savedIndicesValue;
+        if (btl_table_get(&c->module->classInfo, OBJ_VAL(parentName), &savedIndicesValue)) {
+            BtlTable* parentIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
+            btl_table_add_all(c->vm, parentIndices, &classC.methodIndices);
 
             int maxParentIndex = -1;
             for (int i = 0; i < parentIndices->capacity; i++) {
-                Entry* entry = &parentIndices->entries[i];
+                BtlEntry* entry = &parentIndices->entries[i];
                 if (IS_STRING(entry->key) && IS_NUMBER(entry->value)) {
                     int idx = (int) AS_NUMBER(entry->value);
                     if (idx > maxParentIndex) maxParentIndex = idx;
@@ -1665,7 +1690,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
             classC.nextMethodIndex = maxParentIndex + 1;
         }
 
-        pop(c->vm);
+        btl_pop(c->vm);
 
         variable(p, s, c, &classC, false);
 
@@ -1680,31 +1705,31 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
         namedVariable(p, s, c, NULL, superClassName, false);
         namedVariable(p, s, c, NULL, nameToken, false);
 
-        emitByte(p, c, OP_INHERIT);
+        emitByte(p, c, BTL_OP_INHERIT);
         classC.hasSuperclass = true;
     }
 
     namedVariable(p, s, c, NULL, nameToken, false);
 
-    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{' before class body.");
-    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
-        if (match(p, s, TOKEN_VAR)) {
+    consume(p, s, BTL_TOKEN_LEFT_BRACE, "Expect '{' before class body.");
+    while (!check(p, BTL_TOKEN_RIGHT_BRACE) && !check(p, BTL_TOKEN_EOF)) {
+        if (match(p, s, BTL_TOKEN_VAR)) {
             do {
-                consume(p, s, TOKEN_IDENTIFIER, "Expect variable name.");
-                Token fieldName = p->previous;
+                consume(p, s, BTL_TOKEN_IDENTIFIER, "Expect variable name.");
+                BtlToken fieldName = p->previous;
 
-                ObjString* name = copyString(c->vm, fieldName.start, fieldName.length);
-                Value dummy;
+                ObjString* name = btl_string_copy(c->vm, fieldName.start, fieldName.length);
+                BtlValue dummy;
                 int fieldIndex;
 
-                if (!tableGet(&classC.fields, OBJ_VAL(name), &dummy)) {
+                if (!btl_table_get(&classC.fields, OBJ_VAL(name), &dummy)) {
                     fieldIndex = classC.fieldCount++;
-                    tableSet(c->vm, &classC.fields, OBJ_VAL(name), NUMBER_VAL((double) fieldIndex));
+                    btl_table_set(c->vm, &classC.fields, OBJ_VAL(name), NUMBER_VAL((double) fieldIndex));
 
                     if (fieldIndex >= classC.fieldInfoCapacity) {
                         int oldCap = classC.fieldInfoCapacity;
                         classC.fieldInfoCapacity *= 2;
-                        classC.fieldInfos = GROW_ARRAY(c->vm, FieldInfo, classC.fieldInfos,
+                        classC.fieldInfos = BTL_GROW_ARRAY(c->vm, BtlFieldInfo, classC.fieldInfos,
                             oldCap, classC.fieldInfoCapacity);
                     }
 
@@ -1715,7 +1740,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
                     fieldIndex = (int) AS_NUMBER(dummy);
                 }
 
-                if (match(p, s, TOKEN_EQUAL)) {
+                if (match(p, s, BTL_TOKEN_EQUAL)) {
                     hasFieldInitializers = true;
 
                     const char* exprStart = p->current.start;
@@ -1724,16 +1749,16 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
                     int braceDepth = 0;
                     int bracketDepth = 0;
 
-                    while (!check(p, TOKEN_EOF)) {
-                        if (check(p, TOKEN_LEFT_PAREN)) parenDepth++;
-                        if (check(p, TOKEN_RIGHT_PAREN)) parenDepth--;
-                        if (check(p, TOKEN_LEFT_BRACE)) braceDepth++;
-                        if (check(p, TOKEN_RIGHT_BRACE)) braceDepth--;
-                        if (check(p, TOKEN_LEFT_BRACKET)) bracketDepth++;
-                        if (check(p, TOKEN_RIGHT_BRACKET)) bracketDepth--;
+                    while (!check(p, BTL_TOKEN_EOF)) {
+                        if (check(p, BTL_TOKEN_LEFT_PAREN)) parenDepth++;
+                        if (check(p, BTL_TOKEN_RIGHT_PAREN)) parenDepth--;
+                        if (check(p, BTL_TOKEN_LEFT_BRACE)) braceDepth++;
+                        if (check(p, BTL_TOKEN_RIGHT_BRACE)) braceDepth--;
+                        if (check(p, BTL_TOKEN_LEFT_BRACKET)) bracketDepth++;
+                        if (check(p, BTL_TOKEN_RIGHT_BRACKET)) bracketDepth--;
 
                         if (parenDepth == 0 && braceDepth == 0 && bracketDepth == 0) {
-                            if (check(p, TOKEN_COMMA) || check(p, TOKEN_SEMICOLON)) {
+                            if (check(p, BTL_TOKEN_COMMA) || check(p, BTL_TOKEN_SEMICOLON)) {
                                 break;
                             }
                         }
@@ -1748,11 +1773,11 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
                     classC.fieldInfos[fieldIndex].initLength = exprLength;
                     classC.fieldInfos[fieldIndex].hasInit = true;
                 }
-            } while (match(p, s, TOKEN_COMMA));
+            } while (match(p, s, BTL_TOKEN_COMMA));
 
-            consume(p, s, TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
-        } else if (match(p, s, TOKEN_FUNC)) {
-            if (check(p, TOKEN_IDENTIFIER) &&
+            consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
+        } else if (match(p, s, BTL_TOKEN_FUNC)) {
+            if (check(p, BTL_TOKEN_IDENTIFIER) &&
                 p->current.length == 4 &&
                 memcmp(p->current.start, "init", 4) == 0) {
                 userDefinedInit = true;
@@ -1764,20 +1789,20 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
             advance(p, s);
         }
     }
-    consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
+    consume(p, s, BTL_TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
 
     // AUTO-GENERATE empty init() if field initializers exist but no user init
     if (hasFieldInitializers && !userDefinedInit) {
         namedVariable(p, s, c, NULL, nameToken, false);
 
-        Token initToken;
+        BtlToken initToken;
         initToken.start = "init";
         initToken.length = 4;
         initToken.line = nameToken.line;
-        initToken.type = TOKEN_IDENTIFIER;
+        initToken.type = BTL_TOKEN_IDENTIFIER;
 
-        Compiler sub;
-        initCompiler(p, &sub, c, TYPE_INITIALIZER, c->module);
+        BtlCompiler sub;
+        initCompiler(p, &sub, c, BTL_TYPE_INITIALIZER, c->module);
         beginScope(&sub);
 
         sub.function->arity = 0;
@@ -1785,7 +1810,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
         // Inject field initializers
         for (int i = 0; i < classC.fieldCount; i++) {
             if (classC.fieldInfos[i].hasInit) {
-                Scanner initScanner;
+                BtlScanner initScanner;
                 initScanner.start = classC.fieldInfos[i].initSource;
                 initScanner.current = classC.fieldInfos[i].initSource;
                 initScanner.line = 1;
@@ -1797,7 +1822,7 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
                 advance(&initParser, &initScanner);
                 expression(&initParser, &initScanner, &sub, &classC);
 
-                emitBytes(p, &sub, OP_SET_FIELD_THIS, (uint8_t) i);
+                emitBytes(p, &sub, BTL_OP_SET_FIELD_THIS, (uint8_t) i);
                 emitPopOrRemoveLoad(p, &sub);
 
                 if (initParser.hadError) {
@@ -1806,59 +1831,59 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
             }
         }
 
-        emitBytes(p, &sub, OP_GET_LOCAL, 0);
-        emitByte(p, &sub, OP_RETURN);
+        emitBytes(p, &sub, BTL_OP_GET_LOCAL, 0);
+        emitByte(p, &sub, BTL_OP_RETURN);
 
         ObjFunction* f = sub.function;
 
-        push(c->vm, OBJ_VAL(f));
+        btl_push(c->vm, OBJ_VAL(f));
         int fnIdx = makeConstant(p, c, OBJ_VAL(f));
-        emitLong(p, c, OP_CLOSURE, OP_CLOSURE_LONG, fnIdx);
-        pop(c->vm);
+        emitLong(p, c, BTL_OP_CLOSURE, BTL_OP_CLOSURE_LONG, fnIdx);
+        btl_pop(c->vm);
 
         for (int i = 0; i < f->upvalueCount; i++) {
-            writeChunk(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
-            writeChunk(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
+            btl_chunk_write(c->vm, currentChunk(c), sub.upvalues[i].isLocal ? 1 : 0, p->previous.line);
+            btl_chunk_write(c->vm, currentChunk(c), sub.upvalues[i].index, p->previous.line);
             bool isMut = sub.upvalues[i].isMutable;
             if (sub.upvalues[i].isLocal && c->locals[sub.upvalues[i].index].isModified) {
                 isMut = true;
             }
-            writeChunk(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
+            btl_chunk_write(c->vm, currentChunk(c), isMut ? 1 : 0, p->previous.line);
         }
 
         ObjString* signature = createMethodSignature(c, &initToken, 0);
-        push(c->vm, OBJ_VAL(signature));
+        btl_push(c->vm, OBJ_VAL(signature));
 
-        Value indexValue;
+        BtlValue indexValue;
         int methodIndex;
-        if (tableGet(&classC.methodIndices, OBJ_VAL(signature), &indexValue)) {
+        if (btl_table_get(&classC.methodIndices, OBJ_VAL(signature), &indexValue)) {
             methodIndex = (int) AS_NUMBER(indexValue);
         } else {
             methodIndex = classC.nextMethodIndex++;
-            tableSet(c->vm, &classC.methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
+            btl_table_set(c->vm, &classC.methodIndices, OBJ_VAL(signature), NUMBER_VAL((double) methodIndex));
         }
 
-        pop(c->vm);
+        btl_pop(c->vm);
 
         if (methodIndex < 256) {
-            emitByte(p, c, OP_METHOD);
-            writeChunk(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
-            writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
+            emitByte(p, c, BTL_OP_METHOD);
+            btl_chunk_write(c->vm, currentChunk(c), (uint8_t) methodIndex, p->previous.line);
+            btl_chunk_write(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
         } else {
-            emitByte(p, c, OP_METHOD_LONG);
-            writeChunk(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
-            writeChunk(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
-            writeChunk(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
+            emitByte(p, c, BTL_OP_METHOD_LONG);
+            btl_chunk_write(c->vm, currentChunk(c), (uint8_t) (methodIndex & 0xff), p->previous.line);
+            btl_chunk_write(c->vm, currentChunk(c), (uint8_t) ((methodIndex >> 8) & 0xff), p->previous.line);
+            btl_chunk_write(c->vm, currentChunk(c), (uint8_t) f->arity, p->previous.line);
         }
 
-        emitByte(p, c, OP_POP);
+        emitByte(p, c, BTL_OP_POP);
     }
 
     // Sync Fields
     for (int i = 0; i < classC.fieldCount; i++) {
         ObjString* foundName = NULL;
         for (int j = 0; j < classC.fields.capacity; j++) {
-            Entry* entry = &classC.fields.entries[j];
+            BtlEntry* entry = &classC.fields.entries[j];
             if (IS_STRING(entry->key) && (int) AS_NUMBER(entry->value) == i) {
                 foundName = AS_STRING(entry->key);
                 break;
@@ -1866,136 +1891,143 @@ static void classDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* 
         }
         if (foundName != NULL) {
             int nameIdx = makeConstant(p, c, OBJ_VAL(foundName));
-            emitLong(p, c, OP_FIELD, OP_FIELD, nameIdx);
+            emitLong(p, c, BTL_OP_FIELD, BTL_OP_FIELD, nameIdx);
         }
     }
 
-    emitByte(p, c, OP_POP);
+    emitByte(p, c, BTL_OP_POP);
 
     if (classC.hasSuperclass) {
         endScope(p, c);
     }
 
-    freeTable(c->vm, &classC.fields);
+    btl_table_free(c->vm, &classC.fields);
 
     // Save method indices AFTER auto-generated init is added
-    ObjString* className = copyString(c->vm, nameToken.start, nameToken.length);
-    push(c->vm, OBJ_VAL(className));
+    ObjString* className = btl_string_copy(c->vm, nameToken.start, nameToken.length);
+    btl_push(c->vm, OBJ_VAL(className));
 
-    Table* savedIndices = ALLOCATE(c->vm, Table, 1);
-    initTable(savedIndices);
-    tableAddAll(c->vm, &classC.methodIndices, savedIndices);
+    BtlTable* savedIndices = BTL_ALLOCATE(c->vm, BtlTable, 1);
+    btl_table_init(savedIndices);
+    btl_table_add_all(c->vm, &classC.methodIndices, savedIndices);
 
-    tableSet(c->vm, &c->module->classInfo, OBJ_VAL(className),
+    btl_table_set(c->vm, &c->module->classInfo, OBJ_VAL(className),
         NUMBER_VAL((double) (uintptr_t) savedIndices));
 
-    pop(c->vm);
-    freeTable(c->vm, &classC.methodIndices);
-    FREE_ARRAY(c->vm, FieldInfo, classC.fieldInfos, classC.fieldInfoCapacity);
+    btl_pop(c->vm);
+    btl_table_free(c->vm, &classC.methodIndices);
+    BTL_FREE_ARRAY(c->vm, BtlFieldInfo, classC.fieldInfos, classC.fieldInfoCapacity);
 }
 
-static void funDeclaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
+static void funDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
     int global = parseVariable(p, s, c, "Expect function name.");
     markInitialized(c);
-    function(p, s, c, cc, TYPE_FUNCTION);
+    function(p, s, c, cc, BTL_TYPE_FUNCTION);
     defineVariable(p, c, global);
 }
 
-static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc, bool isStatement) {
-    consume(p, s, TOKEN_LEFT_PAREN, "Expect '(' after 'switch'.");
+static void switchStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool isStatement) {
+    consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '(' after 'switch'.");
     expression(p, s, c, cc);
-    consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')' after switch expression.");
-    consume(p, s, TOKEN_LEFT_BRACE, "Expect '{' before switch body.");
+    consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')' after switch expression.");
+    consume(p, s, BTL_TOKEN_LEFT_BRACE, "Expect '{' before switch body.");
 
-    SwitchContext switchCtx;
+    BtlSwitchContext switchCtx;
     switchCtx.enclosing = c->currentSwitch;
     switchCtx.caseJumpCount = 0;
     switchCtx.caseJumpCapacity = 8;
-    switchCtx.caseJumps = ALLOCATE(c->vm, int, switchCtx.caseJumpCapacity);
+    switchCtx.caseJumps = BTL_ALLOCATE(c->vm, int, switchCtx.caseJumpCapacity);
     switchCtx.breakCount = 0;
     switchCtx.breakCapacity = 8;
-    switchCtx.breakJumps = ALLOCATE(c->vm, int, switchCtx.breakCapacity);
+    switchCtx.breakJumps = BTL_ALLOCATE(c->vm, int, switchCtx.breakCapacity);
     switchCtx.scopeDepth = c->scopeDepth;
     switchCtx.hasDefault = false;
     switchCtx.isExpression = false;
 
     c->currentSwitch = &switchCtx;
 
-    int* fallthroughJumps = ALLOCATE(c->vm, int, 16);
+    int* fallthroughJumps = BTL_ALLOCATE(c->vm, int, 16);
     int fallthroughCount = 0;
     int fallthroughCapacity = 16;
     bool lastCaseHadBreak = true;
+    // Track where the previous case's jumps start in caseJumps so we can
+    // patch ALL of them (not just the last) when the next case begins.
+    // With 'and' conditions a single case may emit multiple jumps.
+    int prevCaseJumpStart = 0;
 
-    while (!check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
-        if (match(p, s, TOKEN_CASE)) {
+    while (!check(p, BTL_TOKEN_RIGHT_BRACE) && !check(p, BTL_TOKEN_EOF)) {
+        if (match(p, s, BTL_TOKEN_CASE)) {
             if (!lastCaseHadBreak) {
-                int fallthroughJump = emitJump(p, c, OP_JUMP);
+                int fallthroughJump = emitJump(p, c, BTL_OP_JUMP);
                 if (fallthroughCount >= fallthroughCapacity) {
                     int oldCap = fallthroughCapacity;
                     fallthroughCapacity *= 2;
-                    fallthroughJumps = GROW_ARRAY(c->vm, int, fallthroughJumps, oldCap, fallthroughCapacity);
+                    fallthroughJumps = BTL_GROW_ARRAY(c->vm, int, fallthroughJumps, oldCap, fallthroughCapacity);
                 }
                 fallthroughJumps[fallthroughCount++] = fallthroughJump;
             }
 
-            if (switchCtx.caseJumpCount > 0) {
-                patchJump(p, c, switchCtx.caseJumps[switchCtx.caseJumpCount - 1]);
-                emitByte(p, c, OP_POP);
+            if (switchCtx.caseJumpCount > prevCaseJumpStart) {
+                for (int j = prevCaseJumpStart; j < switchCtx.caseJumpCount; j++) {
+                    patchJump(p, c, switchCtx.caseJumps[j]);
+                }
+                prevCaseJumpStart = switchCtx.caseJumpCount;
+                emitByte(p, c, BTL_OP_POP);
             }
 
-            int* successJumps = ALLOCATE(c->vm, int, 8);
+            int* successJumps = BTL_ALLOCATE(c->vm, int, 8);
             int successCount = 0;
             int successCapacity = 8;
 
-            int* failJumps = ALLOCATE(c->vm, int, 8);
+            int* failJumps = BTL_ALLOCATE(c->vm, int, 8);
             int failCount = 0;
             int failCapacity = 8;
 
             for (;;) {
-                bool isBooleanCondition = (check(p, TOKEN_LESS) || check(p, TOKEN_LESS_EQUAL) ||
-                    check(p, TOKEN_GREATER) || check(p, TOKEN_GREATER_EQUAL) ||
-                    check(p, TOKEN_EQUAL_EQUAL) || check(p, TOKEN_BANG_EQUAL));
+                bool isBooleanCondition = (check(p, BTL_TOKEN_LESS) || check(p, BTL_TOKEN_LESS_EQUAL) ||
+                    check(p, BTL_TOKEN_GREATER) || check(p, BTL_TOKEN_GREATER_EQUAL) ||
+                    check(p, BTL_TOKEN_EQUAL_EQUAL) || check(p, BTL_TOKEN_BANG_EQUAL));
 
                 if (isBooleanCondition) {
-                    emitByte(p, c, OP_DUP);
-                    TokenType op = p->current.type;
+                    emitByte(p, c, BTL_OP_DUP);
+                    BtlTokenType op = p->current.type;
                     advance(p, s);
                     parsePrecedence(p, s, c, cc, PREC_COMPARISON);
 
                     switch (op) {
-                    case TOKEN_LESS: emitByte(p, c, OP_LESS); break;
-                    case TOKEN_LESS_EQUAL: emitBytes(p, c, OP_GREATER, OP_NOT); break;
-                    case TOKEN_GREATER: emitByte(p, c, OP_GREATER); break;
-                    case TOKEN_GREATER_EQUAL: emitBytes(p, c, OP_LESS, OP_NOT); break;
-                    case TOKEN_EQUAL_EQUAL: emitByte(p, c, OP_EQUAL); break;
-                    case TOKEN_BANG_EQUAL: emitBytes(p, c, OP_EQUAL, OP_NOT); break;
+                    case BTL_TOKEN_LESS: emitByte(p, c, BTL_OP_LESS); break;
+                    case BTL_TOKEN_LESS_EQUAL: emitBytes(p, c, BTL_OP_GREATER, BTL_OP_NOT); break;
+                    case BTL_TOKEN_GREATER: emitByte(p, c, BTL_OP_GREATER); break;
+                    case BTL_TOKEN_GREATER_EQUAL: emitBytes(p, c, BTL_OP_LESS, BTL_OP_NOT); break;
+                    case BTL_TOKEN_EQUAL_EQUAL: emitByte(p, c, BTL_OP_EQUAL); break;
+                    case BTL_TOKEN_BANG_EQUAL: emitBytes(p, c, BTL_OP_EQUAL, BTL_OP_NOT); break;
                     default: break;
                     }
                 } else {
-                    emitByte(p, c, OP_DUP);
+                    emitByte(p, c, BTL_OP_DUP);
                     parsePrecedence(p, s, c, cc, PREC_COMPARISON);
-                    emitByte(p, c, OP_EQUAL);
+                    emitByte(p, c, BTL_OP_EQUAL);
                 }
 
-                if (match(p, s, TOKEN_COMMA) || match(p, s, TOKEN_OR) || match(p, s, TOKEN_AND)) {
-                    if (p->previous.type == TOKEN_AND) {
-                        int andJump = emitJump(p, c, OP_JUMP_IF_FALSE);
-                        emitByte(p, c, OP_POP);
+                if (match(p, s, BTL_TOKEN_COMMA) || match(p, s, BTL_TOKEN_OR) || match(p, s, BTL_TOKEN_AND)) {
+                    if (p->previous.type == BTL_TOKEN_AND) {
+                        int andJump = emitJump(p, c, BTL_OP_JUMP_IF_FALSE);
+                        emitByte(p, c, BTL_OP_POP);
 
                         if (failCount >= failCapacity) {
                             int oldCap = failCapacity;
                             failCapacity *= 2;
-                            failJumps = GROW_ARRAY(c->vm, int, failJumps, oldCap, failCapacity);
+                            failJumps = BTL_GROW_ARRAY(c->vm, int, failJumps, oldCap, failCapacity);
                         }
                         failJumps[failCount++] = andJump;
                     } else {
-                        int orJump = emitJump(p, c, OP_JUMP_IF_TRUE);
-                        emitByte(p, c, OP_POP);
+                        int orJump = emitJump(p, c, BTL_OP_JUMP_IF_TRUE);
+                        emitByte(p, c, BTL_OP_POP);
 
                         if (successCount >= successCapacity) {
                             int oldCap = successCapacity;
                             successCapacity *= 2;
-                            successJumps = GROW_ARRAY(c->vm, int, successJumps, oldCap, successCapacity);
+                            successJumps = BTL_GROW_ARRAY(c->vm, int, successJumps, oldCap, successCapacity);
                         }
                         successJumps[successCount++] = orJump;
                     }
@@ -2004,24 +2036,24 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
                 }
             }
 
-            consume(p, s, TOKEN_COLON, "Expect ':' after case condition.");
+            consume(p, s, BTL_TOKEN_COLON, "Expect ':' after case condition.");
 
-            int caseJump = emitJump(p, c, OP_JUMP_IF_FALSE);
-            emitByte(p, c, OP_POP);
+            int caseJump = emitJump(p, c, BTL_OP_JUMP_IF_FALSE);
+            emitByte(p, c, BTL_OP_POP);
 
             for (int i = 0; i < successCount; i++) {
                 patchJump(p, c, successJumps[i]);
             }
             if (successCount > 0) {
-                emitByte(p, c, OP_POP);
+                emitByte(p, c, BTL_OP_POP);
             }
 
-            FREE_ARRAY(c->vm, int, successJumps, successCapacity);
+            BTL_FREE_ARRAY(c->vm, int, successJumps, successCapacity);
 
             if (switchCtx.caseJumpCount >= switchCtx.caseJumpCapacity) {
                 int oldCap = switchCtx.caseJumpCapacity;
                 switchCtx.caseJumpCapacity *= 2;
-                switchCtx.caseJumps = GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
+                switchCtx.caseJumps = BTL_GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
             }
             switchCtx.caseJumps[switchCtx.caseJumpCount++] = caseJump;
 
@@ -2029,12 +2061,12 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
                 if (switchCtx.caseJumpCount >= switchCtx.caseJumpCapacity) {
                     int oldCap = switchCtx.caseJumpCapacity;
                     switchCtx.caseJumpCapacity *= 2;
-                    switchCtx.caseJumps = GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
+                    switchCtx.caseJumps = BTL_GROW_ARRAY(c->vm, int, switchCtx.caseJumps, oldCap, switchCtx.caseJumpCapacity);
                 }
                 switchCtx.caseJumps[switchCtx.caseJumpCount++] = failJumps[i];
             }
 
-            FREE_ARRAY(c->vm, int, failJumps, failCapacity);
+            BTL_FREE_ARRAY(c->vm, int, failJumps, failCapacity);
 
             for (int i = 0; i < fallthroughCount; i++) {
                 patchJump(p, c, fallthroughJumps[i]);
@@ -2043,35 +2075,38 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
 
             int startBreakCount = switchCtx.breakCount;
 
-            while (!check(p, TOKEN_CASE) && !check(p, TOKEN_DEFAULT) &&
-                !check(p, TOKEN_RIGHT_BRACE) && !check(p, TOKEN_EOF)) {
+            while (!check(p, BTL_TOKEN_CASE) && !check(p, BTL_TOKEN_DEFAULT) &&
+                !check(p, BTL_TOKEN_RIGHT_BRACE) && !check(p, BTL_TOKEN_EOF)) {
                 statement(p, s, c, cc);
             }
 
             lastCaseHadBreak = (switchCtx.breakCount > startBreakCount);
 
-        } else if (match(p, s, TOKEN_DEFAULT)) {
+        } else if (match(p, s, BTL_TOKEN_DEFAULT)) {
             if (switchCtx.hasDefault) {
                 errorAt(p, &p->previous, "Switch can only have one default case.");
             }
             switchCtx.hasDefault = true;
 
             if (!lastCaseHadBreak) {
-                int fallthroughJump = emitJump(p, c, OP_JUMP);
+                int fallthroughJump = emitJump(p, c, BTL_OP_JUMP);
                 if (fallthroughCount >= fallthroughCapacity) {
                     int oldCap = fallthroughCapacity;
                     fallthroughCapacity *= 2;
-                    fallthroughJumps = GROW_ARRAY(c->vm, int, fallthroughJumps, oldCap, fallthroughCapacity);
+                    fallthroughJumps = BTL_GROW_ARRAY(c->vm, int, fallthroughJumps, oldCap, fallthroughCapacity);
                 }
                 fallthroughJumps[fallthroughCount++] = fallthroughJump;
             }
 
-            if (switchCtx.caseJumpCount > 0) {
-                patchJump(p, c, switchCtx.caseJumps[switchCtx.caseJumpCount - 1]);
-                emitByte(p, c, OP_POP);
+            if (switchCtx.caseJumpCount > prevCaseJumpStart) {
+                for (int j = prevCaseJumpStart; j < switchCtx.caseJumpCount; j++) {
+                    patchJump(p, c, switchCtx.caseJumps[j]);
+                }
+                prevCaseJumpStart = switchCtx.caseJumpCount;
+                emitByte(p, c, BTL_OP_POP);
             }
 
-            consume(p, s, TOKEN_COLON, "Expect ':' after 'default'.");
+            consume(p, s, BTL_TOKEN_COLON, "Expect ':' after 'default'.");
 
             for (int i = 0; i < fallthroughCount; i++) {
                 patchJump(p, c, fallthroughJumps[i]);
@@ -2080,8 +2115,8 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
 
             int startBreakCount = switchCtx.breakCount;
 
-            while (!check(p, TOKEN_CASE) && !check(p, TOKEN_RIGHT_BRACE) &&
-                !check(p, TOKEN_EOF)) {
+            while (!check(p, BTL_TOKEN_CASE) && !check(p, BTL_TOKEN_RIGHT_BRACE) &&
+                !check(p, BTL_TOKEN_EOF)) {
                 statement(p, s, c, cc);
             }
 
@@ -2093,11 +2128,14 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
         }
     }
 
-    consume(p, s, TOKEN_RIGHT_BRACE, "Expect '}' after switch body.");
+    consume(p, s, BTL_TOKEN_RIGHT_BRACE, "Expect '}' after switch body.");
 
-    if (switchCtx.caseJumpCount > 0 && !switchCtx.hasDefault) {
-        patchJump(p, c, switchCtx.caseJumps[switchCtx.caseJumpCount - 1]);
-        emitByte(p, c, OP_POP);
+    if (switchCtx.caseJumpCount > prevCaseJumpStart && !switchCtx.hasDefault) {
+        for (int j = prevCaseJumpStart; j < switchCtx.caseJumpCount; j++) {
+            patchJump(p, c, switchCtx.caseJumps[j]);
+        }
+        prevCaseJumpStart = switchCtx.caseJumpCount;
+        emitByte(p, c, BTL_OP_POP);
     }
 
     for (int i = 0; i < fallthroughCount; i++) {
@@ -2110,64 +2148,64 @@ static void switchStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* c
         }
 
         if (switchCtx.breakCount == 0) {
-            emitByte(p, c, OP_NULL);
+            emitByte(p, c, BTL_OP_NULL);
         }
-        emitByte(p, c, OP_SWAP);
-        emitByte(p, c, OP_POP);
+        emitByte(p, c, BTL_OP_SWAP);
+        emitByte(p, c, BTL_OP_POP);
     } else {
-        emitByte(p, c, OP_POP);
+        emitByte(p, c, BTL_OP_POP);
 
         for (int i = 0; i < switchCtx.breakCount; i++) {
             patchJump(p, c, switchCtx.breakJumps[i]);
         }
 
         if (!isStatement) {
-            emitByte(p, c, OP_NULL);
+            emitByte(p, c, BTL_OP_NULL);
         }
     }
 
-    FREE_ARRAY(c->vm, int, switchCtx.caseJumps, switchCtx.caseJumpCapacity);
-    FREE_ARRAY(c->vm, int, switchCtx.breakJumps, switchCtx.breakCapacity);
-    FREE_ARRAY(c->vm, int, fallthroughJumps, fallthroughCapacity);
+    BTL_FREE_ARRAY(c->vm, int, switchCtx.caseJumps, switchCtx.caseJumpCapacity);
+    BTL_FREE_ARRAY(c->vm, int, switchCtx.breakJumps, switchCtx.breakCapacity);
+    BTL_FREE_ARRAY(c->vm, int, fallthroughJumps, fallthroughCapacity);
     c->currentSwitch = switchCtx.enclosing;
 }
 
-static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
+static void forStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
     beginScope(c);
-    consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
-    if (match(p, s, TOKEN_SEMICOLON)) {
-    } else if (match(p, s, TOKEN_VAR)) {
+    consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '('.");
+    if (match(p, s, BTL_TOKEN_SEMICOLON)) {
+    } else if (match(p, s, BTL_TOKEN_VAR)) {
         int global = parseVariable(p, s, c, "Expect name.");
-        if (match(p, s, TOKEN_EQUAL)) expression(p, s, c, cc);
-        else emitByte(p, c, OP_NULL);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
+        if (match(p, s, BTL_TOKEN_EQUAL)) expression(p, s, c, cc);
+        else emitByte(p, c, BTL_OP_NULL);
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
         defineVariable(p, c, global);
     } else {
         expression(p, s, c, cc);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
         emitPopOrRemoveLoad(p, c);
     }
 
     int loopStart = currentChunk(c)->count;
     int exitJump = -1;
-    if (!match(p, s, TOKEN_SEMICOLON)) {
+    if (!match(p, s, BTL_TOKEN_SEMICOLON)) {
         expression(p, s, c, cc);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        exitJump = emitJump(p, c, OP_POP_JUMP_IF_FALSE);
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
+        exitJump = emitJump(p, c, BTL_OP_POP_JUMP_IF_FALSE);
     }
 
-    if (!match(p, s, TOKEN_RIGHT_PAREN)) {
-        int bodyJump = emitJump(p, c, OP_JUMP);
+    if (!match(p, s, BTL_TOKEN_RIGHT_PAREN)) {
+        int bodyJump = emitJump(p, c, BTL_OP_JUMP);
         int incrementStart = currentChunk(c)->count;
         expression(p, s, c, cc);
         emitPopOrRemoveLoad(p, c);
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
+        consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
         emitLoop(p, c, loopStart);
         loopStart = incrementStart;
         patchJump(p, c, bodyJump);
     }
 
-    Loop loop = { .enclosing = c->currentLoop, .start = loopStart, .scopeDepth = c->scopeDepth, .breakCount = 0 };
+    BtlLoop loop = { .enclosing = c->currentLoop, .start = loopStart, .scopeDepth = c->scopeDepth, .breakCount = 0 };
     c->currentLoop = &loop;
     int loopVar = -1;
     for (int i = c->localCount - 1; i >= 0; i--) {
@@ -2179,9 +2217,9 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     beginScope(c);
     int shadowVar = -1;  // ADD THIS
     if (loopVar != -1) {
-        emitBytes(p, c, OP_GET_LOCAL, (uint8_t) loopVar);
+        emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) loopVar);
         shadowVar = c->localCount;  // ADD THIS - save index BEFORE incrementing
-        Local* shadow = &c->locals[c->localCount++];
+        BtlLocal* shadow = &c->locals[c->localCount++];
         shadow->name = c->locals[loopVar].name;
         shadow->depth = c->scopeDepth;
         shadow->isCaptured = false;
@@ -2189,8 +2227,8 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     }
     statement(p, s, c, cc);
     if (loopVar != -1) {
-        emitBytes(p, c, OP_GET_LOCAL, (uint8_t) shadowVar);  // CHANGE THIS
-        emitBytes(p, c, OP_SET_LOCAL, (uint8_t) loopVar);
+        emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) shadowVar);  // CHANGE THIS
+        emitBytes(p, c, BTL_OP_SET_LOCAL, (uint8_t) loopVar);
         emitPopOrRemoveLoad(p, c);
     }
     endScope(p, c);
@@ -2203,95 +2241,95 @@ static void forStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) 
     endScope(p, c);
 }
 
-static void returnStatement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    if (c->type == TYPE_SCRIPT) {
+static void returnStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
+    if (c->type == BTL_TYPE_SCRIPT) {
         errorAt(p, &p->previous, "Can't return from top-level code.");
         return;
     }
-    if (match(p, s, TOKEN_SEMICOLON)) {
-        emitByte(p, c, OP_NULL);
-        emitByte(p, c, OP_RETURN);
+    if (match(p, s, BTL_TOKEN_SEMICOLON)) {
+        emitByte(p, c, BTL_OP_NULL);
+        emitByte(p, c, BTL_OP_RETURN);
     } else {
-        if (c->type == TYPE_INITIALIZER) errorAt(p, &p->previous, "Can't return a value from an initializer.");
+        if (c->type == BTL_TYPE_INITIALIZER) errorAt(p, &p->previous, "Can't return a value from an initializer.");
         expression(p, s, c, cc);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
 
         if (c->lastInstruction != -1) {
-            Chunk* chunk = currentChunk(c);
+            BtlChunk* chunk = currentChunk(c);
             uint8_t* opcode = &chunk->code[c->lastInstruction];
             switch (*opcode) {
-            case OP_CALL: *opcode = OP_TAIL_CALL; break;
-            case OP_CALL_0: *opcode = OP_TAIL_CALL_0; break;
-            case OP_CALL_1: *opcode = OP_TAIL_CALL_1; break;
-            case OP_CALL_2: *opcode = OP_TAIL_CALL_2; break;
-            case OP_CALL_3: *opcode = OP_TAIL_CALL_3; break;
-            case OP_CALL_4: *opcode = OP_TAIL_CALL_4; break;
-            case OP_CALL_5: *opcode = OP_TAIL_CALL_5; break;
-            case OP_CALL_6: *opcode = OP_TAIL_CALL_6; break;
-            case OP_CALL_7: *opcode = OP_TAIL_CALL_7; break;
-            case OP_CALL_8: *opcode = OP_TAIL_CALL_8; break;
-            case OP_INVOKE: *opcode = OP_TAIL_INVOKE; break;
-            case OP_INVOKE_LONG: *opcode = OP_TAIL_INVOKE_LONG; break;
-            case OP_INVOKE_0: *opcode = OP_TAIL_INVOKE_0; break;
-            case OP_INVOKE_1: *opcode = OP_TAIL_INVOKE_1; break;
-            case OP_INVOKE_2: *opcode = OP_TAIL_INVOKE_2; break;
-            case OP_INVOKE_3: *opcode = OP_TAIL_INVOKE_3; break;
-            case OP_INVOKE_4: *opcode = OP_TAIL_INVOKE_4; break;
-            case OP_INVOKE_5: *opcode = OP_TAIL_INVOKE_5; break;
-            case OP_INVOKE_6: *opcode = OP_TAIL_INVOKE_6; break;
-            case OP_INVOKE_7: *opcode = OP_TAIL_INVOKE_7; break;
-            case OP_INVOKE_8: *opcode = OP_TAIL_INVOKE_8; break;
-            case OP_INVOKE_IC: *opcode = OP_TAIL_INVOKE_IC; break;  // NEW
-            case OP_SUPER_INVOKE: *opcode = OP_TAIL_SUPER_INVOKE; break;
-            case OP_SUPER_INVOKE_LONG: *opcode = OP_TAIL_SUPER_INVOKE_LONG; break;
-            case OP_SUPER_INVOKE_0: *opcode = OP_TAIL_SUPER_INVOKE_0; break;
-            case OP_SUPER_INVOKE_1: *opcode = OP_TAIL_SUPER_INVOKE_1; break;
-            case OP_SUPER_INVOKE_2: *opcode = OP_TAIL_SUPER_INVOKE_2; break;
-            case OP_SUPER_INVOKE_3: *opcode = OP_TAIL_SUPER_INVOKE_3; break;
-            case OP_SUPER_INVOKE_4: *opcode = OP_TAIL_SUPER_INVOKE_4; break;
-            case OP_SUPER_INVOKE_5: *opcode = OP_TAIL_SUPER_INVOKE_5; break;
-            case OP_SUPER_INVOKE_6: *opcode = OP_TAIL_SUPER_INVOKE_6; break;
-            case OP_SUPER_INVOKE_7: *opcode = OP_TAIL_SUPER_INVOKE_7; break;
-            case OP_SUPER_INVOKE_8: *opcode = OP_TAIL_SUPER_INVOKE_8; break;
+            case BTL_OP_CALL: *opcode = BTL_OP_TAIL_CALL; break;
+            case BTL_OP_CALL_0: *opcode = BTL_OP_TAIL_CALL_0; break;
+            case BTL_OP_CALL_1: *opcode = BTL_OP_TAIL_CALL_1; break;
+            case BTL_OP_CALL_2: *opcode = BTL_OP_TAIL_CALL_2; break;
+            case BTL_OP_CALL_3: *opcode = BTL_OP_TAIL_CALL_3; break;
+            case BTL_OP_CALL_4: *opcode = BTL_OP_TAIL_CALL_4; break;
+            case BTL_OP_CALL_5: *opcode = BTL_OP_TAIL_CALL_5; break;
+            case BTL_OP_CALL_6: *opcode = BTL_OP_TAIL_CALL_6; break;
+            case BTL_OP_CALL_7: *opcode = BTL_OP_TAIL_CALL_7; break;
+            case BTL_OP_CALL_8: *opcode = BTL_OP_TAIL_CALL_8; break;
+            case BTL_OP_INVOKE: *opcode = BTL_OP_TAIL_INVOKE; break;
+            case BTL_OP_INVOKE_LONG: *opcode = BTL_OP_TAIL_INVOKE_LONG; break;
+            case BTL_OP_INVOKE_0: *opcode = BTL_OP_TAIL_INVOKE_0; break;
+            case BTL_OP_INVOKE_1: *opcode = BTL_OP_TAIL_INVOKE_1; break;
+            case BTL_OP_INVOKE_2: *opcode = BTL_OP_TAIL_INVOKE_2; break;
+            case BTL_OP_INVOKE_3: *opcode = BTL_OP_TAIL_INVOKE_3; break;
+            case BTL_OP_INVOKE_4: *opcode = BTL_OP_TAIL_INVOKE_4; break;
+            case BTL_OP_INVOKE_5: *opcode = BTL_OP_TAIL_INVOKE_5; break;
+            case BTL_OP_INVOKE_6: *opcode = BTL_OP_TAIL_INVOKE_6; break;
+            case BTL_OP_INVOKE_7: *opcode = BTL_OP_TAIL_INVOKE_7; break;
+            case BTL_OP_INVOKE_8: *opcode = BTL_OP_TAIL_INVOKE_8; break;
+            case BTL_OP_INVOKE_IC: *opcode = BTL_OP_TAIL_INVOKE_IC; break;  // NEW
+            case BTL_OP_SUPER_INVOKE: *opcode = BTL_OP_TAIL_SUPER_INVOKE; break;
+            case BTL_OP_SUPER_INVOKE_LONG: *opcode = BTL_OP_TAIL_SUPER_INVOKE_LONG; break;
+            case BTL_OP_SUPER_INVOKE_0: *opcode = BTL_OP_TAIL_SUPER_INVOKE_0; break;
+            case BTL_OP_SUPER_INVOKE_1: *opcode = BTL_OP_TAIL_SUPER_INVOKE_1; break;
+            case BTL_OP_SUPER_INVOKE_2: *opcode = BTL_OP_TAIL_SUPER_INVOKE_2; break;
+            case BTL_OP_SUPER_INVOKE_3: *opcode = BTL_OP_TAIL_SUPER_INVOKE_3; break;
+            case BTL_OP_SUPER_INVOKE_4: *opcode = BTL_OP_TAIL_SUPER_INVOKE_4; break;
+            case BTL_OP_SUPER_INVOKE_5: *opcode = BTL_OP_TAIL_SUPER_INVOKE_5; break;
+            case BTL_OP_SUPER_INVOKE_6: *opcode = BTL_OP_TAIL_SUPER_INVOKE_6; break;
+            case BTL_OP_SUPER_INVOKE_7: *opcode = BTL_OP_TAIL_SUPER_INVOKE_7; break;
+            case BTL_OP_SUPER_INVOKE_8: *opcode = BTL_OP_TAIL_SUPER_INVOKE_8; break;
             default: break;
             }
         }
-        emitByte(p, c, OP_RETURN);
+        emitByte(p, c, BTL_OP_RETURN);
     }
 }
 
-static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    if (match(p, s, TOKEN_SWITCH)) {
+static void statement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
+    if (match(p, s, BTL_TOKEN_SWITCH)) {
         switchStatement(p, s, c, cc, true);
-    } else if (match(p, s, TOKEN_FOR)) {
+    } else if (match(p, s, BTL_TOKEN_FOR)) {
         forStatement(p, s, c, cc);
-    } else if (match(p, s, TOKEN_IF)) {
-        consume(p, s, TOKEN_LEFT_PAREN, "Expect '(' after 'if'.");
+    } else if (match(p, s, BTL_TOKEN_IF)) {
+        consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '(' after 'if'.");
         expression(p, s, c, cc);
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
-        int thenJump = emitFusedJump(p, c, OP_POP_JUMP_IF_FALSE);
+        consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
+        int thenJump = emitFusedJump(p, c, BTL_OP_POP_JUMP_IF_FALSE);
         statement(p, s, c, cc);
-        int elseJump = emitJump(p, c, OP_JUMP);
+        int elseJump = emitJump(p, c, BTL_OP_JUMP);
         patchJump(p, c, thenJump);
-        if (match(p, s, TOKEN_ELSE)) statement(p, s, c, cc);
+        if (match(p, s, BTL_TOKEN_ELSE)) statement(p, s, c, cc);
         patchJump(p, c, elseJump);
-    } else if (match(p, s, TOKEN_RETURN)) {
+    } else if (match(p, s, BTL_TOKEN_RETURN)) {
         returnStatement(p, s, c, cc);
-    } else if (match(p, s, TOKEN_WHILE)) {
+    } else if (match(p, s, BTL_TOKEN_WHILE)) {
         int start = currentChunk(c)->count;
-        Loop loop = { .enclosing = c->currentLoop, .start = start, .scopeDepth = c->scopeDepth, .breakCount = 0 };
+        BtlLoop loop = { .enclosing = c->currentLoop, .start = start, .scopeDepth = c->scopeDepth, .breakCount = 0 };
         c->currentLoop = &loop;
-        consume(p, s, TOKEN_LEFT_PAREN, "Expect '('.");
+        consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '('.");
         expression(p, s, c, cc);
-        consume(p, s, TOKEN_RIGHT_PAREN, "Expect ')'.");
-        int exitJ = emitFusedJump(p, c, OP_POP_JUMP_IF_FALSE);
+        consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
+        int exitJ = emitFusedJump(p, c, BTL_OP_POP_JUMP_IF_FALSE);
         statement(p, s, c, cc);
         emitLoop(p, c, start);
         patchJump(p, c, exitJ);
         for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
         c->currentLoop = loop.enclosing;
-    } else if (match(p, s, TOKEN_BREAK)) {
-        bool hasValue = !check(p, TOKEN_SEMICOLON);
+    } else if (match(p, s, BTL_TOKEN_BREAK)) {
+        bool hasValue = !check(p, BTL_TOKEN_SEMICOLON);
 
         if (hasValue) {
             if (c->currentSwitch == NULL) {
@@ -2302,7 +2340,7 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
             expression(p, s, c, cc);
         }
 
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';' after break.");
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';' after break.");
 
         if (c->currentLoop == NULL && c->currentSwitch == NULL) {
             errorAt(p, &p->previous, "Can't use 'break' outside of loop or switch.");
@@ -2322,7 +2360,7 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
                     emitPopN(p, c, popCount);
                     popCount = 0;
                 }
-                emitByte(p, c, OP_CLOSE_UPVALUE);
+                emitByte(p, c, BTL_OP_CLOSE_UPVALUE);
             } else {
                 if (!hasValue || c->currentLoop) {  // Only pop if not break with value in switch
                     popCount++;
@@ -2332,7 +2370,7 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
 
         if (popCount > 0) emitPopN(p, c, popCount);
 
-        int jump = emitJump(p, c, OP_JUMP);
+        int jump = emitJump(p, c, BTL_OP_JUMP);
 
         if (c->currentLoop) {
             c->currentLoop->breakJumps[c->currentLoop->breakCount++] = jump;
@@ -2340,7 +2378,7 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
             if (c->currentSwitch->breakCount >= c->currentSwitch->breakCapacity) {
                 int oldCap = c->currentSwitch->breakCapacity;
                 c->currentSwitch->breakCapacity *= 2;
-                c->currentSwitch->breakJumps = GROW_ARRAY(c->vm, int,
+                c->currentSwitch->breakJumps = BTL_GROW_ARRAY(c->vm, int,
                     c->currentSwitch->breakJumps,
                     oldCap,
                     c->currentSwitch->breakCapacity);
@@ -2349,23 +2387,23 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         }
 
         // DON'T decrement c->localCount here - the switch end will handle it!
-    } else if (match(p, s, TOKEN_LEFT_BRACE)) {
+    } else if (match(p, s, BTL_TOKEN_LEFT_BRACE)) {
         beginScope(c);
         block(p, s, c, cc);
         endScope(p, c);
     } else {
         expression(p, s, c, cc);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-        Chunk* chunk = currentChunk(c);
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
+        BtlChunk* chunk = currentChunk(c);
         if (chunk->count > 0 && c->lastInstruction >= 0) {
             uint8_t lastOp = chunk->code[c->lastInstruction];  // Use lastInstruction, not count-1
-            if (lastOp == OP_POP) return;
-            if (lastOp >= OP_SET_LOCAL_0 && lastOp <= OP_SET_LOCAL_7) {
-                chunk->code[c->lastInstruction] = lastOp + (OP_SET_LOCAL_0_POP - OP_SET_LOCAL_0);
+            if (lastOp == BTL_OP_POP) return;
+            if (lastOp >= BTL_OP_SET_LOCAL_0 && lastOp <= BTL_OP_SET_LOCAL_7) {
+                chunk->code[c->lastInstruction] = lastOp + (BTL_OP_SET_LOCAL_0_POP - BTL_OP_SET_LOCAL_0);
                 return;
             }
-            if (lastOp == OP_INC_LOCAL) {
-                chunk->code[c->lastInstruction] = OP_INC_LOCAL_POP;
+            if (lastOp == BTL_OP_INC_LOCAL) {
+                chunk->code[c->lastInstruction] = BTL_OP_INC_LOCAL_POP;
                 return;
             }
         }
@@ -2373,41 +2411,41 @@ static void statement(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
     }
 }
 
-static void defineVariable(Parser* p, Compiler* c, int global) {
+static void defineVariable(Parser* p, BtlCompiler* c, int global) {
     if (c->scopeDepth > 0) {
         markInitialized(c);
         return;
     }
-    emitLong(p, c, OP_DEFINE_GLOBAL, OP_DEFINE_GLOBAL_LONG, global);
+    emitLong(p, c, BTL_OP_DEFINE_GLOBAL, BTL_OP_DEFINE_GLOBAL_LONG, global);
 }
-static int parseVariable(Parser* p, Scanner* s, Compiler* c, const char* msg) {
-    consume(p, s, TOKEN_IDENTIFIER, msg);
+static int parseVariable(Parser* p, BtlScanner* s, BtlCompiler* c, const char* msg) {
+    consume(p, s, BTL_TOKEN_IDENTIFIER, msg);
     declareVariable(p, c);
     if (c->scopeDepth > 0) return 0;
     return identifierConstant(c, &p->previous);
 }
-static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
-    if (match(p, s, TOKEN_CLASS)) {
+static void declaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
+    if (match(p, s, BTL_TOKEN_CLASS)) {
         classDeclaration(p, s, c, cc);
-    } else if (match(p, s, TOKEN_FUNC)) {
+    } else if (match(p, s, BTL_TOKEN_FUNC)) {
         funDeclaration(p, s, c, cc);
-    } else if (match(p, s, TOKEN_VAR)) {
+    } else if (match(p, s, BTL_TOKEN_VAR)) {
         do {
             int global = parseVariable(p, s, c, "Expect name.");
-            if (match(p, s, TOKEN_EQUAL)) {
+            if (match(p, s, BTL_TOKEN_EQUAL)) {
                 expression(p, s, c, cc);
             } else {
-                emitByte(p, c, OP_NULL);
+                emitByte(p, c, BTL_OP_NULL);
             }
             defineVariable(p, c, global);
-        } while (match(p, s, TOKEN_COMMA));
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';'.");
-    } else if (match(p, s, TOKEN_IMPORT)) {
-        consume(p, s, TOKEN_STRING, "Expect filename.");
-        Token pathToken = p->previous;
-        int file = makeConstant(p, c, OBJ_VAL(copyString(c->vm, pathToken.start + 1, pathToken.length - 2)));
+        } while (match(p, s, BTL_TOKEN_COMMA));
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
+    } else if (match(p, s, BTL_TOKEN_IMPORT)) {
+        consume(p, s, BTL_TOKEN_STRING, "Expect filename.");
+        BtlToken pathToken = p->previous;
+        int file = makeConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, pathToken.start + 1, pathToken.length - 2)));
         int alias;
-        if (match(p, s, TOKEN_AS)) {
+        if (match(p, s, BTL_TOKEN_AS)) {
             alias = parseVariable(p, s, c, "Expect variable name after 'as'.");
         } else {
             const char* path = pathToken.start + 1;
@@ -2423,31 +2461,31 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
                     break;
                 }
             }
-            Token nameToken = { .start = filename, .length = nameLength };
+            BtlToken nameToken = { .start = filename, .length = nameLength };
             declareVariable(p, c);
             alias = identifierConstant(c, &nameToken);
         }
-        emitLong(p, c, OP_IMPORT, OP_IMPORT_LONG, file);
+        emitLong(p, c, BTL_OP_IMPORT, BTL_OP_IMPORT_LONG, file);
         defineVariable(p, c, alias);
-        consume(p, s, TOKEN_SEMICOLON, "Expect ';' after import.");
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';' after import.");
     } else {
         statement(p, s, c, cc);
     }
     if (p->panicMode) {
         advance(p, s);
-        while (p->current.type != TOKEN_EOF) {
-            if (p->previous.type == TOKEN_SEMICOLON) {
+        while (p->current.type != BTL_TOKEN_EOF) {
+            if (p->previous.type == BTL_TOKEN_SEMICOLON) {
                 p->panicMode = false;
                 return;
             }
             switch (p->current.type) {
-            case TOKEN_CLASS:
-            case TOKEN_FUNC:
-            case TOKEN_VAR:
-            case TOKEN_FOR:
-            case TOKEN_IF:
-            case TOKEN_WHILE:
-            case TOKEN_RETURN:
+            case BTL_TOKEN_CLASS:
+            case BTL_TOKEN_FUNC:
+            case BTL_TOKEN_VAR:
+            case BTL_TOKEN_FOR:
+            case BTL_TOKEN_IF:
+            case BTL_TOKEN_WHILE:
+            case BTL_TOKEN_RETURN:
                 p->panicMode = false;
                 return;
             default:;
@@ -2456,22 +2494,22 @@ static void declaration(Parser* p, Scanner* s, Compiler* c, ClassCompiler* cc) {
         }
     }
 }
-ObjFunction* compile(struct VM* vm, ObjModule* module, const char* source) {
-    Scanner s;
-    initScanner(&s, source);
+ObjFunction* btl_compile(struct VM* vm, ObjModule* module, const char* source) {
+    BtlScanner s;
+    btl_scanner_init(&s, source);
     Parser p = { .vm = vm, .hadError = false, .panicMode = false };
-    Compiler c;
-    initCompiler(&p, &c, NULL, TYPE_SCRIPT, module);
+    BtlCompiler c;
+    initCompiler(&p, &c, NULL, BTL_TYPE_SCRIPT, module);
     advance(&p, &s);
-    while (!match(&p, &s, TOKEN_EOF)) declaration(&p, &s, &c, NULL);
+    while (!match(&p, &s, BTL_TOKEN_EOF)) declaration(&p, &s, &c, NULL);
     ObjFunction* function = endCompiler(&p, &c);
     return p.hadError ? NULL : function;
 }
-void markCompilerRoots(struct VM* vm) {
-    Compiler* c = (Compiler*) vm->compiler;
+void btl_compiler_mark_roots(struct VM* vm) {
+    BtlCompiler* c = (BtlCompiler*) vm->compiler;
     while (c) {
-        markObject(vm, (Obj*) c->function);
-        markTable(vm, &c->constants);
+        btl_gc_mark_object(vm, (BtlObj*) c->function);
+        btl_table_mark(vm, &c->constants);
         c = c->enclosing;
     }
 }

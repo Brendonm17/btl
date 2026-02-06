@@ -1,23 +1,31 @@
-#include <stdlib.h>
+// ============================================================================
+// threadpool.c - BTL Thread Pool Implementation
+//
+// Uses platform-abstracted threading primitives for portability.
+// ============================================================================
+
 #include "threadpool.h"
+#include "runtime.h"
 
 static void* workerThread(void* arg) {
-    ThreadPool* pool = (ThreadPool*) arg;
+    ThreadPool* pool = (ThreadPool*)arg;
+    BtlThreadHandles* th = pool->threadHandles;
+    BtlMemoryHandles* mem = pool->memHandles;
 
     while (1) {
-        pthread_mutex_lock(&pool->mutex);
+        th->mutex_lock(pool->mutex, th->user_data);
 
         while (pool->head == NULL && !pool->shutdown) {
-            pthread_cond_wait(&pool->cond, &pool->mutex);
+            th->cond_wait(pool->cond, pool->mutex, th->user_data);
         }
 
         if (pool->shutdown && pool->head == NULL) {
-            pthread_mutex_unlock(&pool->mutex);
+            th->mutex_unlock(pool->mutex, th->user_data);
             break;
         }
 
         // Dequeue task
-        Task* task = pool->head;
+        BtlTask* task = pool->head;
         if (task != NULL) {
             pool->head = task->next;
             if (pool->head == NULL) {
@@ -25,40 +33,52 @@ static void* workerThread(void* arg) {
             }
         }
 
-        pthread_mutex_unlock(&pool->mutex);
+        th->mutex_unlock(pool->mutex, th->user_data);
 
         // Execute task
         if (task != NULL) {
             task->function(task->arg);
-            free(task);
+            mem->free(task, sizeof(BtlTask), mem->user_data);
         }
     }
 
     return NULL;
 }
 
-void threadPoolInit(ThreadPool* pool, int numThreads) {
+void btl_threadpool_init(ThreadPool* pool, int numThreads, BTLRuntime* runtime) {
+    BtlThreadHandles* th = &runtime->config.platform.thread;
+    BtlMemoryHandles* mem = &runtime->config.platform.mem;
+
     pool->threadCount = numThreads;
-    pool->threads = malloc(sizeof(pthread_t) * numThreads);
+    pool->threadHandles = th;
+    pool->memHandles = mem;
     pool->head = NULL;
     pool->tail = NULL;
     pool->shutdown = false;
 
-    pthread_mutex_init(&pool->mutex, NULL);
-    pthread_cond_init(&pool->cond, NULL);
+    // Allocate thread handle array using platform memory
+    pool->threads = mem->alloc(sizeof(BtlThreadHandle) * numThreads, mem->user_data);
 
+    // Create mutex and condition variable using platform handles
+    pool->mutex = th->mutex_create(th->user_data);
+    pool->cond = th->cond_create(th->user_data);
+
+    // Create worker threads using platform handles
     for (int i = 0; i < numThreads; i++) {
-        pthread_create(&pool->threads[i], NULL, workerThread, pool);
+        pool->threads[i] = th->thread_create(workerThread, pool, th->user_data);
     }
 }
 
-void threadPoolSubmit(ThreadPool* pool, void (*function)(void*), void* arg) {
-    Task* task = malloc(sizeof(Task));
+void btl_threadpool_submit(ThreadPool* pool, void (*function)(void*), void* arg) {
+    BtlThreadHandles* th = pool->threadHandles;
+    BtlMemoryHandles* mem = pool->memHandles;
+
+    BtlTask* task = mem->alloc(sizeof(BtlTask), mem->user_data);
     task->function = function;
     task->arg = arg;
     task->next = NULL;
 
-    pthread_mutex_lock(&pool->mutex);
+    th->mutex_lock(pool->mutex, th->user_data);
 
     if (pool->tail == NULL) {
         pool->head = task;
@@ -68,29 +88,36 @@ void threadPoolSubmit(ThreadPool* pool, void (*function)(void*), void* arg) {
         pool->tail = task;
     }
 
-    pthread_cond_signal(&pool->cond);
-    pthread_mutex_unlock(&pool->mutex);
+    th->cond_signal(pool->cond, th->user_data);
+    th->mutex_unlock(pool->mutex, th->user_data);
 }
 
-void threadPoolShutdown(ThreadPool* pool) {
-    pthread_mutex_lock(&pool->mutex);
-    pool->shutdown = true;
-    pthread_cond_broadcast(&pool->cond);
-    pthread_mutex_unlock(&pool->mutex);
+void btl_threadpool_shutdown(ThreadPool* pool) {
+    BtlThreadHandles* th = pool->threadHandles;
+    BtlMemoryHandles* mem = pool->memHandles;
 
+    th->mutex_lock(pool->mutex, th->user_data);
+    pool->shutdown = true;
+    th->cond_broadcast(pool->cond, th->user_data);
+    th->mutex_unlock(pool->mutex, th->user_data);
+
+    // Join all worker threads
     for (int i = 0; i < pool->threadCount; i++) {
-        pthread_join(pool->threads[i], NULL);
+        th->thread_join(pool->threads[i], th->user_data);
     }
 
     // Free remaining tasks
-    Task* task = pool->head;
+    BtlTask* task = pool->head;
     while (task != NULL) {
-        Task* next = task->next;
-        free(task);
+        BtlTask* next = task->next;
+        mem->free(task, sizeof(BtlTask), mem->user_data);
         task = next;
     }
 
-    free(pool->threads);
-    pthread_mutex_destroy(&pool->mutex);
-    pthread_cond_destroy(&pool->cond);
+    // Free thread array
+    mem->free(pool->threads, sizeof(BtlThreadHandle) * pool->threadCount, mem->user_data);
+
+    // Destroy mutex and condition variable
+    th->mutex_destroy(pool->mutex, th->user_data);
+    th->cond_destroy(pool->cond, th->user_data);
 }

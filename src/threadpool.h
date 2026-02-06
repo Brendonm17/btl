@@ -1,30 +1,40 @@
 #ifndef btl_threadpool_h
 #define btl_threadpool_h
 
-#include <pthread.h>
 #include <stdbool.h>
+#include "platform.h"
 
-typedef struct Task {
+// Forward declaration
+struct BTLRuntime;
+
+typedef struct BtlTask {
     void (*function)(void* arg);
     void* arg;
-    struct Task* next;
-} Task;
+    struct BtlTask* next;
+} BtlTask;
 
-// Use a named struct so it can be forward-declared elsewhere
+// Thread pool structure using platform-abstracted handles
 struct ThreadPool {
-    pthread_t* threads;
+    BtlThreadHandle* threads;       // Array of thread handles
     int threadCount;
-    Task* head;
-    Task* tail;
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
+    BtlTask* head;
+    BtlTask* tail;
+    BtlMutexHandle mutex;           // Platform mutex handle
+    BtlCondHandle cond;             // Platform condition variable handle
     volatile bool shutdown;
+    BtlThreadHandles* threadHandles; // Platform threading functions
+    BtlMemoryHandles* memHandles;    // Platform memory functions
 };
 
 typedef struct ThreadPool ThreadPool;
 
-void threadPoolInit(ThreadPool* pool, int numThreads);
-void threadPoolSubmit(ThreadPool* pool, void (*function)(void*), void* arg);
-void threadPoolShutdown(ThreadPool* pool);
+// Initialize thread pool with platform handles from runtime
+void btl_threadpool_init(ThreadPool* pool, int numThreads, struct BTLRuntime* runtime);
+
+// Submit a task to the thread pool
+void btl_threadpool_submit(ThreadPool* pool, void (*function)(void*), void* arg);
+
+// Shutdown and cleanup the thread pool
+void btl_threadpool_shutdown(ThreadPool* pool);
 
 #endif

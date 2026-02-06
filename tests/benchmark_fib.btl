@@ -1,0 +1,14 @@
+// Fibonacci benchmark - recursive
+import "system";
+
+func fib(n) {
+    if (n < 2) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+
+var start = system.clock();
+var result = fib(35);
+var elapsed = system.clock() - start;
+
+system.println("fib(35) = " + result);
+system.println("Time: " + elapsed + " seconds");

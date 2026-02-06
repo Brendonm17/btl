@@ -1,93 +1,115 @@
+// ============================================================================
+// native_table.c - BTL Table Native Methods
+//
+// Implements built-in methods for table (dictionary/hashmap) objects including
+// length, keys, values, has, remove, clear, and clone operations.
+// ============================================================================
+
 #include "native_table.h"
 #include "object.h"
 #include "memory.h"
 
-static Value tableLength(VM* vm, Value receiver, int argCount, Value* args) {
+// ----------------------------------------------------------------------------
+// Table Methods
+// ----------------------------------------------------------------------------
+
+// length() - returns the number of entries in the table
+static BtlValue tableLength(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;
     ObjTable* table = AS_TABLE(receiver);
     return NUMBER_VAL(table->table.count);
 }
 
-static Value tableKeys(VM* vm, Value receiver, int argCount, Value* args) {
+// keys() - returns list of all keys
+static BtlValue tableKeys(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjTable* table = AS_TABLE(receiver);
-    ObjList* list = newList(vm);
-    push(vm, OBJ_VAL(list));
+    ObjList* list = btl_list_new(vm);
+    btl_push(vm, OBJ_VAL(list));
     for (int i = 0; i < table->table.capacity; i++) {
-        Entry* entry = &table->table.entries[i];
+        BtlEntry* entry = &table->table.entries[i];
         if (!IS_EMPTY(entry->key)) {
-            writeValueArray(vm, &list->items, entry->key);
-            writeBarrier(vm, (Obj*) list, entry->key);
+            btl_value_array_write(vm, &list->items, entry->key);
+            btl_gc_write_barrier(vm, (BtlObj*) list, entry->key);
         }
     }
-    pop(vm);
+    btl_pop(vm);
     return OBJ_VAL(list);
 }
 
-static Value tableValues(VM* vm, Value receiver, int argCount, Value* args) {
+// values() - returns list of all values
+static BtlValue tableValues(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjTable* table = AS_TABLE(receiver);
-    ObjList* list = newList(vm);
-    push(vm, OBJ_VAL(list));
+    ObjList* list = btl_list_new(vm);
+    btl_push(vm, OBJ_VAL(list));
     for (int i = 0; i < table->table.capacity; i++) {
-        Entry* entry = &table->table.entries[i];
+        BtlEntry* entry = &table->table.entries[i];
         if (!IS_EMPTY(entry->key)) {
-            writeValueArray(vm, &list->items, entry->value);
-            writeBarrier(vm, (Obj*) list, entry->value);
+            btl_value_array_write(vm, &list->items, entry->value);
+            btl_gc_write_barrier(vm, (BtlObj*) list, entry->value);
         }
     }
-    pop(vm);
+    btl_pop(vm);
     return OBJ_VAL(list);
 }
 
-static Value tableHas(VM* vm, Value receiver, int argCount, Value* args) {
+// has(key) - returns true if key exists in table
+static BtlValue tableHas(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount;
     ObjTable* table = AS_TABLE(receiver);
-    Value dummy;
-    return BOOL_VAL(tableGet(&table->table, args[0], &dummy));
+    BtlValue dummy;
+    return BOOL_VAL(btl_table_get(&table->table, args[0], &dummy));
 }
 
-static Value tableRemove(VM* vm, Value receiver, int argCount, Value* args) {
+// remove(key) - removes entry with key, returns true if found
+static BtlValue tableRemove(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount;
     ObjTable* table = AS_TABLE(receiver);
-    return BOOL_VAL(tableDelete(&table->table, args[0]));
+    return BOOL_VAL(btl_table_delete(&table->table, args[0]));
 }
 
-static Value tableClear(VM* vm, Value receiver, int argCount, Value* args) {
+// clear() - removes all entries, returns table
+static BtlValue tableClear(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjTable* table = AS_TABLE(receiver);
-    freeTable(vm, &table->table);
-    initTable(&table->table);
+    btl_table_free(vm, &table->table);
+    btl_table_init(&table->table);
     return receiver;
 }
 
-static Value tableClone(VM* vm, Value receiver, int argCount, Value* args) {
+// clone() - returns shallow copy of table
+static BtlValue tableClone(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjTable* table = AS_TABLE(receiver);
-    ObjTable* result = newTable(vm);
-    push(vm, OBJ_VAL(result));
+    ObjTable* result = btl_table_obj_new(vm);
+    btl_push(vm, OBJ_VAL(result));
 
     // Copy entries with write barriers
     for (int i = 0; i < table->table.capacity; i++) {
-        Entry* entry = &table->table.entries[i];
+        BtlEntry* entry = &table->table.entries[i];
         if (!IS_EMPTY(entry->key)) {
-            tableSet(vm, &result->table, entry->key, entry->value);
-            writeBarrier(vm, (Obj*) result, entry->key);
-            writeBarrier(vm, (Obj*) result, entry->value);
+            btl_table_set(vm, &result->table, entry->key, entry->value);
+            btl_gc_write_barrier(vm, (BtlObj*) result, entry->key);
+            btl_gc_write_barrier(vm, (BtlObj*) result, entry->value);
         }
     }
 
-    pop(vm);
+    btl_pop(vm);
     return OBJ_VAL(result);
 }
 
-void initTableClass(VM* vm) {
-    vm->tableClass = newNativeClass(vm, "Table");
-    defineNativeMethod(vm, vm->tableClass, "length", tableLength, 0);
-    defineNativeMethod(vm, vm->tableClass, "keys", tableKeys, 0);
-    defineNativeMethod(vm, vm->tableClass, "values", tableValues, 0);
-    defineNativeMethod(vm, vm->tableClass, "has", tableHas, 1);
-    defineNativeMethod(vm, vm->tableClass, "remove", tableRemove, 1);
-    defineNativeMethod(vm, vm->tableClass, "clear", tableClear, 0);
-    defineNativeMethod(vm, vm->tableClass, "clone", tableClone, 0);
+// ----------------------------------------------------------------------------
+// Table Class Initialization
+// ----------------------------------------------------------------------------
+
+void btl_table_class_init(VM* vm) {
+    vm->tableClass = btl_native_class_new(vm, "Table");
+    btl_native_class_add_method(vm, vm->tableClass, "length", tableLength, 0);
+    btl_native_class_add_method(vm, vm->tableClass, "keys", tableKeys, 0);
+    btl_native_class_add_method(vm, vm->tableClass, "values", tableValues, 0);
+    btl_native_class_add_method(vm, vm->tableClass, "has", tableHas, 1);
+    btl_native_class_add_method(vm, vm->tableClass, "remove", tableRemove, 1);
+    btl_native_class_add_method(vm, vm->tableClass, "clear", tableClear, 0);
+    btl_native_class_add_method(vm, vm->tableClass, "clone", tableClone, 0);
 }

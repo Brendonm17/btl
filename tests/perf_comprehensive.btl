@@ -1,0 +1,520 @@
+// Comprehensive BTL Performance Test
+// Tests all language features for VM vs Transpiled comparison
+
+import "system";
+import "math";
+
+// ============================================================================
+// Configuration
+// ============================================================================
+var ITERATIONS = 1000;
+var LIST_SIZE = 100;
+var TABLE_SIZE = 50;
+
+// ============================================================================
+// 1. Arithmetic and Local Variables
+// ============================================================================
+func test_arithmetic() {
+    var sum = 0;
+    var i = 0;
+    while (i < ITERATIONS * 10) {
+        sum = sum + i * 2 - i / 2;
+        sum = sum % 1000000;
+        i = i + 1;
+    }
+    return sum;
+}
+
+// ============================================================================
+// 2. Function Calls (non-recursive)
+// ============================================================================
+func add(a, b) {
+    return a + b;
+}
+
+func multiply(a, b) {
+    return a * b;
+}
+
+func compute(x) {
+    return add(multiply(x, x), x);
+}
+
+func test_function_calls() {
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS * 5) {
+        result = compute(i % 100);
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 3. Recursion (Fibonacci)
+// ============================================================================
+func fib(n) {
+    if (n < 2) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+
+func test_recursion() {
+    return fib(25);
+}
+
+// ============================================================================
+// 4. Tail Recursion
+// ============================================================================
+func sum_tail(n, acc) {
+    if (n <= 0) return acc;
+    return sum_tail(n - 1, acc + n);
+}
+
+func test_tail_recursion() {
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS) {
+        result = sum_tail(100, 0);
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 5. Closures
+// ============================================================================
+func make_counter() {
+    var count = 0;
+    func increment() {
+        count = count + 1;
+        return count;
+    }
+    return increment;
+}
+
+func test_closures() {
+    var counter = make_counter();
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS * 5) {
+        result = counter();
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 6. Nested Closures
+// ============================================================================
+func make_adder(x) {
+    func add_fn(y) {
+        func inner(z) {
+            return x + y + z;
+        }
+        return inner;
+    }
+    return add_fn;
+}
+
+func test_nested_closures() {
+    var adder = make_adder(10);
+    var add20 = adder(20);
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS * 5) {
+        result = add20(i % 100);
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 7. Classes and Instances
+// ============================================================================
+class Point {
+    func init(x, y) {
+        this.x = x;
+        this.y = y;
+    }
+
+    func distance() {
+        return math.sqrt(this.x * this.x + this.y * this.y);
+    }
+
+    func add_point(other) {
+        return Point(this.x + other.x, this.y + other.y);
+    }
+}
+
+func test_classes() {
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS) {
+        var p1 = Point(3, 4);
+        var p2 = Point(1, 2);
+        var p3 = p1.add_point(p2);
+        result = p3.x + p3.y;
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 8. Method Calls (Inline Cache test)
+// ============================================================================
+class Counter {
+    func init() {
+        this.value = 0;
+    }
+
+    func increment() {
+        this.value = this.value + 1;
+        return this.value;
+    }
+
+    func decrement() {
+        this.value = this.value - 1;
+        return this.value;
+    }
+
+    func get() {
+        return this.value;
+    }
+}
+
+func test_method_calls() {
+    var c = Counter();
+    var i = 0;
+    while (i < ITERATIONS * 5) {
+        c.increment();
+        i = i + 1;
+    }
+    return c.get();
+}
+
+// ============================================================================
+// 9. Property Access (Field IC test)
+// ============================================================================
+class Data {
+    func init() {
+        this.a = 0;
+        this.b = 0;
+        this.c = 0;
+        this.d = 0;
+    }
+}
+
+func test_property_access() {
+    var d = Data();
+    var i = 0;
+    while (i < ITERATIONS * 5) {
+        d.a = d.a + 1;
+        d.b = d.b + d.a;
+        d.c = d.c + d.b;
+        d.d = d.d + d.c;
+        i = i + 1;
+    }
+    return d.d;
+}
+
+// ============================================================================
+// 10. Inheritance and Super
+// ============================================================================
+class Animal {
+    func speak() {
+        return "Animal speaks";
+    }
+}
+
+class Dog < Animal {
+    func speak() {
+        return super.speak() + " - Dog barks";
+    }
+}
+
+func test_inheritance() {
+    var result = "";
+    var i = 0;
+    while (i < ITERATIONS) {
+        var dog = Dog();
+        result = dog.speak();
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 11. Lists
+// ============================================================================
+func test_lists() {
+    var list = [];
+    var i = 0;
+    while (i < LIST_SIZE) {
+        list.push(i);
+        i = i + 1;
+    }
+
+    var sum = 0;
+    var j = 0;
+    while (j < ITERATIONS) {
+        var k = 0;
+        while (k < list.length()) {
+            sum = sum + list[k];
+            k = k + 1;
+        }
+        j = j + 1;
+    }
+    return sum;
+}
+
+// ============================================================================
+// 12. Tables (Hash Maps)
+// ============================================================================
+func test_tables() {
+    var table = ["dummy": 0];
+    table.remove("dummy");
+    var i = 0;
+    while (i < TABLE_SIZE) {
+        table["key" + i.toString()] = i * 2;
+        i = i + 1;
+    }
+
+    var sum = 0;
+    var j = 0;
+    while (j < ITERATIONS) {
+        var k = 0;
+        while (k < TABLE_SIZE) {
+            sum = sum + table["key" + k.toString()];
+            k = k + 1;
+        }
+        j = j + 1;
+    }
+    return sum;
+}
+
+// ============================================================================
+// 13. String Operations
+// ============================================================================
+func test_strings() {
+    var count = 0;
+    var i = 0;
+    while (i < ITERATIONS / 10) {
+        var result = "hello" + " " + "world" + " " + i.toString();
+        count = count + result.length();
+        i = i + 1;
+    }
+    return count;
+}
+
+// ============================================================================
+// 14. Conditionals and Control Flow
+// ============================================================================
+func test_conditionals() {
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS * 10) {
+        if (i % 3 == 0) {
+            result = result + 1;
+        } else if (i % 3 == 1) {
+            result = result + 2;
+        } else {
+            result = result + 3;
+        }
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 15. Logical Operations
+// ============================================================================
+func test_logical() {
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS * 10) {
+        var a = i % 2 == 0;
+        var b = i % 3 == 0;
+        var c = i % 5 == 0;
+
+        if (a and b) result = result + 1;
+        if (a or c) result = result + 1;
+        if (!b) result = result + 1;
+
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 16. Comparison Operations
+// ============================================================================
+func test_comparisons() {
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS * 10) {
+        if (i < 500) result = result + 1;
+        if (i <= 500) result = result + 1;
+        if (i > 500) result = result + 1;
+        if (i >= 500) result = result + 1;
+        if (i == 500) result = result + 1;
+        if (i != 500) result = result + 1;
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 17. Bound Methods
+// ============================================================================
+class Calculator {
+    func init(base) {
+        this.base = base;
+    }
+
+    func add_val(x) {
+        return this.base + x;
+    }
+}
+
+func test_bound_methods() {
+    var calc = Calculator(100);
+    var addMethod = calc.add_val;
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS * 5) {
+        result = addMethod(i % 50);
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 18. Global Variables
+// ============================================================================
+var globalCounter = 0;
+
+func increment_global() {
+    globalCounter = globalCounter + 1;
+}
+
+func test_globals() {
+    globalCounter = 0;
+    var i = 0;
+    while (i < ITERATIONS * 5) {
+        increment_global();
+        i = i + 1;
+    }
+    return globalCounter;
+}
+
+// ============================================================================
+// 19. Native Method Calls
+// ============================================================================
+func test_native_methods() {
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS) {
+        result = math.abs(-i) + math.floor(i / 2.0) + math.ceil(i / 3.0);
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// 20. Mixed Workload (Real-world simulation)
+// ============================================================================
+class Node {
+    func init(value) {
+        this.value = value;
+        this.next = null;
+    }
+}
+
+class LinkedList {
+    func init() {
+        this.head = null;
+        this.size = 0;
+    }
+
+    func push(value) {
+        var node = Node(value);
+        node.next = this.head;
+        this.head = node;
+        this.size = this.size + 1;
+    }
+
+    func sum() {
+        var total = 0;
+        var current = this.head;
+        while (current != null) {
+            total = total + current.value;
+            current = current.next;
+        }
+        return total;
+    }
+}
+
+func test_mixed_workload() {
+    var result = 0;
+    var i = 0;
+    while (i < ITERATIONS / 10) {
+        var list = LinkedList();
+        var j = 0;
+        while (j < 50) {
+            list.push(j);
+            j = j + 1;
+        }
+        result = result + list.sum();
+        i = i + 1;
+    }
+    return result;
+}
+
+// ============================================================================
+// Test Runner
+// ============================================================================
+func run_test(name, testFn) {
+    var start = system.clock();
+    var result = testFn();
+    var elapsed = system.clock() - start;
+    system.println(name + ": " + (elapsed * 1000).toString() + "ms (result: " + result + ")");
+    return elapsed;
+}
+
+func main() {
+    system.println("============================================");
+    system.println("BTL Comprehensive Performance Test");
+    system.println("Iterations: " + ITERATIONS.toString());
+    system.println("============================================");
+    system.println("");
+
+    var total = 0;
+
+    total = total + run_test("1.  Arithmetic", test_arithmetic);
+    total = total + run_test("2.  Function Calls", test_function_calls);
+    total = total + run_test("3.  Recursion (fib 25)", test_recursion);
+    total = total + run_test("4.  Tail Recursion", test_tail_recursion);
+    total = total + run_test("5.  Closures", test_closures);
+    total = total + run_test("6.  Nested Closures", test_nested_closures);
+    total = total + run_test("7.  Classes", test_classes);
+    total = total + run_test("8.  Method Calls (IC)", test_method_calls);
+    total = total + run_test("9.  Property Access (IC)", test_property_access);
+    total = total + run_test("10. Inheritance", test_inheritance);
+    total = total + run_test("11. Lists", test_lists);
+    total = total + run_test("12. Tables", test_tables);
+    total = total + run_test("13. Strings", test_strings);
+    total = total + run_test("14. Conditionals", test_conditionals);
+    total = total + run_test("15. Logical Ops", test_logical);
+    total = total + run_test("16. Comparisons", test_comparisons);
+    total = total + run_test("17. Bound Methods", test_bound_methods);
+    total = total + run_test("18. Globals", test_globals);
+    total = total + run_test("19. Native Methods", test_native_methods);
+    total = total + run_test("20. Mixed Workload", test_mixed_workload);
+
+    system.println("");
+    system.println("============================================");
+    system.println("Total Time: " + (total * 1000).toString() + "ms");
+    system.println("============================================");
+}
+
+main();

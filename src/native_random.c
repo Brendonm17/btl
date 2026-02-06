@@ -1,3 +1,10 @@
+// ============================================================================
+// native_random.c - BTL Random Module
+//
+// Provides random number generation functions using xorshift64 PRNG.
+// Includes basic random, integers, floats, list operations, and distributions.
+// ============================================================================
+
 #include <time.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -7,9 +14,14 @@
 #include "object.h"
 #include "memory.h"
 
+// ----------------------------------------------------------------------------
+// Internal PRNG State
+// ----------------------------------------------------------------------------
+
 static uint64_t randState = 0;
 static bool randSeeded = false;
 
+// xorshift64 PRNG - fast, good statistical properties
 static uint64_t xorshift64(void) {
     if (!randSeeded) {
         randState = (uint64_t) time(NULL);
@@ -23,18 +35,23 @@ static uint64_t xorshift64(void) {
     return x;
 }
 
+// Returns random double in [0, 1)
 static double randomDouble(void) {
     return (double) xorshift64() / (double) UINT64_MAX;
 }
 
+// ----------------------------------------------------------------------------
+// Random Module Functions
+// ----------------------------------------------------------------------------
+
 // random() - returns float in [0, 1)
-static Value randomRandom(int argCount, Value* args) {
+static BtlValue randomRandom(int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     return NUMBER_VAL(randomDouble());
 }
 
 // int(min, max) - returns integer in [min, max] inclusive
-static Value randomInt(int argCount, Value* args) {
+static BtlValue randomInt(int argCount, BtlValue* args) {
     (void) argCount;
     int min = (int) AS_NUMBER(args[0]);
     int max = (int) AS_NUMBER(args[1]);
@@ -48,7 +65,7 @@ static Value randomInt(int argCount, Value* args) {
 }
 
 // float(min, max) - returns float in [min, max)
-static Value randomFloat(int argCount, Value* args) {
+static BtlValue randomFloat(int argCount, BtlValue* args) {
     (void) argCount;
     double min = AS_NUMBER(args[0]);
     double max = AS_NUMBER(args[1]);
@@ -56,58 +73,58 @@ static Value randomFloat(int argCount, Value* args) {
 }
 
 // seed(n) - seed the RNG
-static Value randomSeed(int argCount, Value* args) {
+static BtlValue randomSeed(int argCount, BtlValue* args) {
     (void) argCount;
     randState = (uint64_t) AS_NUMBER(args[0]);
     randSeeded = true;
-    return NULL_VAL;
+    return BTL_NULL_VAL;
 }
 
 // bool() - returns true or false with 50% chance
-static Value randomBool(int argCount, Value* args) {
+static BtlValue randomBool(int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     return BOOL_VAL(xorshift64() & 1);
 }
 
 // chance(p) - returns true with probability p (0.0 to 1.0)
-static Value randomChance(int argCount, Value* args) {
+static BtlValue randomChance(int argCount, BtlValue* args) {
     (void) argCount;
     double p = AS_NUMBER(args[0]);
     return BOOL_VAL(randomDouble() < p);
 }
 
 // choice(list) - returns random element from list
-static Value randomChoice(int argCount, Value* args) {
+static BtlValue randomChoice(int argCount, BtlValue* args) {
     (void) argCount;
     if (!IS_LIST(args[0])) {
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
     ObjList* list = AS_LIST(args[0]);
     if (list->items.count == 0) {
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
     int index = (int) (xorshift64() % (uint64_t) list->items.count);
     return list->items.values[index];
 }
 
-// shuffle(list) - shuffles list in place, returns it
-static Value randomShuffle(int argCount, Value* args) {
+// shuffle(list) - shuffles list in place using Fisher-Yates, returns it
+static BtlValue randomShuffle(int argCount, BtlValue* args) {
     (void) argCount;
     if (!IS_LIST(args[0])) {
-        return NULL_VAL;
+        return BTL_NULL_VAL;
     }
     ObjList* list = AS_LIST(args[0]);
     for (int i = list->items.count - 1; i > 0; i--) {
         int j = (int) (xorshift64() % (uint64_t) (i + 1));
-        Value temp = list->items.values[i];
+        BtlValue temp = list->items.values[i];
         list->items.values[i] = list->items.values[j];
         list->items.values[j] = temp;
     }
     return args[0];
 }
 
-// normal(mean, stddev) - returns normally distributed random number
-static Value randomNormal(int argCount, Value* args) {
+// normal(mean, stddev) - returns normally distributed random number (Box-Muller)
+static BtlValue randomNormal(int argCount, BtlValue* args) {
     (void) argCount;
     double mean = AS_NUMBER(args[0]);
     double stddev = AS_NUMBER(args[1]);
@@ -122,15 +139,15 @@ static Value randomNormal(int argCount, Value* args) {
 }
 
 // dice(sides) - roll a die with n sides (1 to sides)
-static Value randomDice(int argCount, Value* args) {
+static BtlValue randomDice(int argCount, BtlValue* args) {
     (void) argCount;
     int sides = (int) AS_NUMBER(args[0]);
     if (sides < 1) sides = 1;
     return NUMBER_VAL((double) (1 + (int) (xorshift64() % (uint64_t) sides)));
 }
 
-// dice2(count, sides) - roll 'count' dice with 'sides' sides, return sum
-static Value randomDiceSum(int argCount, Value* args) {
+// diceSum(count, sides) - roll 'count' dice with 'sides' sides, return sum
+static BtlValue randomDiceSum(int argCount, BtlValue* args) {
     (void) argCount;
     int count = (int) AS_NUMBER(args[0]);
     int sides = (int) AS_NUMBER(args[1]);
@@ -143,22 +160,26 @@ static Value randomDiceSum(int argCount, Value* args) {
     return NUMBER_VAL((double) sum);
 }
 
-void initRandomModule(VM* vm) {
-    ObjNativeModule* module = newNativeModule(vm, "random");
-    push(vm, OBJ_VAL(module));
+// ----------------------------------------------------------------------------
+// Random Module Initialization
+// ----------------------------------------------------------------------------
 
-    defineNativeModuleFn(vm, module, "random", randomRandom, 0);
-    defineNativeModuleFn(vm, module, "int", randomInt, 2);
-    defineNativeModuleFn(vm, module, "float", randomFloat, 2);
-    defineNativeModuleFn(vm, module, "seed", randomSeed, 1);
-    defineNativeModuleFn(vm, module, "bool", randomBool, 0);
-    defineNativeModuleFn(vm, module, "chance", randomChance, 1);
-    defineNativeModuleFn(vm, module, "choice", randomChoice, 1);
-    defineNativeModuleFn(vm, module, "shuffle", randomShuffle, 1);
-    defineNativeModuleFn(vm, module, "normal", randomNormal, 2);
-    defineNativeModuleFn(vm, module, "dice", randomDice, 1);
-    defineNativeModuleFn(vm, module, "diceSum", randomDiceSum, 2);
+void btl_random_module_init(VM* vm) {
+    ObjNativeModule* module = btl_native_module_new(vm, "random");
+    btl_push(vm, OBJ_VAL(module));
 
-    tableSet(vm, &vm->nativeModules, OBJ_VAL(module->name), OBJ_VAL(module));
-    pop(vm);
+    btl_native_module_add_function(vm, module, "random", randomRandom, 0);
+    btl_native_module_add_function(vm, module, "int", randomInt, 2);
+    btl_native_module_add_function(vm, module, "float", randomFloat, 2);
+    btl_native_module_add_function(vm, module, "seed", randomSeed, 1);
+    btl_native_module_add_function(vm, module, "bool", randomBool, 0);
+    btl_native_module_add_function(vm, module, "chance", randomChance, 1);
+    btl_native_module_add_function(vm, module, "choice", randomChoice, 1);
+    btl_native_module_add_function(vm, module, "shuffle", randomShuffle, 1);
+    btl_native_module_add_function(vm, module, "normal", randomNormal, 2);
+    btl_native_module_add_function(vm, module, "dice", randomDice, 1);
+    btl_native_module_add_function(vm, module, "diceSum", randomDiceSum, 2);
+
+    btl_table_set(vm, &vm->nativeModules, OBJ_VAL(module->name), OBJ_VAL(module));
+    btl_pop(vm);
 }

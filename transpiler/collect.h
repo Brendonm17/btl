@@ -1,10 +1,10 @@
-/*
- * Function Collector
- *
- * Walks bytecode starting from the top-level function and discovers all
- * ObjFunction* values referenced in constant pools (via OP_CLOSURE).
- * Assigns each a stable integer ID used as the C function suffix.
- */
+// ============================================================================
+// collect.h - BTL Function Collector
+//
+// Walks bytecode starting from the top-level function and discovers all
+// ObjFunction* values referenced in constant pools (via OP_CLOSURE).
+// Assigns each a stable integer ID used as the C function suffix.
+// ============================================================================
 
 #ifndef btl_collect_h
 #define btl_collect_h
@@ -13,19 +13,27 @@
 
 typedef struct ObjFunction ObjFunction;
 
+// ----------------------------------------------------------------------------
+// Function List
+// ----------------------------------------------------------------------------
+
 typedef struct {
     ObjFunction** functions;
     int count;
     int capacity;
-} FunctionList;
+} BtlFunctionList;
+
+// ----------------------------------------------------------------------------
+// Public API
+// ----------------------------------------------------------------------------
 
 // Recursively collect all functions reachable from main_fn
-void collect_functions(ObjFunction* main_fn, FunctionList* out);
+void btl_collect_functions(ObjFunction* main_fn, BtlFunctionList* out);
 
 // Find the ID of a function (its index in the list), or -1
-int function_id(FunctionList* list, ObjFunction* fn);
+int btl_function_id(BtlFunctionList* list, ObjFunction* fn);
 
-void function_list_init(FunctionList* list);
-void function_list_free(FunctionList* list);
+void btl_function_list_init(BtlFunctionList* list);
+void btl_function_list_free(BtlFunctionList* list);
 
-#endif // BTL_COLLECT_H
+#endif
