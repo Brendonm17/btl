@@ -144,7 +144,7 @@ def main():
         f"{generated_c} "
         f"transpiler/compiled.c transpiler/compiled_main.c "
         f"src/chunk.c src/compiler.c src/debug.c src/memory.c "
-        f"src/native_list.c src/native_math.c src/native_number.c "
+        f"src/native_int.c src/native_list.c src/native_math.c src/native_number.c "
         f"src/native_random.c src/native_string.c src/native_system.c "
         f"src/native_table.c src/object.c src/platform.c src/runtime.c "
         f"src/scanner.c src/table.c src/threadpool.c src/value.c src/vm.c "
