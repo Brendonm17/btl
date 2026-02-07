@@ -207,6 +207,8 @@ void btl_print_value(VM* vm, BtlValue value) {
         btl_print(vm, AS_BOOL(value) ? "true" : "false");
     } else if (IS_NULL(value)) {
         btl_print(vm, "null");
+    } else if (IS_INT(value)) {
+        btl_printf(vm, "%" PRId64, AS_INT(value));
     } else if (IS_NUMBER(value)) {
         btl_printf(vm, "%g", AS_NUMBER(value));
     } else if (IS_OBJ(value)) {
@@ -1039,6 +1041,7 @@ void btl_gc_minor(VM* vm) {
 
     if (vm->stringClass) vm->stringClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->stringClass);
     if (vm->numberClass) vm->numberClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->numberClass);
+    if (vm->intClass) vm->intClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->intClass);
     if (vm->listClass) vm->listClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->listClass);
     if (vm->tableClass) vm->tableClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->tableClass);
 
@@ -1240,6 +1243,7 @@ static void markRoots(VM* vm) {
 
     if (vm->stringClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->stringClass);
     if (vm->numberClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->numberClass);
+    if (vm->intClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->intClass);
     if (vm->listClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->listClass);
     if (vm->tableClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->tableClass);
     btl_table_mark(vm, &vm->nativeModules);

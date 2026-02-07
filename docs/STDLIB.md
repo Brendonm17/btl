@@ -1,6 +1,6 @@
 # BTL Standard Library
 
-BTL ships with three native modules (`math`, `random`, `system`) and native methods on all built-in types.
+BTL ships with three native modules (`math`, `random`, `system`) and native methods on all built-in types (strings, ints, numbers, lists, and tables).
 
 ---
 
@@ -69,7 +69,7 @@ import "random";
 | Function | Description |
 |----------|-------------|
 | `random()` | Random float in [0, 1) |
-| `int(min, max)` | Random integer in [min, max] inclusive |
+| `int(min, max)` | Random int in [min, max] inclusive |
 | `float(min, max)` | Random float in [min, max) |
 | `seed(n)` | Seed the random generator |
 | `bool()` | Random true or false |
@@ -77,8 +77,8 @@ import "random";
 | `choice(list)` | Random element from list |
 | `shuffle(list)` | Shuffle list in place, returns it |
 | `normal(mean, stddev)` | Normal distribution sample |
-| `dice(sides)` | Roll a die (1 to sides) |
-| `diceSum(count, sides)` | Sum of multiple dice rolls |
+| `dice(sides)` | Roll a die, returns int (1 to sides) |
+| `diceSum(count, sides)` | Sum of multiple dice rolls (returns int) |
 
 ---
 
@@ -135,10 +135,12 @@ import "system";
 
 | Function | Description |
 |----------|-------------|
-| `type(v)` | Type name as string |
+| `type(v)` | Type name as string (`"int"`, `"number"`, `"string"`, etc.) |
 | `isnull(v)` | True if nil |
 | `isbool(v)` | True if boolean |
-| `isnum(v)` | True if number |
+| `isnum(v)` | True if numeric (int or float) |
+| `isint(v)` | True if int |
+| `isfloat(v)` | True if float |
 | `isstr(v)` | True if string |
 | `islist(v)` | True if list |
 | `istable(v)` | True if table |
@@ -152,7 +154,7 @@ import "system";
 
 | Function | Description |
 |----------|-------------|
-| `tonum(v)` | Convert to number |
+| `tonum(v)` | Convert to number (returns int for integer strings, float otherwise) |
 | `tostr(v)` | Convert to string |
 | `tobool(v)` | Convert to boolean |
 | `ord(s)` | Character to ASCII code |
@@ -189,6 +191,46 @@ s.upper();  // "HELLO, WORLD!"
 | `substring(start, end)` | Extract substring |
 | `split(delim)` | Split into list by delimiter |
 | `replace(from, to)` | Replace all occurrences |
+
+### Int Methods
+
+```js
+var n = 42;
+n.toHex();      // "0x2a"
+n.isEven();     // true
+n.bitAnd(0x0F); // 2
+```
+
+| Method | Description |
+|--------|-------------|
+| `abs()` | Absolute value |
+| `sign()` | Returns -1, 0, or 1 |
+| `pow(exp)` | Raise to power |
+| `clamp(min, max)` | Clamp to range |
+| `mod(n)` | Modulo |
+| `min(other)` | Minimum of two values |
+| `max(other)` | Maximum of two values |
+| `gcd(other)` | Greatest common divisor |
+| `isEven()` | True if even |
+| `isOdd()` | True if odd |
+| `isZero()` | True if zero |
+| `isPositive()` | True if greater than zero |
+| `isNegative()` | True if less than zero |
+| `between(min, max)` | True if in range [min, max] |
+| `bitAnd(n)` | Bitwise AND |
+| `bitOr(n)` | Bitwise OR |
+| `bitXor(n)` | Bitwise XOR |
+| `bitNot()` | Bitwise NOT |
+| `leftShift(n)` | Left shift by n bits |
+| `rightShift(n)` | Right shift by n bits |
+| `toString()` | Convert to string |
+| `toFloat()` | Convert to float |
+| `toHex()` | Convert to hex string (e.g. `"0x2a"`) |
+| `toBinary()` | Convert to binary string (e.g. `"0b101010"`) |
+| `chr()` | ASCII code to character |
+| `times(fn)` | Call fn n times, passing index |
+
+Int values also have access to Number methods (e.g. `sqrt()`, `floor()`) via automatic promotion to float.
 
 ### Number Methods
 

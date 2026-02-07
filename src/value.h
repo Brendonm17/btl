@@ -7,6 +7,7 @@
 //
 // Value types:
 // - Number: IEEE 754 double-precision float
+// - Int: 48-bit signed integer (NaN-boxed immediate, no heap allocation)
 // - Bool: true or false
 // - Nil: null/none value
 // - Object: Heap-allocated objects (strings, functions, classes, etc.)
@@ -17,6 +18,8 @@
 #define btl_value_h
 
 #include <string.h>
+#include <stdint.h>
+#include <inttypes.h>
 #include "common.h"
 
 // ----------------------------------------------------------------------------
@@ -56,6 +59,12 @@ typedef struct ObjString BtlObjString;
 #define BTL_TAG_TRUE  3  // boolean true
 #define BTL_TAG_EMPTY 4  // uninitialized slot sentinel
 
+// Integer tag: bit 48 set within QNAN space (does not conflict with tags 1-4
+// which have bit 48 clear, or objects which have SIGN_BIT set)
+#define BTL_INT_BIT   ((uint64_t)1 << 48)
+#define BTL_INT_TAG   (BTL_QNAN | BTL_INT_BIT)
+#define BTL_INT_MASK  ((uint64_t)0x0000FFFFFFFFFFFF)  // lower 48 bits
+
 // Value is a 64-bit unsigned integer
 typedef uint64_t BtlValue;
 
@@ -75,6 +84,12 @@ typedef uint64_t BtlValue;
 // Check if value is a number (not a quiet NaN)
 #define IS_NUMBER(v)    (((v) & BTL_QNAN) != BTL_QNAN)
 
+// Check if value is a 48-bit integer (QNAN + INT_BIT set, SIGN_BIT clear)
+#define IS_INT(v)        (((v) & (BTL_QNAN | BTL_INT_BIT | BTL_SIGN_BIT)) == BTL_INT_TAG)
+
+// Check if value is any numeric type (double or int)
+#define IS_NUMERIC(v)    (IS_NUMBER(v) || IS_INT(v))
+
 // Check if value is a heap object (has sign bit and QNAN set)
 #define IS_OBJ(v)       (((v) & (BTL_QNAN | BTL_SIGN_BIT)) == (BTL_QNAN | BTL_SIGN_BIT))
 
@@ -87,6 +102,9 @@ typedef uint64_t BtlValue;
 
 // Extract number value (uses helper function for type punning)
 #define AS_NUMBER(v)    btl_value_to_num(v)
+
+// Extract integer value (sign-extend 48-bit two's complement)
+#define AS_INT(v)        btl_value_to_int(v)
 
 // Extract object pointer (mask off tag bits)
 #define AS_OBJ(v)       ((struct BtlObj*)(uintptr_t)((v) & ~(BTL_SIGN_BIT | BTL_QNAN)))
@@ -111,6 +129,9 @@ typedef uint64_t BtlValue;
 // Create number value (uses helper function for type punning)
 #define NUMBER_VAL(num) btl_num_to_value(num)
 
+// Create integer value (48-bit two's complement in QNAN space)
+#define INT_VAL(i)      btl_int_to_value(i)
+
 // Create object value (set sign bit and QNAN, embed pointer)
 #define OBJ_VAL(obj)    (BtlValue)(BTL_SIGN_BIT | BTL_QNAN | (uint64_t)(uintptr_t)(obj))
 
@@ -132,6 +153,27 @@ static inline BtlValue btl_num_to_value(double num) {
     return v;
 }
 
+// Convert 64-bit integer to NaN-boxed int value (truncated to 48 bits)
+static inline BtlValue btl_int_to_value(int64_t i) {
+    return BTL_INT_TAG | ((uint64_t)i & BTL_INT_MASK);
+}
+
+// Extract 48-bit two's complement integer, sign-extended to int64_t
+static inline int64_t btl_value_to_int(BtlValue v) {
+    int64_t raw = (int64_t)(v & BTL_INT_MASK);
+    // Sign-extend from bit 47
+    if (raw & ((int64_t)1 << 47)) {
+        raw |= (int64_t)0xFFFF000000000000LL;
+    }
+    return raw;
+}
+
+// Extract any numeric value as double (works for both int and number)
+static inline double btl_numeric_to_double(BtlValue v) {
+    if (IS_INT(v)) return (double)btl_value_to_int(v);
+    return btl_value_to_num(v);
+}
+
 #else // !BTL_NAN_BOXING
 
 // ----------------------------------------------------------------------------
@@ -143,6 +185,7 @@ typedef enum {
     BTL_VAL_BOOL,    // Boolean value
     BTL_VAL_NIL,     // Nil/null value
     BTL_VAL_NUMBER,  // Number value
+    BTL_VAL_INT,     // Integer value
     BTL_VAL_OBJ,     // Heap object
     BTL_VAL_EMPTY    // Empty sentinel
 } BtlValueType;
@@ -153,6 +196,7 @@ typedef struct {
     union {
         bool boolean;
         double number;
+        int64_t integer;
         struct BtlObj* obj;
     } as;
 } BtlValue;
@@ -162,11 +206,14 @@ typedef struct {
 #define IS_NULL(v)    ((v).type == BTL_VAL_NIL)
 #define IS_EMPTY(v)   ((v).type == BTL_VAL_EMPTY)
 #define IS_NUMBER(v)  ((v).type == BTL_VAL_NUMBER)
+#define IS_INT(v)     ((v).type == BTL_VAL_INT)
+#define IS_NUMERIC(v) ((v).type == BTL_VAL_NUMBER || (v).type == BTL_VAL_INT)
 #define IS_OBJ(v)     ((v).type == BTL_VAL_OBJ)
 
 // Value extraction macros
 #define AS_BOOL(v)    ((v).as.boolean)
 #define AS_NUMBER(v)  ((v).as.number)
+#define AS_INT(v)     ((v).as.integer)
 #define AS_OBJ(v)     ((v).as.obj)
 
 // Value creation macros
@@ -174,7 +221,14 @@ typedef struct {
 #define BTL_NULL_VAL  ((BtlValue){BTL_VAL_NIL, {.number = 0}})
 #define BTL_EMPTY_VAL ((BtlValue){BTL_VAL_EMPTY, {.number = 0}})
 #define NUMBER_VAL(v) ((BtlValue){BTL_VAL_NUMBER, {.number = v}})
+#define INT_VAL(v)    ((BtlValue){BTL_VAL_INT, {.integer = v}})
 #define OBJ_VAL(v)    ((BtlValue){BTL_VAL_OBJ, {.obj = (struct BtlObj*)v}})
+
+// Extract any numeric value as double (works for both int and number)
+static inline double btl_numeric_to_double(BtlValue v) {
+    if (v.type == BTL_VAL_INT) return (double)v.as.integer;
+    return v.as.number;
+}
 
 #endif // BTL_NAN_BOXING
 

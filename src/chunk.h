@@ -46,6 +46,9 @@ typedef enum {
     BTL_OP_0,                   //                | Push 0.0
     BTL_OP_1,                   //                | Push 1.0
     BTL_OP_2,                   //                | Push 2.0
+    BTL_OP_INT_0,               //                | Push int 0
+    BTL_OP_INT_1,               //                | Push int 1
+    BTL_OP_INT_2,               //                | Push int 2
 
     // ========================================================================
     // STACK MANIPULATION
