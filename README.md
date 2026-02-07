@@ -7,8 +7,10 @@
 - Clean, familiar syntax inspired by JavaScript and Lua
 - Classes with single inheritance
 - First-class functions and closures
+- Distinct int and float types with automatic promotion
 - Built-in lists and tables (dictionaries)
-- Native methods on strings, numbers, lists, and tables
+- Native methods on strings, ints, floats, lists, and tables
+- Bitwise operations on integers
 - Switch expressions with comparison operators
 - Actors and futures for built-in concurrency
 - Module system with native and user modules

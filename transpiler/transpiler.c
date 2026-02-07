@@ -113,6 +113,7 @@ typedef struct {
 typedef enum {
     TYPE_UNKNOWN = 0,
     TYPE_NUMBER,
+    TYPE_INT,
     TYPE_BOOL,
     TYPE_NIL,
     TYPE_STRING,
@@ -124,6 +125,7 @@ typedef struct {
     AbstractType type;
     bool isConstant;   /* true if constBtlValue is known at compile time*/
     double numValue;   /* for TYPE_NUMBER constants*/
+    int64_t intValue;  /* for TYPE_INT constants*/
 } TrackedValue;
 
 #define MAX_TRACKED_LOCALS 16
@@ -137,19 +139,23 @@ typedef struct {
 
 /* Create a tracked value*/
 static TrackedValue tracked_unknown(void) {
-    return (TrackedValue){ TYPE_UNKNOWN, false, 0.0 };
+    return (TrackedValue){ TYPE_UNKNOWN, false, 0.0, 0 };
 }
 
 static TrackedValue tracked_type(AbstractType t) {
-    return (TrackedValue){ t, false, 0.0 };
+    return (TrackedValue){ t, false, 0.0, 0 };
 }
 
 static TrackedValue tracked_number(double v) {
-    return (TrackedValue){ TYPE_NUMBER, true, v };
+    return (TrackedValue){ TYPE_NUMBER, true, v, 0 };
 }
 
 static TrackedValue tracked_bool(bool v) {
-    return (TrackedValue){ TYPE_BOOL, true, v ? 1.0 : 0.0 };
+    return (TrackedValue){ TYPE_BOOL, true, v ? 1.0 : 0.0, 0 };
+}
+
+static TrackedValue tracked_int(int64_t v) {
+    return (TrackedValue){ TYPE_INT, true, 0.0, v };
 }
 
 /* Initialize type state - all unknown*/
@@ -801,6 +807,7 @@ static bool callee_is_local_0(uint8_t* code, int call_ip, int argc, bool* target
         case BTL_OP_GET_LOCAL_3: case BTL_OP_GET_LOCAL_4: case BTL_OP_GET_LOCAL_5:
         case BTL_OP_GET_LOCAL_6: case BTL_OP_GET_LOCAL_7:
         case BTL_OP_CONSTANT: case BTL_OP_0: case BTL_OP_1: case BTL_OP_2:
+        case BTL_OP_INT_0: case BTL_OP_INT_1: case BTL_OP_INT_2:
         case BTL_OP_NULL: case BTL_OP_TRUE: case BTL_OP_FALSE:
         case BTL_OP_DUP:
             net_push = 1;
@@ -1542,7 +1549,10 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             uint8_t idx = code[ip++];
             emit_comment(t, start_ip, "OP_CONSTANT");
             BtlValue cval = fn->chunk.constants.values[idx];
-            if (IS_NUMBER(cval)) {
+            if (IS_INT(cval)) {
+                OUT(t, "    PUSH(sp, INT_VAL(%" PRId64 "));\n", AS_INT(cval));
+                type_push_tv(&ts, tracked_int(AS_INT(cval)));
+            } else if (IS_NUMBER(cval)) {
                 OUT(t, "    PUSH(sp, NUMBER_VAL(%.17g));\n", AS_NUMBER(cval));
                 type_push_tv(&ts, tracked_number(AS_NUMBER(cval)));
             } else if (IS_STRING(cval)) {
@@ -1558,7 +1568,10 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             uint16_t idx = (uint16_t) ((code[ip] << 8) | code[ip + 1]); ip += 2;
             emit_comment(t, start_ip, "OP_CONSTANT_LONG");
             BtlValue cval_l = fn->chunk.constants.values[idx];
-            if (IS_NUMBER(cval_l)) {
+            if (IS_INT(cval_l)) {
+                OUT(t, "    PUSH(sp, INT_VAL(%" PRId64 "));\n", AS_INT(cval_l));
+                type_push_tv(&ts, tracked_int(AS_INT(cval_l)));
+            } else if (IS_NUMBER(cval_l)) {
                 OUT(t, "    PUSH(sp, NUMBER_VAL(%.17g));\n", AS_NUMBER(cval_l));
                 type_push_tv(&ts, tracked_number(AS_NUMBER(cval_l)));
             } else if (IS_STRING(cval_l)) {
@@ -1599,6 +1612,21 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_2");
             OUT(t, "    PUSH(sp, NUMBER_VAL(2.0));\n");
             type_push_tv(&ts, tracked_number(2.0));
+            break;
+        case BTL_OP_INT_0:
+            emit_comment(t, start_ip, "OP_INT_0");
+            OUT(t, "    PUSH(sp, INT_VAL(0));\n");
+            type_push_tv(&ts, tracked_int(0));
+            break;
+        case BTL_OP_INT_1:
+            emit_comment(t, start_ip, "OP_INT_1");
+            OUT(t, "    PUSH(sp, INT_VAL(1));\n");
+            type_push_tv(&ts, tracked_int(1));
+            break;
+        case BTL_OP_INT_2:
+            emit_comment(t, start_ip, "OP_INT_2");
+            OUT(t, "    PUSH(sp, INT_VAL(2));\n");
+            type_push_tv(&ts, tracked_int(2));
             break;
 
         // ================================================================
@@ -1703,34 +1731,59 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
         case BTL_OP_INC_LOCAL_POP: {
             uint8_t slot = code[ip++];
             emit_comment(t, start_ip, "OP_INC_LOCAL_POP");
-            OUT(t, "    slots[%d] = NUMBER_VAL(AS_NUMBER(slots[%d]) + 1.0);\n", slot, slot);
-            /* Local is now known to be a number (but not constant since incremented at runtime)*/
-            if (slot < MAX_TRACKED_LOCALS) {
-                ts.locals[slot] = tracked_type(TYPE_NUMBER);
+            if (slot < MAX_TRACKED_LOCALS && ts.locals[slot].type == TYPE_INT) {
+                OUT(t, "    slots[%d] = INT_VAL(AS_INT(slots[%d]) + 1);\n", slot, slot);
+                ts.locals[slot] = tracked_type(TYPE_INT);
+            } else {
+                OUT(t, "    slots[%d] = NUMBER_VAL(AS_NUMBER(slots[%d]) + 1.0);\n", slot, slot);
+                /* Local is now known to be a number (but not constant since incremented at runtime)*/
+                if (slot < MAX_TRACKED_LOCALS) {
+                    ts.locals[slot] = tracked_type(TYPE_NUMBER);
+                }
             }
             break;
         }
         case BTL_OP_INC_LOCAL: {
             uint8_t slot = code[ip++];
             emit_comment(t, start_ip, "OP_INC_LOCAL");
-            OUT(t, "    { double _v = AS_NUMBER(slots[%d]) + 1.0; slots[%d] = NUMBER_VAL(_v); PUSH(sp, NUMBER_VAL(_v)); }\n", slot, slot);
-            /* Local is now known to be a number, and we push a number*/
-            if (slot < MAX_TRACKED_LOCALS) {
-                ts.locals[slot] = tracked_type(TYPE_NUMBER);
+            if (slot < MAX_TRACKED_LOCALS && ts.locals[slot].type == TYPE_INT) {
+                OUT(t, "    { int64_t _v = AS_INT(slots[%d]) + 1; slots[%d] = INT_VAL(_v); PUSH(sp, INT_VAL(_v)); }\n", slot, slot);
+                ts.locals[slot] = tracked_type(TYPE_INT);
+                type_push(&ts, TYPE_INT);
+            } else {
+                OUT(t, "    { double _v = AS_NUMBER(slots[%d]) + 1.0; slots[%d] = NUMBER_VAL(_v); PUSH(sp, NUMBER_VAL(_v)); }\n", slot, slot);
+                /* Local is now known to be a number, and we push a number*/
+                if (slot < MAX_TRACKED_LOCALS) {
+                    ts.locals[slot] = tracked_type(TYPE_NUMBER);
+                }
+                type_push(&ts, TYPE_NUMBER);
             }
-            type_push(&ts, TYPE_NUMBER);
             break;
         }
-        case BTL_OP_INCREMENT:
+        case BTL_OP_INCREMENT: {
             emit_comment(t, start_ip, "OP_INCREMENT");
-            OUT(t, "    sp[-1] = NUMBER_VAL(AS_NUMBER(sp[-1]) + 1.0);\n");
-            type_set_top(&ts, TYPE_NUMBER);
+            TrackedValue tv_inc = type_peek_tv(&ts, 0);
+            if (tv_inc.type == TYPE_INT) {
+                OUT(t, "    sp[-1] = INT_VAL(AS_INT(sp[-1]) + 1);\n");
+                type_set_top(&ts, TYPE_INT);
+            } else {
+                OUT(t, "    sp[-1] = NUMBER_VAL(AS_NUMBER(sp[-1]) + 1.0);\n");
+                type_set_top(&ts, TYPE_NUMBER);
+            }
             break;
-        case BTL_OP_DECREMENT:
+        }
+        case BTL_OP_DECREMENT: {
             emit_comment(t, start_ip, "OP_DECREMENT");
-            OUT(t, "    sp[-1] = NUMBER_VAL(AS_NUMBER(sp[-1]) - 1.0);\n");
-            type_set_top(&ts, TYPE_NUMBER);
+            TrackedValue tv_dec = type_peek_tv(&ts, 0);
+            if (tv_dec.type == TYPE_INT) {
+                OUT(t, "    sp[-1] = INT_VAL(AS_INT(sp[-1]) - 1);\n");
+                type_set_top(&ts, TYPE_INT);
+            } else {
+                OUT(t, "    sp[-1] = NUMBER_VAL(AS_NUMBER(sp[-1]) - 1.0);\n");
+                type_set_top(&ts, TYPE_NUMBER);
+            }
             break;
+        }
 
             // ================================================================
             // GLOBAL VARIABLES
@@ -2020,22 +2073,35 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             TrackedValue tvb = type_peek_tv(&ts, 0);
             TrackedValue tva = type_peek_tv(&ts, 1);
             type_pop_tv(&ts); type_pop_tv(&ts);
-            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
+            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                /* Both int constants - constant fold at compile time*/
+                int64_t result = tva.intValue + tvb.intValue;
+                OUT(t, "    sp -= 2; PUSH(sp, INT_VAL(%" PRId64 ")); /* const-folded int: %" PRId64 " + %" PRId64 "*/\n", result, tva.intValue, tvb.intValue);
+                type_push_tv(&ts, tracked_int(result));
+            } else if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both constants - constant fold at compile time*/
                 double result = tva.numValue + tvb.numValue;
                 OUT(t, "    sp -= 2; PUSH(sp, NUMBER_VAL(%.17g)); /* const-folded: %.17g + %.17g*/\n", result, tva.numValue, tvb.numValue);
                 type_push_tv(&ts, tracked_number(result));
+            } else if (tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                /* Both known to be ints - skip type check entirely*/
+                OUT(t, "    { int64_t _b = AS_INT(sp[-1]); sp[-2] = INT_VAL(AS_INT(sp[-2]) + _b); sp--; } /* type-specialized int*/\n");
+                type_push(&ts, TYPE_INT);
             } else if (tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) + _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
             } else {
-                /* Fast path: both numbers (common case).
+                /* Fast path: both ints, then both numbers (common case).
                    Second fast path: both strings (inline concat).
                    Slow path: mixed types via btl_compiled_add. */
                 OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
-                OUT(t, "      if (__builtin_expect(IS_NUMBER(_a) & IS_NUMBER(_b), 1))\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) + AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMBER(_a) & IS_NUMBER(_b), 1))\n");
                 OUT(t, "        { sp[-2] = NUMBER_VAL(AS_NUMBER(_a) + AS_NUMBER(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMERIC(_a) & IS_NUMERIC(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(btl_numeric_to_double(_a) + btl_numeric_to_double(_b)); sp--; }\n");
                 OUT(t, "      else if (__builtin_expect(IS_STRING(_a) & IS_STRING(_b), 1)) {\n");
                 OUT(t, "        /* Inline string concat */\n");
                 OUT(t, "        ObjString* _sa = AS_STRING(_a), *_sb = AS_STRING(_b);\n");
@@ -2062,20 +2128,32 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             TrackedValue tvb = type_peek_tv(&ts, 0);
             TrackedValue tva = type_peek_tv(&ts, 1);
             type_pop_tv(&ts); type_pop_tv(&ts);
-            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
+            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                int64_t result = tva.intValue - tvb.intValue;
+                OUT(t, "    sp -= 2; PUSH(sp, INT_VAL(%" PRId64 ")); /* const-folded int: %" PRId64 " - %" PRId64 "*/\n", result, tva.intValue, tvb.intValue);
+                type_push_tv(&ts, tracked_int(result));
+            } else if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both constants - constant fold at compile time*/
                 double result = tva.numValue - tvb.numValue;
                 OUT(t, "    sp -= 2; PUSH(sp, NUMBER_VAL(%.17g)); /* const-folded: %.17g - %.17g*/\n", result, tva.numValue, tvb.numValue);
                 type_push_tv(&ts, tracked_number(result));
+            } else if (tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                OUT(t, "    { int64_t _b = AS_INT(sp[-1]); sp[-2] = INT_VAL(AS_INT(sp[-2]) - _b); sp--; } /* type-specialized int*/\n");
+                type_push(&ts, TYPE_INT);
             } else if (tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) - _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
             } else {
-                OUT(t, "    if (__builtin_expect(IS_NUMBER(sp[-1]) & IS_NUMBER(sp[-2]), 1))\n");
-                OUT(t, "      { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) - _b); sp--; }\n");
-                OUT(t, "    else return btl_error_not_numbers(vm, sp);\n");
-                type_push(&ts, TYPE_NUMBER);
+                OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) - AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMBER(_a) & IS_NUMBER(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(AS_NUMBER(_a) - AS_NUMBER(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMERIC(_a) & IS_NUMERIC(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(btl_numeric_to_double(_a) - btl_numeric_to_double(_b)); sp--; }\n");
+                OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
+                type_push(&ts, TYPE_UNKNOWN);
             }
             break;
         }
@@ -2084,20 +2162,32 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             TrackedValue tvb = type_peek_tv(&ts, 0);
             TrackedValue tva = type_peek_tv(&ts, 1);
             type_pop_tv(&ts); type_pop_tv(&ts);
-            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
+            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                int64_t result = tva.intValue * tvb.intValue;
+                OUT(t, "    sp -= 2; PUSH(sp, INT_VAL(%" PRId64 ")); /* const-folded int: %" PRId64 " * %" PRId64 " */\n", result, tva.intValue, tvb.intValue);
+                type_push_tv(&ts, tracked_int(result));
+            } else if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both constants - constant fold at compile time*/
                 double result = tva.numValue * tvb.numValue;
                 OUT(t, "    sp -= 2; PUSH(sp, NUMBER_VAL(%.17g)); /* const-folded: %.17g * %.17g */\n", result, tva.numValue, tvb.numValue);
                 type_push_tv(&ts, tracked_number(result));
+            } else if (tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                OUT(t, "    { int64_t _b = AS_INT(sp[-1]); sp[-2] = INT_VAL(AS_INT(sp[-2]) * _b); sp--; } /* type-specialized int */\n");
+                type_push(&ts, TYPE_INT);
             } else if (tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) * _b); sp--; } /* type-specialized */\n");
                 type_push(&ts, TYPE_NUMBER);
             } else {
-                OUT(t, "    if (__builtin_expect(IS_NUMBER(sp[-1]) & IS_NUMBER(sp[-2]), 1))\n");
-                OUT(t, "      { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) * _b); sp--; }\n");
-                OUT(t, "    else return btl_error_not_numbers(vm, sp);\n");
-                type_push(&ts, TYPE_NUMBER);
+                OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) * AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMBER(_a) & IS_NUMBER(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(AS_NUMBER(_a) * AS_NUMBER(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMERIC(_a) & IS_NUMERIC(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(btl_numeric_to_double(_a) * btl_numeric_to_double(_b)); sp--; }\n");
+                OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
+                type_push(&ts, TYPE_UNKNOWN);
             }
             break;
         }
@@ -2106,20 +2196,32 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             TrackedValue tvb = type_peek_tv(&ts, 0);
             TrackedValue tva = type_peek_tv(&ts, 1);
             type_pop_tv(&ts); type_pop_tv(&ts);
-            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER && tvb.numValue != 0.0) {
+            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_INT && tvb.type == TYPE_INT && tvb.intValue != 0) {
+                int64_t result = tva.intValue / tvb.intValue;
+                OUT(t, "    sp -= 2; PUSH(sp, INT_VAL(%" PRId64 ")); /* const-folded int: %" PRId64 " / %" PRId64 "*/\n", result, tva.intValue, tvb.intValue);
+                type_push_tv(&ts, tracked_int(result));
+            } else if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER && tvb.numValue != 0.0) {
                 /* Both constants (non-zero divisor) - constant fold at compile time*/
                 double result = tva.numValue / tvb.numValue;
                 OUT(t, "    sp -= 2; PUSH(sp, NUMBER_VAL(%.17g)); /* const-folded: %.17g / %.17g*/\n", result, tva.numValue, tvb.numValue);
                 type_push_tv(&ts, tracked_number(result));
+            } else if (tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                OUT(t, "    { int64_t _b = AS_INT(sp[-1]); sp[-2] = INT_VAL(AS_INT(sp[-2]) / _b); sp--; } /* type-specialized int*/\n");
+                type_push(&ts, TYPE_INT);
             } else if (tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) / _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
             } else {
-                OUT(t, "    if (__builtin_expect(IS_NUMBER(sp[-1]) & IS_NUMBER(sp[-2]), 1))\n");
-                OUT(t, "      { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) / _b); sp--; }\n");
-                OUT(t, "    else return btl_error_not_numbers(vm, sp);\n");
-                type_push(&ts, TYPE_NUMBER);
+                OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) / AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMBER(_a) & IS_NUMBER(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(AS_NUMBER(_a) / AS_NUMBER(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMERIC(_a) & IS_NUMERIC(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(btl_numeric_to_double(_a) / btl_numeric_to_double(_b)); sp--; }\n");
+                OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
+                type_push(&ts, TYPE_UNKNOWN);
             }
             break;
         }
@@ -2128,39 +2230,59 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             TrackedValue tvb = type_peek_tv(&ts, 0);
             TrackedValue tva = type_peek_tv(&ts, 1);
             type_pop_tv(&ts); type_pop_tv(&ts);
-            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER && tvb.numValue != 0.0) {
+            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_INT && tvb.type == TYPE_INT && tvb.intValue != 0) {
+                int64_t result = tva.intValue % tvb.intValue;
+                OUT(t, "    sp -= 2; PUSH(sp, INT_VAL(%" PRId64 ")); /* const-folded int: %" PRId64 " %% %" PRId64 "*/\n", result, tva.intValue, tvb.intValue);
+                type_push_tv(&ts, tracked_int(result));
+            } else if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER && tvb.numValue != 0.0) {
                 /* Both constants (non-zero divisor) - constant fold at compile time*/
                 double result = fmod(tva.numValue, tvb.numValue);
                 OUT(t, "    sp -= 2; PUSH(sp, NUMBER_VAL(%.17g)); /* const-folded: fmod(%.17g, %.17g)*/\n", result, tva.numValue, tvb.numValue);
                 type_push_tv(&ts, tracked_number(result));
+            } else if (tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                OUT(t, "    { int64_t _b = AS_INT(sp[-1]); sp[-2] = INT_VAL(AS_INT(sp[-2]) %% _b); sp--; } /* type-specialized int*/\n");
+                type_push(&ts, TYPE_INT);
             } else if (tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(fmod(AS_NUMBER(sp[-2]), _b)); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
             } else {
-                OUT(t, "    if (__builtin_expect(IS_NUMBER(sp[-1]) & IS_NUMBER(sp[-2]), 1))\n");
-                OUT(t, "      { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(fmod(AS_NUMBER(sp[-2]), _b)); sp--; }\n");
-                OUT(t, "    else return btl_error_not_numbers(vm, sp);\n");
-                type_push(&ts, TYPE_NUMBER);
+                OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) %% AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMBER(_a) & IS_NUMBER(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(fmod(AS_NUMBER(_a), AS_NUMBER(_b))); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMERIC(_a) & IS_NUMERIC(_b), 1))\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(fmod(btl_numeric_to_double(_a), btl_numeric_to_double(_b))); sp--; }\n");
+                OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
+                type_push(&ts, TYPE_UNKNOWN);
             }
             break;
         }
         case BTL_OP_NEGATE: {
             emit_comment(t, start_ip, "OP_NEGATE");
             TrackedValue tva = type_peek_tv(&ts, 0);
-            if (tva.isConstant && tva.type == TYPE_NUMBER) {
+            if (tva.isConstant && tva.type == TYPE_INT) {
+                int64_t result = -tva.intValue;
+                OUT(t, "    sp[-1] = INT_VAL(%" PRId64 "); /* const-folded int: -%" PRId64 "*/\n", result, tva.intValue);
+                type_set_top_tv(&ts, tracked_int(result));
+            } else if (tva.isConstant && tva.type == TYPE_NUMBER) {
                 /* Constant - fold at compile time*/
                 double result = -tva.numValue;
                 OUT(t, "    sp[-1] = NUMBER_VAL(%.17g); /* const-folded: -%.17g*/\n", result, tva.numValue);
                 type_set_top_tv(&ts, tracked_number(result));
+            } else if (tva.type == TYPE_INT) {
+                OUT(t, "    sp[-1] = INT_VAL(-AS_INT(sp[-1])); /* type-specialized int*/\n");
+                type_set_top(&ts, TYPE_INT);
             } else if (tva.type == TYPE_NUMBER) {
                 /* Known to be a number - skip type check entirely*/
                 OUT(t, "    sp[-1] = NUMBER_VAL(-AS_NUMBER(sp[-1])); /* type-specialized*/\n");
                 type_set_top(&ts, TYPE_NUMBER);
             } else {
-                OUT(t, "    if (__builtin_expect(!IS_NUMBER(sp[-1]), 0)) return btl_error_not_number(vm, sp);\n");
-                OUT(t, "    sp[-1] = NUMBER_VAL(-AS_NUMBER(sp[-1]));\n");
-                type_set_top(&ts, TYPE_NUMBER);
+                OUT(t, "    if (IS_INT(sp[-1])) sp[-1] = INT_VAL(-AS_INT(sp[-1]));\n");
+                OUT(t, "    else if (__builtin_expect(IS_NUMBER(sp[-1]), 1)) sp[-1] = NUMBER_VAL(-AS_NUMBER(sp[-1]));\n");
+                OUT(t, "    else return btl_error_not_number(vm, sp);\n");
+                type_set_top(&ts, TYPE_UNKNOWN);
             }
             break;
         }
@@ -2184,19 +2306,31 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             TrackedValue tvb = type_peek_tv(&ts, 0);
             TrackedValue tva = type_peek_tv(&ts, 1);
             type_pop_tv(&ts); type_pop_tv(&ts);
-            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
+            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                bool result = tva.intValue > tvb.intValue;
+                OUT(t, "    sp -= 2; PUSH(sp, %s); /* const-folded int: %" PRId64 " > %" PRId64 "*/\n", result ? "BTL_TRUE_VAL" : "BTL_FALSE_VAL", tva.intValue, tvb.intValue);
+                type_push_tv(&ts, tracked_bool(result));
+            } else if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both constants - constant fold at compile time*/
                 bool result = tva.numValue > tvb.numValue;
                 OUT(t, "    sp -= 2; PUSH(sp, %s); /* const-folded: %.17g > %.17g*/\n", result ? "BTL_TRUE_VAL" : "BTL_FALSE_VAL", tva.numValue, tvb.numValue);
                 type_push_tv(&ts, tracked_bool(result));
+            } else if (tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                OUT(t, "    { int64_t _b = AS_INT(sp[-1]); sp[-2] = BOOL_VAL(AS_INT(sp[-2]) > _b); sp--; } /* type-specialized int*/\n");
+                type_push(&ts, TYPE_BOOL);
             } else if (tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = BOOL_VAL(AS_NUMBER(sp[-2]) > _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_BOOL);
             } else {
-                OUT(t, "    if (__builtin_expect(IS_NUMBER(sp[-1]) & IS_NUMBER(sp[-2]), 1))\n");
-                OUT(t, "      { double _b = AS_NUMBER(POP(sp)); sp[-1] = BOOL_VAL(AS_NUMBER(sp[-1]) > _b); }\n");
-                OUT(t, "    else return btl_error_not_numbers(vm, sp);\n");
+                OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = BOOL_VAL(AS_INT(_a) > AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMBER(_a) & IS_NUMBER(_b), 1))\n");
+                OUT(t, "        { sp[-2] = BOOL_VAL(AS_NUMBER(_a) > AS_NUMBER(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMERIC(_a) & IS_NUMERIC(_b), 1))\n");
+                OUT(t, "        { sp[-2] = BOOL_VAL(btl_numeric_to_double(_a) > btl_numeric_to_double(_b)); sp--; }\n");
+                OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
                 type_push(&ts, TYPE_BOOL);
             }
             break;
@@ -2206,19 +2340,31 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             TrackedValue tvb = type_peek_tv(&ts, 0);
             TrackedValue tva = type_peek_tv(&ts, 1);
             type_pop_tv(&ts); type_pop_tv(&ts);
-            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
+            if (tva.isConstant && tvb.isConstant && tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                bool result = tva.intValue < tvb.intValue;
+                OUT(t, "    sp -= 2; PUSH(sp, %s); /* const-folded int: %" PRId64 " < %" PRId64 "*/\n", result ? "BTL_TRUE_VAL" : "BTL_FALSE_VAL", tva.intValue, tvb.intValue);
+                type_push_tv(&ts, tracked_bool(result));
+            } else if (tva.isConstant && tvb.isConstant && tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both constants - constant fold at compile time*/
                 bool result = tva.numValue < tvb.numValue;
                 OUT(t, "    sp -= 2; PUSH(sp, %s); /* const-folded: %.17g < %.17g*/\n", result ? "BTL_TRUE_VAL" : "BTL_FALSE_VAL", tva.numValue, tvb.numValue);
                 type_push_tv(&ts, tracked_bool(result));
+            } else if (tva.type == TYPE_INT && tvb.type == TYPE_INT) {
+                OUT(t, "    { int64_t _b = AS_INT(sp[-1]); sp[-2] = BOOL_VAL(AS_INT(sp[-2]) < _b); sp--; } /* type-specialized int*/\n");
+                type_push(&ts, TYPE_BOOL);
             } else if (tva.type == TYPE_NUMBER && tvb.type == TYPE_NUMBER) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = BOOL_VAL(AS_NUMBER(sp[-2]) < _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_BOOL);
             } else {
-                OUT(t, "    if (__builtin_expect(IS_NUMBER(sp[-1]) & IS_NUMBER(sp[-2]), 1))\n");
-                OUT(t, "      { double _b = AS_NUMBER(POP(sp)); sp[-1] = BOOL_VAL(AS_NUMBER(sp[-1]) < _b); }\n");
-                OUT(t, "    else return btl_error_not_numbers(vm, sp);\n");
+                OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = BOOL_VAL(AS_INT(_a) < AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMBER(_a) & IS_NUMBER(_b), 1))\n");
+                OUT(t, "        { sp[-2] = BOOL_VAL(AS_NUMBER(_a) < AS_NUMBER(_b)); sp--; }\n");
+                OUT(t, "      else if (__builtin_expect(IS_NUMERIC(_a) & IS_NUMERIC(_b), 1))\n");
+                OUT(t, "        { sp[-2] = BOOL_VAL(btl_numeric_to_double(_a) < btl_numeric_to_double(_b)); sp--; }\n");
+                OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
                 type_push(&ts, TYPE_BOOL);
             }
             break;
@@ -2311,13 +2457,31 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
         case BTL_OP_JUMP_IF_NOT_GREATER: {
             uint16_t offset = (uint16_t) ((code[ip] << 8) | code[ip + 1]); ip += 2;
             emit_comment(t, start_ip, "OP_JUMP_IF_NOT_GREATER");
-            OUT(t, "    { double _b = AS_NUMBER(POP(sp)); double _a = AS_NUMBER(POP(sp)); if (!(_a > _b)) goto L_%04d; }\n", ip + offset);
+            {
+                TrackedValue tvb_jg = type_peek_tv(&ts, 0);
+                TrackedValue tva_jg = type_peek_tv(&ts, 1);
+                type_pop_tv(&ts); type_pop_tv(&ts);
+                if (tva_jg.type == TYPE_INT && tvb_jg.type == TYPE_INT) {
+                    OUT(t, "    { int64_t _b = AS_INT(POP(sp)); int64_t _a = AS_INT(POP(sp)); if (!(_a > _b)) goto L_%04d; }\n", ip + offset);
+                } else {
+                    OUT(t, "    { double _b = AS_NUMBER(POP(sp)); double _a = AS_NUMBER(POP(sp)); if (!(_a > _b)) goto L_%04d; }\n", ip + offset);
+                }
+            }
             break;
         }
         case BTL_OP_JUMP_IF_NOT_LESS: {
             uint16_t offset = (uint16_t) ((code[ip] << 8) | code[ip + 1]); ip += 2;
             emit_comment(t, start_ip, "OP_JUMP_IF_NOT_LESS");
-            OUT(t, "    { double _b = AS_NUMBER(POP(sp)); double _a = AS_NUMBER(POP(sp)); if (!(_a < _b)) goto L_%04d; }\n", ip + offset);
+            {
+                TrackedValue tvb_jl = type_peek_tv(&ts, 0);
+                TrackedValue tva_jl = type_peek_tv(&ts, 1);
+                type_pop_tv(&ts); type_pop_tv(&ts);
+                if (tva_jl.type == TYPE_INT && tvb_jl.type == TYPE_INT) {
+                    OUT(t, "    { int64_t _b = AS_INT(POP(sp)); int64_t _a = AS_INT(POP(sp)); if (!(_a < _b)) goto L_%04d; }\n", ip + offset);
+                } else {
+                    OUT(t, "    { double _b = AS_NUMBER(POP(sp)); double _a = AS_NUMBER(POP(sp)); if (!(_a < _b)) goto L_%04d; }\n", ip + offset);
+                }
+            }
             break;
         }
         case BTL_OP_LOOP: {
@@ -2432,15 +2596,15 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             if (argc == 0 && strcmp(methodName->chars, "length") == 0) {
                 /* list.length() / string.length() / table.length() - ultra fast inline */
                 OUT(t, "      if (__builtin_expect(IS_LIST(_recv), 1)) {\n");
-                OUT(t, "        sp[-1] = NUMBER_VAL(AS_LIST(_recv)->items.count);\n");
+                OUT(t, "        sp[-1] = INT_VAL(AS_LIST(_recv)->items.count);\n");
                 OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
                 OUT(t, "      }\n");
                 OUT(t, "      if (IS_STRING(_recv)) {\n");
-                OUT(t, "        sp[-1] = NUMBER_VAL(AS_STRING(_recv)->length);\n");
+                OUT(t, "        sp[-1] = INT_VAL(AS_STRING(_recv)->length);\n");
                 OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
                 OUT(t, "      }\n");
                 OUT(t, "      if (IS_TABLE(_recv)) {\n");
-                OUT(t, "        sp[-1] = NUMBER_VAL(AS_TABLE(_recv)->table.count);\n");
+                OUT(t, "        sp[-1] = INT_VAL(AS_TABLE(_recv)->table.count);\n");
                 OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
                 OUT(t, "      }\n");
             } else if (argc == 1 && strcmp(methodName->chars, "push") == 0) {
@@ -2474,6 +2638,16 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
                 OUT(t, "      }\n");
             } else if (argc == 0 && strcmp(methodName->chars, "toString") == 0) {
+                /* int.toString() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        char _buf[32];\n");
+                OUT(t, "        int _len = snprintf(_buf, 32, \"%%\" PRId64, AS_INT(_recv));\n");
+                OUT(t, "        vm->stackTop = sp;\n");
+                OUT(t, "        ObjString* _s = btl_string_copy(vm, _buf, _len);\n");
+                OUT(t, "        sp = vm->stackTop;\n");
+                OUT(t, "        sp[-1] = OBJ_VAL(_s);\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
                 /* number.toString() - inline */
                 OUT(t, "      if (__builtin_expect(IS_NUMBER(_recv), 1)) {\n");
                 OUT(t, "        char _buf[32];\n");
@@ -2485,9 +2659,64 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
                 OUT(t, "      }\n");
             } else if (argc == 0 && strcmp(methodName->chars, "abs") == 0) {
+                /* int.abs() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        int64_t _n = AS_INT(_recv);\n");
+                OUT(t, "        sp[-1] = INT_VAL(_n < 0 ? -_n : _n);\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
                 /* number.abs() - inline */
                 OUT(t, "      if (__builtin_expect(IS_NUMBER(_recv), 1)) {\n");
                 OUT(t, "        sp[-1] = NUMBER_VAL(fabs(AS_NUMBER(_recv)));\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 0 && strcmp(methodName->chars, "sign") == 0) {
+                /* int.sign() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        int64_t _n = AS_INT(_recv);\n");
+                OUT(t, "        sp[-1] = INT_VAL((_n > 0) - (_n < 0));\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 0 && strcmp(methodName->chars, "isEven") == 0) {
+                /* int.isEven() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        sp[-1] = BOOL_VAL(!(AS_INT(_recv) & 1));\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 0 && strcmp(methodName->chars, "isOdd") == 0) {
+                /* int.isOdd() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        sp[-1] = BOOL_VAL(AS_INT(_recv) & 1);\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 0 && strcmp(methodName->chars, "isZero") == 0) {
+                /* int.isZero() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        sp[-1] = BOOL_VAL(AS_INT(_recv) == 0);\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 0 && strcmp(methodName->chars, "isPositive") == 0) {
+                /* int.isPositive() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        sp[-1] = BOOL_VAL(AS_INT(_recv) > 0);\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 0 && strcmp(methodName->chars, "isNegative") == 0) {
+                /* int.isNegative() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        sp[-1] = BOOL_VAL(AS_INT(_recv) < 0);\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 0 && strcmp(methodName->chars, "bitNot") == 0) {
+                /* int.bitNot() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        sp[-1] = INT_VAL(~AS_INT(_recv));\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 0 && strcmp(methodName->chars, "toFloat") == 0) {
+                /* int.toFloat() - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv), 1)) {\n");
+                OUT(t, "        sp[-1] = NUMBER_VAL((double)AS_INT(_recv));\n");
                 OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
                 OUT(t, "      }\n");
             } else if (argc == 0 && strcmp(methodName->chars, "floor") == 0) {
@@ -2500,6 +2729,105 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 /* number.ceil() - inline */
                 OUT(t, "      if (__builtin_expect(IS_NUMBER(_recv), 1)) {\n");
                 OUT(t, "        sp[-1] = NUMBER_VAL(ceil(AS_NUMBER(_recv)));\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            /* --- Tier 2: One-arg bitwise int methods --- */
+            } else if (argc == 1 && strcmp(methodName->chars, "bitAnd") == 0) {
+                /* int.bitAnd(n) - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        sp[-2] = INT_VAL(AS_INT(_recv) & AS_INT(sp[-1])); sp--;\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 1 && strcmp(methodName->chars, "bitOr") == 0) {
+                /* int.bitOr(n) - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        sp[-2] = INT_VAL(AS_INT(_recv) | AS_INT(sp[-1])); sp--;\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 1 && strcmp(methodName->chars, "bitXor") == 0) {
+                /* int.bitXor(n) - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        sp[-2] = INT_VAL(AS_INT(_recv) ^ AS_INT(sp[-1])); sp--;\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 1 && strcmp(methodName->chars, "leftShift") == 0) {
+                /* int.leftShift(n) - inline with range check */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _sh = AS_INT(sp[-1]);\n");
+                OUT(t, "        if (__builtin_expect((uint64_t)_sh < 48, 1)) {\n");
+                OUT(t, "          sp[-2] = INT_VAL(AS_INT(_recv) << _sh); sp--;\n");
+                OUT(t, "          goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "        }\n");
+                OUT(t, "      }\n");
+            } else if (argc == 1 && strcmp(methodName->chars, "rightShift") == 0) {
+                /* int.rightShift(n) - inline with range check */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _sh = AS_INT(sp[-1]);\n");
+                OUT(t, "        if (__builtin_expect((uint64_t)_sh < 48, 1)) {\n");
+                OUT(t, "          sp[-2] = INT_VAL(AS_INT(_recv) >> _sh); sp--;\n");
+                OUT(t, "          goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "        }\n");
+                OUT(t, "      }\n");
+            /* --- Tier 3: One-arg math int methods --- */
+            } else if (argc == 1 && strcmp(methodName->chars, "min") == 0) {
+                /* int.min(n) - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _a = AS_INT(_recv), _b = AS_INT(sp[-1]);\n");
+                OUT(t, "        sp[-2] = INT_VAL(_a < _b ? _a : _b); sp--;\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 1 && strcmp(methodName->chars, "max") == 0) {
+                /* int.max(n) - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _a = AS_INT(_recv), _b = AS_INT(sp[-1]);\n");
+                OUT(t, "        sp[-2] = INT_VAL(_a > _b ? _a : _b); sp--;\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 1 && strcmp(methodName->chars, "mod") == 0) {
+                /* int.mod(n) - inline with div-by-zero guard */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _b = AS_INT(sp[-1]);\n");
+                OUT(t, "        if (__builtin_expect(_b != 0, 1)) {\n");
+                OUT(t, "          int64_t _r = AS_INT(_recv) %% _b;\n");
+                OUT(t, "          if (_r < 0) _r += (_b < 0 ? -_b : _b);\n");
+                OUT(t, "          sp[-2] = INT_VAL(_r); sp--;\n");
+                OUT(t, "          goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "        }\n");
+                OUT(t, "      }\n");
+            } else if (argc == 1 && strcmp(methodName->chars, "gcd") == 0) {
+                /* int.gcd(n) - inline Euclidean algorithm */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _a = AS_INT(_recv), _b = AS_INT(sp[-1]);\n");
+                OUT(t, "        if (_a < 0) _a = -_a; if (_b < 0) _b = -_b;\n");
+                OUT(t, "        while (_b) { int64_t _t = _b; _b = _a %% _b; _a = _t; }\n");
+                OUT(t, "        sp[-2] = INT_VAL(_a); sp--;\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 1 && strcmp(methodName->chars, "pow") == 0) {
+                /* int.pow(n) - inline for non-negative int exponents */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _exp = AS_INT(sp[-1]);\n");
+                OUT(t, "        if (__builtin_expect(_exp >= 0, 1)) {\n");
+                OUT(t, "          int64_t _base = AS_INT(_recv), _r = 1;\n");
+                OUT(t, "          for (int64_t _i = 0; _i < _exp; _i++) _r *= _base;\n");
+                OUT(t, "          sp[-2] = INT_VAL(_r); sp--;\n");
+                OUT(t, "          goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "        }\n");
+                OUT(t, "      }\n");
+            /* --- Tier 3: Two-arg int methods --- */
+            } else if (argc == 2 && strcmp(methodName->chars, "clamp") == 0) {
+                /* int.clamp(min, max) - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-2]) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _n = AS_INT(_recv), _lo = AS_INT(sp[-2]), _hi = AS_INT(sp[-1]);\n");
+                OUT(t, "        if (_n < _lo) _n = _lo; else if (_n > _hi) _n = _hi;\n");
+                OUT(t, "        sp[-3] = INT_VAL(_n); sp -= 2;\n");
+                OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
+                OUT(t, "      }\n");
+            } else if (argc == 2 && strcmp(methodName->chars, "between") == 0) {
+                /* int.between(min, max) - inline */
+                OUT(t, "      if (__builtin_expect(IS_INT(_recv) & IS_INT(sp[-2]) & IS_INT(sp[-1]), 1)) {\n");
+                OUT(t, "        int64_t _n = AS_INT(_recv), _lo = AS_INT(sp[-2]), _hi = AS_INT(sp[-1]);\n");
+                OUT(t, "        sp[-3] = BOOL_VAL(_n >= _lo && _n <= _hi); sp -= 2;\n");
                 OUT(t, "        goto L_invoke_ic_%d_done;\n", start_ip);
                 OUT(t, "      }\n");
             }

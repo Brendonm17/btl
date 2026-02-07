@@ -75,11 +75,11 @@ static BtlValue listUnshift(VM* vm, BtlValue receiver, int argCount, BtlValue* a
 static BtlValue listInsert(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
-    if (!IS_NUMBER(args[0])) {
+    if (!IS_NUMERIC(args[0])) {
         btl_runtime_error(vm, "Index must be a number.");
         return BTL_NULL_VAL;
     }
-    int index = (int) AS_NUMBER(args[0]);
+    int index = (int) btl_numeric_to_double(args[0]);
     if (index < 0 || index > list->items.count) {
         btl_runtime_error(vm, "Index out of bounds.");
         return BTL_NULL_VAL;
@@ -97,11 +97,11 @@ static BtlValue listInsert(VM* vm, BtlValue receiver, int argCount, BtlValue* ar
 static BtlValue listRemove(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
-    if (!IS_NUMBER(args[0])) {
+    if (!IS_NUMERIC(args[0])) {
         btl_runtime_error(vm, "Index must be a number.");
         return BTL_NULL_VAL;
     }
-    int index = (int) AS_NUMBER(args[0]);
+    int index = (int) btl_numeric_to_double(args[0]);
     if (index < 0 || index >= list->items.count) {
         btl_runtime_error(vm, "Index out of bounds.");
         return BTL_NULL_VAL;
@@ -165,14 +165,14 @@ static BtlValue listReverse(VM* vm, BtlValue receiver, int argCount, BtlValue* a
 // slice(start, end?) - returns new list with elements from start to end
 static BtlValue listSlice(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     ObjList* list = AS_LIST(receiver);
-    if (!IS_NUMBER(args[0])) {
+    if (!IS_NUMERIC(args[0])) {
         btl_runtime_error(vm, "Start index must be a number.");
         return BTL_NULL_VAL;
     }
-    int start = (int) AS_NUMBER(args[0]);
+    int start = (int) btl_numeric_to_double(args[0]);
     int end = list->items.count;
-    if (argCount >= 2 && IS_NUMBER(args[1])) {
-        end = (int) AS_NUMBER(args[1]);
+    if (argCount >= 2 && IS_NUMERIC(args[1])) {
+        end = (int) btl_numeric_to_double(args[1]);
     }
     // Handle negative indices
     if (start < 0) start = list->items.count + start;

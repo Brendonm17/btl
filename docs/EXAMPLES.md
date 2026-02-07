@@ -256,6 +256,53 @@ system.println(system.platform());   // "linux", "macos", or "windows"
 
 ---
 
+## Integer Arithmetic
+
+```js
+import "system";
+
+// Int literals (no decimal point)
+var a = 42;
+var b = 7;
+var hex = 0xFF;        // 255
+var bin = 0b10101010;  // 170
+
+// Int / Int -> Int (truncating division)
+system.println(b / 2);      // 3 (truncated, not 3.5)
+system.println(10 % 3);     // 1
+
+// Int / Float -> Float (auto-promotion)
+system.println(b / 2.0);    // 3.5
+system.println(1 + 0.5);    // 1.5
+
+// Cross-type equality
+system.println(3 == 3.0);   // true
+
+// Int methods
+system.println(a.toHex());       // "0x2a"
+system.println(a.toBinary());    // "0b101010"
+system.println(a.isEven());      // true
+system.println((-5).abs());      // 5
+
+// Bitwise operations
+system.println(0xFF.bitAnd(0x0F));  // 15
+system.println(1.leftShift(8));     // 256
+system.println(255.bitNot());       // -256
+
+// GCD
+system.println(12.gcd(8));         // 4
+
+// times(fn) - call a function n times
+3.times(func(i) {
+    system.println("iteration " + i);
+});
+// iteration 0
+// iteration 1
+// iteration 2
+```
+
+---
+
 ## Native Methods
 
 ```js
@@ -267,11 +314,15 @@ system.println(s.trim());            // "Hello, World!"
 system.println(s.upper());           // "  HELLO, WORLD!  "
 system.println(s.split(", "));       // ["  Hello", "World!  "]
 
-// Number methods
+// Float methods
 var n = 3.14159;
 system.println(n.floor());           // 3
 system.println(n.toFixed(2));        // "3.14"
+
+// Int methods
 system.println((65).chr());          // "A"
+system.println((42).toHex());        // "0x2a"
+system.println((7).isOdd());         // true
 
 // List methods
 var list = [3, 1, 4, 1, 5];
@@ -323,12 +374,18 @@ import "system";
 
 var value = 42;
 
-system.println(system.type(value));      // "number"
-system.println(system.isnum(value));     // true
+system.println(system.type(value));      // "int"
+system.println(system.isnum(value));     // true (int is numeric)
+system.println(system.isint(value));     // true
 system.println(system.tostr(value));     // "42"
 
+var pi = 3.14;
+system.println(system.type(pi));         // "number"
+system.println(system.isfloat(pi));      // true
+
 var str = "123";
-system.println(system.tonum(str));       // 123
+system.println(system.tonum(str));       // 123 (returns int)
+system.println(system.tonum("3.14"));    // 3.14 (returns float)
 
 system.println(system.ord("A"));         // 65
 system.println(system.chr(65));          // "A"
@@ -346,8 +403,9 @@ func divide(a, b) {
     return a / b;
 }
 
-system.println(divide(10, 2));  // 5
-system.println(divide(10, 0));  // Error: Division by zero!
+system.println(divide(10, 2));    // 5 (int / int -> int)
+system.println(divide(10, 3.0));  // 3.333... (int / float -> float)
+system.println(divide(10, 0));    // Error: Division by zero!
 ```
 
 ---

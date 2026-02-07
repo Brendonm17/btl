@@ -282,6 +282,9 @@ int btl_disassemble_instruction(BTLRuntime* runtime, BtlChunk* chunk, int offset
     case BTL_OP_0:                  return btl_simple(runtime, "PUSH_0", offset);
     case BTL_OP_1:                  return btl_simple(runtime, "PUSH_1", offset);
     case BTL_OP_2:                  return btl_simple(runtime, "PUSH_2", offset);
+    case BTL_OP_INT_0:              return btl_simple(runtime, "PUSH_INT_0", offset);
+    case BTL_OP_INT_1:              return btl_simple(runtime, "PUSH_INT_1", offset);
+    case BTL_OP_INT_2:              return btl_simple(runtime, "PUSH_INT_2", offset);
 
         // Stack
     case BTL_OP_POP:                return btl_simple(runtime, "POP", offset);

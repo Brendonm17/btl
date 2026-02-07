@@ -82,6 +82,7 @@ struct VM {
     BtlTable nativeModules;     // Built-in module table
     ObjNativeClass* stringClass; // Native string methods
     ObjNativeClass* numberClass; // Native number methods
+    ObjNativeClass* intClass;    // Native int methods
     ObjNativeClass* listClass;   // Native list methods
     ObjNativeClass* tableClass;  // Native table methods
 

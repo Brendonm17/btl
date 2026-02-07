@@ -22,7 +22,8 @@ declaration    -> classDecl
 |------|-------------|---------|
 | `null` | Absence of a value | `null` |
 | Boolean | `true` or `false` | `true`, `false` |
-| Number | IEEE 754 double-precision float | `42`, `3.14`, `-1` |
+| Int | 48-bit signed integer | `42`, `0xFF`, `0b1010`, `-1` |
+| Number | IEEE 754 double-precision float | `3.14`, `-0.5`, `1.0` |
 | String | Immutable text | `"hello"`, `""` |
 | List | Ordered, mutable collection | `[1, 2, 3]` |
 | Table | Key-value dictionary | `["name": "Alice"]` |
@@ -311,8 +312,10 @@ defaultClause -> "default" ":" statement*
 | `+` | Addition / String concatenation |
 | `-` | Subtraction / Negation |
 | `*` | Multiplication |
-| `/` | Division |
+| `/` | Division (truncating for int/int) |
 | `%` | Modulo |
+
+**Int vs Float arithmetic:** When both operands are ints, the result is an int. When either operand is a float, the int is promoted to float and the result is a float. Int division truncates toward zero: `7 / 2` is `3`, but `7 / 2.0` is `3.5`.
 
 ### Increment / Decrement
 
@@ -350,6 +353,8 @@ system.println(++x);  // 7 (increments, then returns new)
 | `<=` | Less than or equal |
 | `>` | Greater than |
 | `>=` | Greater than or equal |
+
+Ints and floats are compared by numeric value: `3 == 3.0` is `true`.
 
 ### Logical
 
@@ -544,18 +549,26 @@ doExpr -> "do" IDENTIFIER "(" arguments? ")"
 
 ### Truthiness
 
-- `false` and `null` are falsey
-- Everything else is truthy (including `0` and `""`)
+The following values are falsey:
+
+- `false` and `null`
+- `0` (int zero) and `0.0` (float zero)
+- `""` (empty string)
+- `[]` (empty list) and `[:]` (empty table)
+
+Everything else is truthy. Special cases:
+
 - Futures: `false` if error, `null`-like if pending, `true` if ready
 - Actors: `false` if dead, `true` if alive
 
 ### String Concatenation
 
-The `+` operator concatenates when either operand is a string:
+The `+` operator concatenates when either operand is a string. Ints and floats are automatically converted:
 
 ```js
 "Hello " + "World"  // "Hello World"
 "Value: " + 42      // "Value: 42"
+"Pi: " + 3.14       // "Pi: 3.14"
 123 + "!"           // "123!"
 ```
 
@@ -641,11 +654,15 @@ primary        -> "true" | "false" | "null"
 ### Lexical Grammar
 
 ```ebnf
-NUMBER     -> DIGIT+ ( "." DIGIT+ )?
+NUMBER     -> DIGIT+ ( "." DIGIT+ )?   // with "." -> float, without -> int
+           | "0" ( "x" | "X" ) HEXDIGIT+    // hex literal (always int)
+           | "0" ( "b" | "B" ) BINDIGIT+    // binary literal (always int)
 STRING     -> '"' ( <any char except '"' and newline> )* '"'
 IDENTIFIER -> ALPHA ( ALPHA | DIGIT )*
 ALPHA      -> "a"..."z" | "A"..."Z" | "_"
 DIGIT      -> "0"..."9"
+HEXDIGIT   -> DIGIT | "a"..."f" | "A"..."F"
+BINDIGIT   -> "0" | "1"
 COMMENT    -> "//" <any char except newline>* newline
 ```
 

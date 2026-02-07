@@ -20,6 +20,10 @@
 static ObjString* valueToStringCompiled(VM* vm, BtlValue value) {
     if (IS_STRING(value)) return AS_STRING(value);
     char buf[32];
+    if (IS_INT(value)) {
+        int len = snprintf(buf, 32, "%" PRId64, AS_INT(value));
+        return btl_string_copy(vm, buf, len);
+    }
     if (IS_NUMBER(value)) {
         int len = snprintf(buf, 32, "%g", AS_NUMBER(value));
         return btl_string_copy(vm, buf, len);
@@ -40,14 +44,26 @@ bool btl_compiled_add(VM* vm) {
     BtlValue b = vm->stackTop[-1];
     BtlValue a = vm->stackTop[-2];
 
+    if (IS_INT(a) && IS_INT(b)) {
+        vm->stackTop -= 2;
+        btl_push(vm, INT_VAL(AS_INT(a) + AS_INT(b)));
+        return true;
+    }
+
     if (IS_NUMBER(a) && IS_NUMBER(b)) {
         vm->stackTop -= 2;
         btl_push(vm, NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b)));
         return true;
     }
 
+    if (IS_NUMERIC(a) && IS_NUMERIC(b)) {
+        vm->stackTop -= 2;
+        btl_push(vm, NUMBER_VAL(btl_numeric_to_double(a) + btl_numeric_to_double(b)));
+        return true;
+    }
+
     if (IS_STRING(a) || IS_STRING(b)) {
-        if ((IS_STRING(a) || IS_NUMBER(a)) && (IS_STRING(b) || IS_NUMBER(b))) {
+        if ((IS_STRING(a) || IS_NUMERIC(a)) && (IS_STRING(b) || IS_NUMERIC(b))) {
             ObjString* sa = valueToStringCompiled(vm, a); btl_push(vm, OBJ_VAL(sa));
             ObjString* sb = valueToStringCompiled(vm, b); btl_push(vm, OBJ_VAL(sb));
             int length = sa->length + sb->length;
@@ -140,6 +156,7 @@ static bool bindMethodCompiled(VM* vm, ObjClass* klass, ObjString* name) {
 
 static ObjNativeClass* getNativeClassCompiled(VM* vm, BtlValue value) {
     if (IS_STRING(value)) return vm->stringClass;
+    if (IS_INT(value))    return vm->intClass;
     if (IS_NUMBER(value)) return vm->numberClass;
     if (IS_LIST(value)) return vm->listClass;
     if (IS_TABLE(value)) return vm->tableClass;
@@ -210,6 +227,10 @@ bool btl_compiled_get_property(VM* vm, BtlCallFrame* frame, int nameIdx, int icS
         if (nativeClass != NULL) {
             ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
             ObjNativeMethod* method = findNativeMethodCompiled(nativeClass, name);
+            // Int fallback: if method not found on intClass, try numberClass
+            if (method == NULL && IS_INT(receiver)) {
+                method = findNativeMethodCompiled(vm->numberClass, name);
+            }
             if (method != NULL) {
                 vm->stackTop[-1] = OBJ_VAL(method);
                 return true;
@@ -552,6 +573,10 @@ bool btl_compiled_invoke_ic(VM* vm, BtlCallFrame* frame, int nameIdx, int argCou
         if (nativeClass != NULL) {
             ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
             ObjNativeMethod* method = findNativeMethodCompiled(nativeClass, name);
+            // Int fallback: if method not found on intClass, try numberClass
+            if (method == NULL && IS_INT(receiver)) {
+                method = findNativeMethodCompiled(vm->numberClass, name);
+            }
             if (method != NULL) {
                 if (method->arity >= 0 && argCount != method->arity) {
                     btl_runtime_error(vm, "Expected %d arguments but got %d.", method->arity, argCount);
@@ -687,11 +712,11 @@ bool btl_compiled_index_get(VM* vm) {
     BtlValue obj = btl_pop(vm);
 
     if (IS_LIST(obj)) {
-        if (!IS_NUMBER(key)) {
+        if (!IS_NUMERIC(key)) {
             btl_runtime_error(vm, "List index must be a number."); return false;
         }
         ObjList* l = AS_LIST(obj);
-        int idx = (int) AS_NUMBER(key);
+        int idx = (int) btl_numeric_to_double(key);
         if (idx < 0 || idx >= l->items.count) {
             btl_runtime_error(vm, "List index out of bounds."); return false;
         }
@@ -703,11 +728,11 @@ bool btl_compiled_index_get(VM* vm) {
         btl_push(vm, btl_table_get(&table->table, key, &value) ? value : BTL_NULL_VAL);
         return true;
     } else if (IS_STRING(obj)) {
-        if (!IS_NUMBER(key)) {
+        if (!IS_NUMERIC(key)) {
             btl_runtime_error(vm, "String index must be a number."); return false;
         }
         ObjString* str = AS_STRING(obj);
-        int idx = (int) AS_NUMBER(key);
+        int idx = (int) btl_numeric_to_double(key);
         if (idx < 0 || idx >= str->length) {
             btl_runtime_error(vm, "String index out of bounds."); return false;
         }
@@ -724,11 +749,11 @@ bool btl_compiled_index_set(VM* vm) {
     BtlValue obj = btl_pop(vm);
 
     if (IS_LIST(obj)) {
-        if (!IS_NUMBER(key)) {
+        if (!IS_NUMERIC(key)) {
             btl_runtime_error(vm, "List index must be a number."); return false;
         }
         ObjList* l = AS_LIST(obj);
-        int idx = (int) AS_NUMBER(key);
+        int idx = (int) btl_numeric_to_double(key);
         if (idx < 0 || idx > l->items.count) {
             btl_runtime_error(vm, "List index out of bounds."); return false;
         }

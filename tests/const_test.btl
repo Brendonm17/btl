@@ -14,11 +14,11 @@ var f = 1 + 2 + 3;     // Should fold to 6
 var g = 3 < 5;         // Should fold to true
 var h = 10 > 20;       // Should fold to false
 
-system.println("a = " + a);
-system.println("b = " + b);
-system.println("c = " + c);
-system.println("d = " + d);
-system.println("e = " + e);
-system.println("f = " + f);
-if (g) system.println("g = true"); else system.println("g = false");
-if (h) system.println("h = true"); else system.println("h = false");
+system.println("a = " + a); // expect: a = 5
+system.println("b = " + b); // expect: b = 6
+system.println("c = " + c); // expect: c = 12
+system.println("d = " + d); // expect: d = 5
+system.println("e = " + e); // expect: e = -5
+system.println("f = " + f); // expect: f = 6
+if (g) system.println("g = true"); else system.println("g = false"); // expect: g = true
+if (h) system.println("h = true"); else system.println("h = false"); // expect: h = false

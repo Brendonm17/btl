@@ -207,7 +207,7 @@ have_message:
 BtlValue btl_deep_copy_value(VM* destVM, VM* srcVM, BtlValue value) {
     (void) srcVM;  // May be NULL
 
-    if (IS_NUMBER(value) || IS_BOOL(value) || IS_NULL(value)) {
+    if (IS_NUMBER(value) || IS_INT(value) || IS_BOOL(value) || IS_NULL(value)) {
         return value;
     }
 

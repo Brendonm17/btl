@@ -78,6 +78,8 @@ void btl_value_print(BtlValue value) {
         printf(AS_BOOL(value) ? "true" : "false");
     } else if (IS_NULL(value)) {
         printf("null");
+    } else if (IS_INT(value)) {
+        printf("%" PRId64, AS_INT(value));
     } else if (IS_NUMBER(value)) {
         printf("%g", AS_NUMBER(value));
     } else if (IS_EMPTY(value)) {
@@ -93,6 +95,9 @@ void btl_value_print(BtlValue value) {
             break;
         case BTL_VAL_NIL:
             printf("null");
+            break;
+        case BTL_VAL_INT:
+            printf("%" PRId64, AS_INT(value));
             break;
         case BTL_VAL_NUMBER:
             printf("%g", AS_NUMBER(value));
@@ -123,6 +128,17 @@ void btl_value_print(BtlValue value) {
 // ----------------------------------------------------------------------------
 bool btl_values_equal(BtlValue a, BtlValue b) {
 #ifdef BTL_NAN_BOXING
+    // Int-int comparison
+    if (IS_INT(a) && IS_INT(b)) {
+        return AS_INT(a) == AS_INT(b);
+    }
+    // Cross-type numeric comparison (int == number): promote and compare
+    if (IS_INT(a) && IS_NUMBER(b)) {
+        return (double)AS_INT(a) == AS_NUMBER(b);
+    }
+    if (IS_NUMBER(a) && IS_INT(b)) {
+        return AS_NUMBER(a) == (double)AS_INT(b);
+    }
     // Special case for numbers: must compare by value since NaN != NaN
     if (IS_NUMBER(a) && IS_NUMBER(b)) {
         return AS_NUMBER(a) == AS_NUMBER(b);
@@ -130,6 +146,12 @@ bool btl_values_equal(BtlValue a, BtlValue b) {
     // All other types: direct bit comparison works
     return a == b;
 #else
+    // Cross-type numeric comparison (int == number)
+    if ((a.type == BTL_VAL_INT && b.type == BTL_VAL_NUMBER) ||
+        (a.type == BTL_VAL_NUMBER && b.type == BTL_VAL_INT)) {
+        return btl_numeric_to_double(a) == btl_numeric_to_double(b);
+    }
+
     // Tagged union: types must match first
     if (a.type != b.type) {
         return false;
@@ -142,6 +164,8 @@ bool btl_values_equal(BtlValue a, BtlValue b) {
             return true;  // All nils are equal
         case BTL_VAL_NUMBER:
             return AS_NUMBER(a) == AS_NUMBER(b);
+        case BTL_VAL_INT:
+            return AS_INT(a) == AS_INT(b);
         case BTL_VAL_OBJ:
             return AS_OBJ(a) == AS_OBJ(b);  // Identity comparison
         case BTL_VAL_EMPTY:

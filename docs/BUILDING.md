@@ -89,6 +89,8 @@ The transpiler applies several optimizations that the interpreter cannot:
 
 **Cached VM state** -- Hot VM fields (`frame`, `slots`, `stackTop`) are cached in C locals rather than repeatedly dereferencing the VM struct pointer. They are only synced back at call boundaries where callees need to see the real stack.
 
+**Type-specialized arithmetic** -- The transpiler tracks value types (int, float, unknown) through abstract interpretation. When both operands are known to be ints, it emits direct integer operations (`INT_VAL(AS_INT(a) + AS_INT(b))`) with no float conversion. Mixed int/float operations auto-promote to float. Unknown types get a fast int check with `__builtin_expect` branch hints, falling through to float and generic paths.
+
 **Direct call threading** -- When the transpiler can determine that a closure maps to a known transpiled function, it emits a direct C function call (`btl_fn_N(vm)`) instead of going through the generic `callValue()` dispatch and interpreter loop.
 
 **Fused opcode patterns** -- Common multi-opcode sequences are collapsed into single C statements. For example, a loop counter like `i = i + 1` (which is four bytecode instructions) becomes one C assignment. Similarly, loop conditions like `while (i < n)` fuse the local reads, comparison, and conditional branch into a single `if (...) goto` statement.

@@ -54,11 +54,11 @@ static BtlValue numberSqrt(VM* vm, BtlValue receiver, int argCount, BtlValue* ar
 // pow(exp) - raises to power
 static BtlValue numberPow(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
-    if (!IS_NUMBER(args[0])) {
+    if (!IS_NUMERIC(args[0])) {
         btl_runtime_error(vm, "Exponent must be a number.");
         return BTL_NULL_VAL;
     }
-    return NUMBER_VAL(pow(AS_NUMBER(receiver), AS_NUMBER(args[0])));
+    return NUMBER_VAL(pow(AS_NUMBER(receiver), btl_numeric_to_double(args[0])));
 }
 
 static BtlValue numberSin(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
@@ -142,7 +142,7 @@ static BtlValue numberIsInt(VM* vm, BtlValue receiver, int argCount, BtlValue* a
 
 static BtlValue numberToInt(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;
-    return NUMBER_VAL((double) (long long) AS_NUMBER(receiver));
+    return INT_VAL((int64_t) AS_NUMBER(receiver));
 }
 
 static BtlValue numberToString(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
@@ -154,11 +154,11 @@ static BtlValue numberToString(VM* vm, BtlValue receiver, int argCount, BtlValue
 
 static BtlValue numberToFixed(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
-    if (!IS_NUMBER(args[0])) {
+    if (!IS_NUMERIC(args[0])) {
         btl_runtime_error(vm, "Precision must be a number.");
         return BTL_NULL_VAL;
     }
-    int precision = (int) AS_NUMBER(args[0]);
+    int precision = (int) btl_numeric_to_double(args[0]);
     if (precision < 0) precision = 0;
     if (precision > 20) precision = 20;
     char buffer[64];
@@ -207,13 +207,13 @@ static BtlValue numberChr(VM* vm, BtlValue receiver, int argCount, BtlValue* arg
 
 static BtlValue numberClamp(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
-    if (!IS_NUMBER(args[0]) || !IS_NUMBER(args[1])) {
+    if (!IS_NUMERIC(args[0]) || !IS_NUMERIC(args[1])) {
         btl_runtime_error(vm, "Arguments must be numbers.");
         return BTL_NULL_VAL;
     }
     double n = AS_NUMBER(receiver);
-    double minVal = AS_NUMBER(args[0]);
-    double maxVal = AS_NUMBER(args[1]);
+    double minVal = btl_numeric_to_double(args[0]);
+    double maxVal = btl_numeric_to_double(args[1]);
     if (n < minVal) return NUMBER_VAL(minVal);
     if (n > maxVal) return NUMBER_VAL(maxVal);
     return NUMBER_VAL(n);
@@ -221,24 +221,24 @@ static BtlValue numberClamp(VM* vm, BtlValue receiver, int argCount, BtlValue* a
 
 static BtlValue numberLerp(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
-    if (!IS_NUMBER(args[0]) || !IS_NUMBER(args[1])) {
+    if (!IS_NUMERIC(args[0]) || !IS_NUMERIC(args[1])) {
         btl_runtime_error(vm, "Arguments must be numbers.");
         return BTL_NULL_VAL;
     }
     double t = AS_NUMBER(receiver);
-    double a = AS_NUMBER(args[0]);
-    double b = AS_NUMBER(args[1]);
+    double a = btl_numeric_to_double(args[0]);
+    double b = btl_numeric_to_double(args[1]);
     return NUMBER_VAL(a + t * (b - a));
 }
 
 static BtlValue numberMod(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
-    if (!IS_NUMBER(args[0])) {
+    if (!IS_NUMERIC(args[0])) {
         btl_runtime_error(vm, "Argument must be a number.");
         return BTL_NULL_VAL;
     }
     double a = AS_NUMBER(receiver);
-    double b = AS_NUMBER(args[0]);
+    double b = btl_numeric_to_double(args[0]);
     double result = fmod(a, b);
     if (result < 0) result += fabs(b);
     return NUMBER_VAL(result);
@@ -246,13 +246,13 @@ static BtlValue numberMod(VM* vm, BtlValue receiver, int argCount, BtlValue* arg
 
 static BtlValue numberBetween(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
-    if (!IS_NUMBER(args[0]) || !IS_NUMBER(args[1])) {
+    if (!IS_NUMERIC(args[0]) || !IS_NUMERIC(args[1])) {
         btl_runtime_error(vm, "Arguments must be numbers.");
         return BTL_NULL_VAL;
     }
     double n = AS_NUMBER(receiver);
-    double minVal = AS_NUMBER(args[0]);
-    double maxVal = AS_NUMBER(args[1]);
+    double minVal = btl_numeric_to_double(args[0]);
+    double maxVal = btl_numeric_to_double(args[1]);
     return BOOL_VAL(n >= minVal && n <= maxVal);
 }
 

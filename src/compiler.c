@@ -258,18 +258,14 @@ static void emitPopOrRemoveLoad(Parser* p, BtlCompiler* c) {
     if (c->lastInstruction >= 0 && c->lastInstruction < chunk->count) {
         uint8_t prevOp = chunk->code[c->lastInstruction];
         if (prevOp == BTL_OP_RETURN) return;
-    }
-    if (chunk->count >= 2) {
-        int lastIndex = chunk->count - 1;
-        int opcodeIndex = lastIndex - 1;
-        if (opcodeIndex >= 0) {
-            uint8_t possibleOp = chunk->code[opcodeIndex];
-            if (possibleOp == BTL_OP_GET_LOCAL || possibleOp == BTL_OP_GET_UPVALUE) {
-                removeChunkTail(chunk, 2);
-                c->lastInstruction = (chunk->count > 0) ? chunk->count - 1 : -1;
-                c->previousInstruction = -1;
-                return;
-            }
+        // If the last instruction is a 2-byte GET_LOCAL or GET_UPVALUE,
+        // remove it instead of emitting POP (the value is unused).
+        if ((prevOp == BTL_OP_GET_LOCAL || prevOp == BTL_OP_GET_UPVALUE) &&
+            c->lastInstruction + 2 == chunk->count) {
+            removeChunkTail(chunk, 2);
+            c->lastInstruction = c->previousInstruction;
+            c->previousInstruction = -1;
+            return;
         }
     }
     emitByte(p, c, BTL_OP_POP);
@@ -833,9 +829,37 @@ static void binary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
     LastInstruction rhs = getInstructionAt(c, rhsOffset);
 
     if (lhs.isConstant && rhs.isConstant && (lhsOffset + lhs.length == rhsOffset)) {
-        if (IS_NUMBER(lhs.value) && IS_NUMBER(rhs.value)) {
-            double a = AS_NUMBER(lhs.value);
-            double b = AS_NUMBER(rhs.value);
+        // Int + Int constant folding
+        if (IS_INT(lhs.value) && IS_INT(rhs.value)) {
+            int64_t a = AS_INT(lhs.value);
+            int64_t b = AS_INT(rhs.value);
+            int64_t res;
+            bool folded = true;
+            switch (opType) {
+            case BTL_TOKEN_PLUS:    res = a + b; break;
+            case BTL_TOKEN_MINUS:   res = a - b; break;
+            case BTL_TOKEN_STAR:    res = a * b; break;
+            case BTL_TOKEN_SLASH:
+                if (b == 0) { errorAt(p, &p->previous, "Division by zero."); return; }
+                res = a / b; break;
+            case BTL_TOKEN_PERCENT:
+                if (b == 0) { errorAt(p, &p->previous, "Division by zero."); return; }
+                res = a % b; break;
+            default: folded = false; res = 0;
+            }
+            if (folded) {
+                currentChunk(c)->count = lhsOffset;
+                c->lastInstruction = c->previousInstruction;
+                emitConstant(p, c, INT_VAL(res));
+                return;
+            }
+        }
+        // Double + Double or mixed numeric constant folding
+        if ((IS_NUMBER(lhs.value) || IS_INT(lhs.value)) &&
+            (IS_NUMBER(rhs.value) || IS_INT(rhs.value)) &&
+            (IS_NUMBER(lhs.value) || IS_NUMBER(rhs.value))) {
+            double a = IS_INT(lhs.value) ? (double)AS_INT(lhs.value) : AS_NUMBER(lhs.value);
+            double b = IS_INT(rhs.value) ? (double)AS_INT(rhs.value) : AS_NUMBER(rhs.value);
             double res;
             bool folded = true;
             switch (opType) {
@@ -850,7 +874,7 @@ static void binary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
                 res = a / b;
                 break;
             case BTL_TOKEN_PERCENT: res = fmod(a, b); break;
-            default: folded = false;
+            default: folded = false; res = 0;
             }
             if (folded) {
                 currentChunk(c)->count = lhsOffset;
@@ -895,16 +919,50 @@ static void grouping(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler*
 
 static void number(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
-    double value = strtod(p->previous.start, NULL);
 
-    if (value == 0.0) {
-        emitByte(p, c, BTL_OP_0);
-    } else if (value == 1.0) {
-        emitByte(p, c, BTL_OP_1);
-    } else if (value == 2.0) {
-        emitByte(p, c, BTL_OP_2);
+    // Detect hex (0x...) or binary (0b...) prefix — always int
+    if (p->previous.length > 2 && p->previous.start[0] == '0') {
+        char prefix = p->previous.start[1];
+        if (prefix == 'x' || prefix == 'X') {
+            int64_t value = strtoll(p->previous.start + 2, NULL, 16);
+            emitConstant(p, c, INT_VAL(value));
+            return;
+        }
+        if (prefix == 'b' || prefix == 'B') {
+            int64_t value = strtoll(p->previous.start + 2, NULL, 2);
+            emitConstant(p, c, INT_VAL(value));
+            return;
+        }
+    }
+
+    // Check if the literal contains a decimal point to distinguish int from float
+    bool isFloat = false;
+    for (int i = 0; i < p->previous.length; i++) {
+        if (p->previous.start[i] == '.') { isFloat = true; break; }
+    }
+
+    if (isFloat) {
+        double value = strtod(p->previous.start, NULL);
+        if (value == 0.0) {
+            emitByte(p, c, BTL_OP_0);
+        } else if (value == 1.0) {
+            emitByte(p, c, BTL_OP_1);
+        } else if (value == 2.0) {
+            emitByte(p, c, BTL_OP_2);
+        } else {
+            emitConstant(p, c, NUMBER_VAL(value));
+        }
     } else {
-        emitConstant(p, c, NUMBER_VAL(value));
+        int64_t value = strtoll(p->previous.start, NULL, 10);
+        if (value == 0) {
+            emitByte(p, c, BTL_OP_INT_0);
+        } else if (value == 1) {
+            emitByte(p, c, BTL_OP_INT_1);
+        } else if (value == 2) {
+            emitByte(p, c, BTL_OP_INT_2);
+        } else {
+            emitConstant(p, c, INT_VAL(value));
+        }
     }
 }
 
@@ -1247,6 +1305,12 @@ static void unary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc
     int operandOffset = c->lastInstruction;
     LastInstruction operand = getInstructionAt(c, operandOffset);
     if (operand.isConstant) {
+        if (opType == BTL_TOKEN_MINUS && IS_INT(operand.value)) {
+            currentChunk(c)->count = operandOffset;
+            c->lastInstruction = c->previousInstruction;
+            emitConstant(p, c, INT_VAL(-AS_INT(operand.value)));
+            return;
+        }
         if (opType == BTL_TOKEN_MINUS && IS_NUMBER(operand.value)) {
             currentChunk(c)->count = operandOffset;
             c->lastInstruction = c->previousInstruction;
@@ -1256,8 +1320,10 @@ static void unary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc
         if (opType == BTL_TOKEN_BANG) {
             currentChunk(c)->count = operandOffset;
             c->lastInstruction = c->previousInstruction;
-            bool isFalsey = IS_NULL(operand.value) || (IS_BOOL(operand.value) && !AS_BOOL(operand.value));
-            emitByte(p, c, isFalsey ? BTL_OP_TRUE : BTL_OP_FALSE);
+            bool valFalsey = IS_NULL(operand.value) || (IS_BOOL(operand.value) && !AS_BOOL(operand.value))
+                || (IS_INT(operand.value) && AS_INT(operand.value) == 0)
+                || (IS_NUMBER(operand.value) && AS_NUMBER(operand.value) == 0.0);
+            emitByte(p, c, valFalsey ? BTL_OP_TRUE : BTL_OP_FALSE);
             return;
         }
     }

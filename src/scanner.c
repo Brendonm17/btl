@@ -45,6 +45,18 @@ static bool isDigit(char c) {
     return c >= '0' && c <= '9';
 }
 
+// Check if character is a hex digit
+static bool isHexDigit(char c) {
+    return (c >= '0' && c <= '9') ||
+           (c >= 'a' && c <= 'f') ||
+           (c >= 'A' && c <= 'F');
+}
+
+// Check if character is a binary digit
+static bool isBinDigit(char c) {
+    return c == '0' || c == '1';
+}
+
 // ----------------------------------------------------------------------------
 // Scanner Position Helpers
 // ----------------------------------------------------------------------------
@@ -311,17 +323,31 @@ BtlToken btl_scanner_scan_token(BtlScanner* scanner) {
 
     // Number literals
     if (isDigit(c)) {
-        // Consume integer part
-        while (isDigit(peek(scanner))) {
-            advance(scanner);
-        }
-        // Check for decimal part
-        if (peek(scanner) == '.' && isDigit(peekNext(scanner))) {
-            // Consume the dot
-            advance(scanner);
-            // Consume fractional part
+        if (c == '0' && (peek(scanner) == 'x' || peek(scanner) == 'X')) {
+            // Hex literal: 0xFF
+            advance(scanner); // consume 'x'
+            while (isHexDigit(peek(scanner))) {
+                advance(scanner);
+            }
+        } else if (c == '0' && (peek(scanner) == 'b' || peek(scanner) == 'B')) {
+            // Binary literal: 0b1010
+            advance(scanner); // consume 'b'
+            while (isBinDigit(peek(scanner))) {
+                advance(scanner);
+            }
+        } else {
+            // Decimal integer or float
             while (isDigit(peek(scanner))) {
                 advance(scanner);
+            }
+            // Check for decimal part
+            if (peek(scanner) == '.' && isDigit(peekNext(scanner))) {
+                // Consume the dot
+                advance(scanner);
+                // Consume fractional part
+                while (isDigit(peek(scanner))) {
+                    advance(scanner);
+                }
             }
         }
         return makeToken(scanner, BTL_TOKEN_NUMBER);

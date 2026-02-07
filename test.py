@@ -77,7 +77,7 @@ def main():
         print(f"Error: {test_dir} directory not found.")
         sys.exit(1)
 
-    files = sorted([f for f in os.listdir(test_dir) if f.endswith(".btl")])
+    files = sorted([f for f in os.listdir(test_dir) if f.endswith(".btl") and not f.startswith("benchmark_") and not f.startswith("perf_")])
     passed = 0
 
     print(f"Using executable: {executable}")
