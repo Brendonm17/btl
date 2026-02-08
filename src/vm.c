@@ -1826,27 +1826,21 @@ BtlInterpretResult btl_run(VM* vm) {
                 DISPATCH();
             }
 
-            // Search methods by name - find method with matching name (use pointer comparison for interned strings)
+            // Search methods by name AND arity (supports method overloading)
             {
                 int foundIndex = -1;
                 for (int i = 0; i < instance->klass->methodCount; i++) {
                     ObjString* methodName = instance->klass->methods[i].name;
                     if (instance->klass->methods[i].closure != NULL &&
                         methodName != NULL &&
-                        methodName == name) {  // Interned string pointer comparison
+                        methodName == name &&
+                        instance->klass->methods[i].arity == argCount) {
                         foundIndex = i;
                         break;
                     }
                 }
 
                 if (foundIndex >= 0) {
-                    if (argCount != instance->klass->methods[foundIndex].arity) {
-                        STORE_FRAME();
-                        btl_runtime_error(vm, "Expected %d arguments but got %d.",
-                                          instance->klass->methods[foundIndex].arity, argCount);
-                        return BTL_INTERPRET_RUNTIME_ERROR;
-                    }
-
                     ic->cachedClass = instance->klass;
                     ic->methodIndex = foundIndex;
 
@@ -2112,13 +2106,12 @@ OPCODE(BTL_OP_TAIL_INVOKE_IC) : {
             // SLOW PATH
             ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
 
-            // Search methods by name AND arity
+            // Search methods by name AND arity (supports method overloading)
             for (int i = 0; i < instance->klass->methodCount; i++) {
                 ObjString* methodName = instance->klass->methods[i].name;
                 if (instance->klass->methods[i].closure != NULL &&
                     methodName != NULL &&
-                    methodName->length == name->length &&
-                    memcmp(methodName->chars, name->chars, name->length) == 0 &&
+                    methodName == name &&
                     instance->klass->methods[i].arity == argCount) {
 
                     ic->cachedClass = instance->klass;
@@ -2337,10 +2330,10 @@ OPCODE(BTL_OP_CLASS) : {
     ObjString* name = READ_STRING();
     ObjClass* klass = btl_class_new(vm, name);
 
-    BtlValue savedIndicesValue;
-    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedIndicesValue)) {
-        BtlTable* savedIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-        btl_table_add_all(vm, savedIndices, &klass->methodIndices);
+    BtlValue savedInfoValue;
+    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedInfoValue)) {
+        BtlSavedClassInfo* savedInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
+        btl_table_add_all(vm, &savedInfo->methodIndices, &klass->methodIndices);
     }
 
     btl_push(vm, OBJ_VAL(klass));
@@ -2351,10 +2344,10 @@ OPCODE(BTL_OP_CLASS_LONG) : {
     ObjString* name = READ_STRING_LONG();
     ObjClass* klass = btl_class_new(vm, name);
 
-    BtlValue savedIndicesValue;
-    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedIndicesValue)) {
-        BtlTable* savedIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-        btl_table_add_all(vm, savedIndices, &klass->methodIndices);
+    BtlValue savedInfoValue;
+    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedInfoValue)) {
+        BtlSavedClassInfo* savedInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
+        btl_table_add_all(vm, &savedInfo->methodIndices, &klass->methodIndices);
     }
 
     btl_push(vm, OBJ_VAL(klass));

@@ -1402,11 +1402,13 @@ static void super_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
     BtlToken name = p->previous;
 
     BtlToken thisT = { .start = "this", .length = 4 };
-    namedVariable(p, s, c, cc, thisT, false);
     BtlToken superT = { .start = "super", .length = 5 };
-    namedVariable(p, s, c, cc, superT, false);
 
     if (match(p, s, BTL_TOKEN_LEFT_PAREN)) {
+        // Push this (receiver) first
+        namedVariable(p, s, c, cc, thisT, false);
+
+        // Push args
         uint8_t args = 0;
         if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
             do {
@@ -1415,6 +1417,10 @@ static void super_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
             } while (match(p, s, BTL_TOKEN_COMMA));
         }
         consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
+
+        // Push super AFTER args so it's on top for the invoke to pop
+        namedVariable(p, s, c, cc, superT, false);
+
         int methodIndex = tryResolveMethodIndex(c, cc, &name, args);
 
         if (methodIndex < 0) {
@@ -1424,6 +1430,8 @@ static void super_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
 
         emitSuperInvokeIndexed(p, c, methodIndex, args);
     } else {
+        namedVariable(p, s, c, cc, thisT, false);
+        namedVariable(p, s, c, cc, superT, false);
         int nameIdx = makeConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, name.start, name.length)));
         emitLong(p, c, BTL_OP_GET_SUPER, BTL_OP_GET_SUPER_LONG, nameIdx);
     }
@@ -1729,6 +1737,7 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
 
     classC.fieldInfoCapacity = 8;
     classC.fieldInfos = BTL_ALLOCATE(c->vm, BtlFieldInfo, classC.fieldInfoCapacity);
+    memset(classC.fieldInfos, 0, sizeof(BtlFieldInfo) * classC.fieldInfoCapacity);
 
     bool userDefinedInit = false;
     bool hasFieldInitializers = false;
@@ -1740,20 +1749,35 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
         ObjString* parentName = btl_string_copy(c->vm, superClassName.start, superClassName.length);
         btl_push(c->vm, OBJ_VAL(parentName));
 
-        BtlValue savedIndicesValue;
-        if (btl_table_get(&c->module->classInfo, OBJ_VAL(parentName), &savedIndicesValue)) {
-            BtlTable* parentIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-            btl_table_add_all(c->vm, parentIndices, &classC.methodIndices);
+        BtlValue savedInfoValue;
+        if (btl_table_get(&c->module->classInfo, OBJ_VAL(parentName), &savedInfoValue)) {
+            BtlSavedClassInfo* parentInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
+            btl_table_add_all(c->vm, &parentInfo->methodIndices, &classC.methodIndices);
 
             int maxParentIndex = -1;
-            for (int i = 0; i < parentIndices->capacity; i++) {
-                BtlEntry* entry = &parentIndices->entries[i];
+            for (int i = 0; i < parentInfo->methodIndices.capacity; i++) {
+                BtlEntry* entry = &parentInfo->methodIndices.entries[i];
                 if (IS_STRING(entry->key) && IS_NUMBER(entry->value)) {
                     int idx = (int) AS_NUMBER(entry->value);
                     if (idx > maxParentIndex) maxParentIndex = idx;
                 }
             }
             classC.nextMethodIndex = maxParentIndex + 1;
+
+            // Inherit parent field indices so child fields don't collide
+            btl_table_add_all(c->vm, &parentInfo->fieldIndices, &classC.fields);
+            classC.fieldCount = parentInfo->fieldCount;
+
+            // Ensure fieldInfos capacity and mark inherited fields as no-init
+            while (classC.fieldCount > classC.fieldInfoCapacity) {
+                int oldCap = classC.fieldInfoCapacity;
+                classC.fieldInfoCapacity *= 2;
+                classC.fieldInfos = BTL_GROW_ARRAY(c->vm, BtlFieldInfo, classC.fieldInfos,
+                    oldCap, classC.fieldInfoCapacity);
+            }
+            for (int i = 0; i < classC.fieldCount; i++) {
+                classC.fieldInfos[i].hasInit = false;
+            }
         }
 
         btl_pop(c->vm);
@@ -1797,6 +1821,8 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
                         classC.fieldInfoCapacity *= 2;
                         classC.fieldInfos = BTL_GROW_ARRAY(c->vm, BtlFieldInfo, classC.fieldInfos,
                             oldCap, classC.fieldInfoCapacity);
+                        memset(classC.fieldInfos + oldCap, 0,
+                            sizeof(BtlFieldInfo) * (classC.fieldInfoCapacity - oldCap));
                     }
 
                     classC.fieldInfos[fieldIndex].fieldName = name;
@@ -1967,20 +1993,22 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
         endScope(p, c);
     }
 
-    btl_table_free(c->vm, &classC.fields);
-
-    // Save method indices AFTER auto-generated init is added
+    // Save method and field indices AFTER auto-generated init is added
     ObjString* className = btl_string_copy(c->vm, nameToken.start, nameToken.length);
     btl_push(c->vm, OBJ_VAL(className));
 
-    BtlTable* savedIndices = BTL_ALLOCATE(c->vm, BtlTable, 1);
-    btl_table_init(savedIndices);
-    btl_table_add_all(c->vm, &classC.methodIndices, savedIndices);
+    BtlSavedClassInfo* savedInfo = BTL_ALLOCATE(c->vm, BtlSavedClassInfo, 1);
+    btl_table_init(&savedInfo->methodIndices);
+    btl_table_init(&savedInfo->fieldIndices);
+    btl_table_add_all(c->vm, &classC.methodIndices, &savedInfo->methodIndices);
+    btl_table_add_all(c->vm, &classC.fields, &savedInfo->fieldIndices);
+    savedInfo->fieldCount = classC.fieldCount;
 
     btl_table_set(c->vm, &c->module->classInfo, OBJ_VAL(className),
-        NUMBER_VAL((double) (uintptr_t) savedIndices));
+        NUMBER_VAL((double) (uintptr_t) savedInfo));
 
     btl_pop(c->vm);
+    btl_table_free(c->vm, &classC.fields);
     btl_table_free(c->vm, &classC.methodIndices);
     BTL_FREE_ARRAY(c->vm, BtlFieldInfo, classC.fieldInfos, classC.fieldInfoCapacity);
 }

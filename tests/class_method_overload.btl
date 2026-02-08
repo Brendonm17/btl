@@ -1,0 +1,121 @@
+import "system";
+
+// Test 1: Multiple init methods with different arg counts
+class Point {
+  func init() {
+    this.x = 0;
+    this.y = 0;
+  }
+
+  func init(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  func toString() {
+    return "(" + system.toString(this.x) + ", " + system.toString(this.y) + ")";
+  }
+}
+
+var p1 = Point();
+var p2 = Point(3, 4);
+
+system.println(p1.toString()); // expect: (0, 0)
+system.println(p2.toString()); // expect: (3, 4)
+
+// Test 2: Multiple regular methods with the same name, different arg counts
+class Greeter {
+  func init(name) {
+    this.name = name;
+  }
+
+  func greet() {
+    return "Hello, " + this.name + "!";
+  }
+
+  func greet(other) {
+    return this.name + " says hello to " + other + "!";
+  }
+
+  func greet(other, message) {
+    return this.name + " says '" + message + "' to " + other + "!";
+  }
+}
+
+var g = Greeter("Alice");
+system.println(g.greet()); // expect: Hello, Alice!
+system.println(g.greet("Bob")); // expect: Alice says hello to Bob!
+system.println(g.greet("Bob", "Hey there")); // expect: Alice says 'Hey there' to Bob!
+
+// Test 3: Overloaded methods with inheritance
+class Animal {
+  func init(name) {
+    this.name = name;
+  }
+
+  func speak() {
+    return this.name + " makes a sound.";
+  }
+
+  func speak(times) {
+    var result = "";
+    for (var i = 0; i < times; i = i + 1) {
+      result = result + this.name + "! ";
+    }
+    return result;
+  }
+}
+
+class Dog < Animal {
+  func speak() {
+    return this.name + " barks!";
+  }
+}
+
+var a = Animal("Cat");
+system.println(a.speak()); // expect: Cat makes a sound.
+system.println(a.speak(3)); // expect: Cat! Cat! Cat!
+
+var d = Dog("Rex");
+system.println(d.speak()); // expect: Rex barks!
+system.println(d.speak(2)); // expect: Rex! Rex!
+
+// Test 4: Init overloading with inheritance
+class Shape {
+  func init() {
+    this.color = "black";
+  }
+
+  func init(color) {
+    this.color = color;
+  }
+}
+
+class Circle < Shape {
+  func init() {
+    super.init();
+    this.radius = 1;
+  }
+
+  func init(radius) {
+    super.init("red");
+    this.radius = radius;
+  }
+
+  func init(radius, color) {
+    super.init(color);
+    this.radius = radius;
+  }
+
+  func describe() {
+    return "Circle(r=" + system.toString(this.radius) + ", color=" + this.color + ")";
+  }
+}
+
+var c1 = Circle();
+var c2 = Circle(5);
+var c3 = Circle(10, "blue");
+
+system.println(c1.describe()); // expect: Circle(r=1, color=black)
+system.println(c2.describe()); // expect: Circle(r=5, color=red)
+system.println(c3.describe()); // expect: Circle(r=10, color=blue)

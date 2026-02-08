@@ -612,10 +612,10 @@ bool btl_compiled_super_invoke(VM* vm, int methodIndex, int argCount) {
 void btl_compiled_class(VM* vm, ObjFunction* fn, int nameIdx) {
     ObjString* name = AS_STRING(fn->chunk.constants.values[nameIdx]);
     ObjClass* klass = btl_class_new(vm, name);
-    BtlValue savedIndicesValue;
-    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedIndicesValue)) {
-        BtlTable* savedIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-        btl_table_add_all(vm, savedIndices, &klass->methodIndices);
+    BtlValue savedInfoValue;
+    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedInfoValue)) {
+        BtlSavedClassInfo* savedInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
+        btl_table_add_all(vm, &savedInfo->methodIndices, &klass->methodIndices);
     }
     btl_push(vm, OBJ_VAL(klass));
 }
@@ -623,10 +623,10 @@ void btl_compiled_class(VM* vm, ObjFunction* fn, int nameIdx) {
 void btl_compiled_class_long(VM* vm, ObjFunction* fn, int nameIdx) {
     ObjString* name = AS_STRING(fn->chunk.constants.values[nameIdx]);
     ObjClass* klass = btl_class_new(vm, name);
-    BtlValue savedIndicesValue;
-    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedIndicesValue)) {
-        BtlTable* savedIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-        btl_table_add_all(vm, savedIndices, &klass->methodIndices);
+    BtlValue savedInfoValue;
+    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedInfoValue)) {
+        BtlSavedClassInfo* savedInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
+        btl_table_add_all(vm, &savedInfo->methodIndices, &klass->methodIndices);
     }
     btl_push(vm, OBJ_VAL(klass));
 }
