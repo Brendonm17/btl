@@ -120,6 +120,18 @@ typedef enum {
     TYPE_OBJECT
 } AbstractType;
 
+static const char* type_name(AbstractType t) {
+    switch (t) {
+        case TYPE_INT: return "INT";
+        case TYPE_NUMBER: return "NUMBER";
+        case TYPE_BOOL: return "BOOL";
+        case TYPE_NIL: return "NIL";
+        case TYPE_STRING: return "STRING";
+        case TYPE_OBJECT: return "OBJECT";
+        default: return "UNKNOWN";
+    }
+}
+
 /* Tracked value with optional constant*/
 typedef struct {
     AbstractType type;
@@ -1010,17 +1022,15 @@ static void analyze_loop_types(ObjFunction* fn, int start_ip, int end_ip,
     for (int s = 0; s < MAX_TRACKED_LOCALS; s++) {
         if (slot_assigned[s]) {
             AbstractType st = slot_types[s];
-            /* Only propagate int/number — these are the high-value types */
-            if (st == TYPE_INT || st == TYPE_NUMBER) {
+            /* Propagate all non-unknown types for loop type seeding */
+            if (st != TYPE_UNKNOWN) {
                 out->localTypes[s] = st;
             }
         }
         /* Also propagate pre-loop types for read-only slots (locals that are
            initialized before the loop and only read inside it) */
         if (!slot_assigned[s] && slot_types[s] != TYPE_UNKNOWN) {
-            if (slot_types[s] == TYPE_INT || slot_types[s] == TYPE_NUMBER) {
-                out->localTypes[s] = slot_types[s];
-            }
+            out->localTypes[s] = slot_types[s];
         }
     }
 }
@@ -1158,7 +1168,15 @@ static void analyze_pre_loop_types(ObjFunction* fn, int loop_header,
         case BTL_OP_INVOKE_IC: case BTL_OP_TAIL_INVOKE_IC: ip += 3; adepth = 0; break;
 
         /* Arithmetic */
-        case BTL_OP_ADD: case BTL_OP_SUBTRACT: case BTL_OP_MULTIPLY:
+        case BTL_OP_ADD: {
+            AbstractType b = PLT_POP(), a = PLT_POP();
+            if (a == TYPE_INT && b == TYPE_INT) PLT_PUSH(TYPE_INT);
+            else if (a == TYPE_NUMBER && b == TYPE_NUMBER) PLT_PUSH(TYPE_NUMBER);
+            else if (a == TYPE_STRING && b == TYPE_STRING) PLT_PUSH(TYPE_STRING);
+            else PLT_PUSH(TYPE_UNKNOWN);
+            break;
+        }
+        case BTL_OP_SUBTRACT: case BTL_OP_MULTIPLY:
         case BTL_OP_DIVIDE: case BTL_OP_MODULO: {
             AbstractType b = PLT_POP(), a = PLT_POP();
             if (a == TYPE_INT && b == TYPE_INT) PLT_PUSH(TYPE_INT);
@@ -1882,6 +1900,12 @@ static int try_fuse(BtlTranspiler* t, uint8_t* code, int ip, int code_len,
         if (op2 == BTL_OP_EQUAL) {
             if (ta == TYPE_INT && tb == TYPE_INT)
                 OUT(t, "    if (AS_INT(slots[%d]) != AS_INT(slots[%d])) goto L_%04d;\n", slot_a, slot_b, target_ip);
+            else if (ta == TYPE_NIL)
+                OUT(t, "    if (!IS_NULL(slots[%d])) goto L_%04d; /* nil==? */\n", slot_b, target_ip);
+            else if (tb == TYPE_NIL)
+                OUT(t, "    if (!IS_NULL(slots[%d])) goto L_%04d; /* ?==nil */\n", slot_a, target_ip);
+            else if (ta == TYPE_STRING && tb == TYPE_STRING)
+                OUT(t, "    if (slots[%d] != slots[%d]) goto L_%04d; /* string==string */\n", slot_a, slot_b, target_ip);
             else
                 OUT(t, "    if (!btl_values_equal(slots[%d], slots[%d])) goto L_%04d;\n", slot_a, slot_b, target_ip);
         } else {
@@ -1919,6 +1943,12 @@ static int try_fuse(BtlTranspiler* t, uint8_t* code, int ip, int code_len,
         if (op2 == BTL_OP_EQUAL) {
             if (ta == TYPE_INT && tb == TYPE_INT)
                 OUT(t, "    if (AS_INT(slots[%d]) == AS_INT(slots[%d])) goto L_%04d;\n", slot_a, slot_b, target_ip);
+            else if (ta == TYPE_NIL)
+                OUT(t, "    if (IS_NULL(slots[%d])) goto L_%04d; /* nil==? */\n", slot_b, target_ip);
+            else if (tb == TYPE_NIL)
+                OUT(t, "    if (IS_NULL(slots[%d])) goto L_%04d; /* ?==nil */\n", slot_a, target_ip);
+            else if (ta == TYPE_STRING && tb == TYPE_STRING)
+                OUT(t, "    if (slots[%d] == slots[%d]) goto L_%04d; /* string==string */\n", slot_a, slot_b, target_ip);
             else
                 OUT(t, "    if (btl_values_equal(slots[%d], slots[%d])) goto L_%04d;\n", slot_a, slot_b, target_ip);
         } else {
@@ -2250,6 +2280,9 @@ static int try_fuse_simple(BtlTranspiler* t, ObjFunction* fn, uint8_t* code,
                         else if (st8 == TYPE_NUMBER)
                             OUT(t, "    if (!(AS_NUMBER(slots[%d]) %s %s)) goto L_%04d;\n",
                                 slot, cmp_str, const_val, target_ip);
+                        else if (p8_const_is_int)
+                            OUT(t, "    { BtlValue _v = slots[%d]; if (!(__builtin_expect(IS_INT(_v), 1) ? (AS_INT(_v) %s %s) : (btl_numeric_to_double(_v) %s %s))) goto L_%04d; }\n",
+                                slot, cmp_str, const_val_int, cmp_str, const_val, target_ip);
                         else
                             OUT(t, "    if (!(btl_numeric_to_double(slots[%d]) %s %s)) goto L_%04d;\n",
                                 slot, cmp_str, const_val, target_ip);
@@ -2443,8 +2476,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                             if (loop_types[li].localTypes[s] != TYPE_UNKNOWN) {
                                 ts.locals[s] = tracked_type(loop_types[li].localTypes[s]);
                                 if (t->config.emit_comments) {
-                                    const char* tname = loop_types[li].localTypes[s] == TYPE_INT ? "INT" : "NUMBER";
-                                    OUT(t, "    /* LOOP_TYPE: slot[%d] = %s */\n", s, tname);
+                                    OUT(t, "    /* LOOP_TYPE: slot[%d] = %s */\n", s, type_name(loop_types[li].localTypes[s]));
                                 }
                             }
                         }
@@ -3077,6 +3109,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_get_super(vm, frame, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameIdx);
             emit_light_call_bracket_close(t);  /* Super property binding never pushes frames*/
+            type_pop(&ts);                    /* superclass popped */
+            type_pop(&ts);                    /* instance popped (will be replaced) */
+            type_push(&ts, TYPE_OBJECT);      /* bound method pushed */
             break;
         }
         case BTL_OP_GET_SUPER_LONG: {
@@ -3085,6 +3120,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_get_super_long(vm, frame, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameIdx);
             emit_light_call_bracket_close(t);  /* Super property binding never pushes frames*/
+            type_pop(&ts);                    /* superclass popped */
+            type_pop(&ts);                    /* instance popped (will be replaced) */
+            type_push(&ts, TYPE_OBJECT);      /* bound method pushed */
             break;
         }
 
@@ -3163,17 +3201,86 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "      PUSH(sp, OBJ_VAL(_fs)); } /* const-folded string */\n");
                 type_push(&ts, TYPE_STRING);
             } else if (tva.type == TYPE_STRING && tvb.type == TYPE_STRING) {
-                /* Both known to be strings - direct concat, no type checks */
-                OUT(t, "    { ObjString* _sa = AS_STRING(sp[-2]), *_sb = AS_STRING(sp[-1]);\n");
-                OUT(t, "      int _len = _sa->length + _sb->length;\n");
-                OUT(t, "      vm->stackTop = sp;\n");
-                OUT(t, "      char* _chars = BTL_ALLOCATE(vm, char, _len + 1);\n");
-                OUT(t, "      memcpy(_chars, _sa->chars, _sa->length);\n");
-                OUT(t, "      memcpy(_chars + _sa->length, _sb->chars, _sb->length);\n");
-                OUT(t, "      _chars[_len] = '\\0';\n");
-                OUT(t, "      ObjString* _res = btl_string_take(vm, _chars, _len);\n");
-                OUT(t, "      sp = vm->stackTop;\n");
-                OUT(t, "      sp[-2] = OBJ_VAL(_res); sp--; } /* type-specialized string*/\n");
+                /* Both known to be strings - try to fuse with following string ADDs */
+                /* Scan ahead: look for patterns of <push_string> OP_ADD */
+                int extra_strings = 0;
+                int scan_ip = ip;
+                int extra_bytes[16]; /* byte offsets consumed for each extra string */
+                while (extra_strings < 16 && scan_ip < code_len) {
+                    /* Check: next instruction pushes a string? */
+                    int push_size = 0;
+                    bool is_string_push = false;
+                    uint8_t next_op = code[scan_ip];
+                    if (next_op == BTL_OP_CONSTANT && scan_ip + 1 < code_len) {
+                        uint8_t cidx = code[scan_ip + 1];
+                        if (IS_STRING(fn->chunk.constants.values[cidx])) {
+                            push_size = 2;
+                            is_string_push = true;
+                        }
+                    }
+                    if (!is_string_push) break;
+                    /* Check: instruction after push is OP_ADD? */
+                    int add_ip = scan_ip + push_size;
+                    if (add_ip >= code_len || code[add_ip] != BTL_OP_ADD) break;
+                    /* Check: no jump targets in the middle */
+                    if (targets[scan_ip] || targets[add_ip]) break;
+                    /* Found one more string to fuse */
+                    extra_bytes[extra_strings] = push_size + 1; /* push + ADD */
+                    extra_strings++;
+                    scan_ip = add_ip + 1;
+                }
+
+                if (extra_strings > 0) {
+                    /* Fused multi-string concat: 2 base + extra_strings operands */
+                    int total_ops = 2 + extra_strings;
+                    OUT(t, "    { /* fused %d-way string concat */\n", total_ops);
+                    /* Extract all string pointers */
+                    for (int si = 0; si < 2; si++) {
+                        OUT(t, "      ObjString* _s%d = AS_STRING(sp[-%d]);\n", si, 2 - si);
+                    }
+                    /* Push the extra string constants (they're not on the stack yet, read from constants) */
+                    int scan2 = ip;
+                    for (int si = 0; si < extra_strings; si++) {
+                        uint8_t cidx = code[scan2 + 1]; /* CONSTANT operand */
+                        OUT(t, "      ObjString* _s%d = AS_STRING(fn->chunk.constants.values[%d]);\n", si + 2, cidx);
+                        scan2 += extra_bytes[si];
+                    }
+                    /* Compute total length */
+                    OUT(t, "      int _total_len = ");
+                    for (int si = 0; si < total_ops; si++) {
+                        if (si > 0) OUT(t, " + ");
+                        OUT(t, "_s%d->length", si);
+                    }
+                    OUT(t, ";\n");
+                    /* Single allocation */
+                    OUT(t, "      vm->stackTop = sp;\n");
+                    OUT(t, "      char* _chars = BTL_ALLOCATE(vm, char, _total_len + 1);\n");
+                    /* Memcpy each string */
+                    OUT(t, "      int _off = 0;\n");
+                    for (int si = 0; si < total_ops; si++) {
+                        OUT(t, "      memcpy(_chars + _off, _s%d->chars, _s%d->length); _off += _s%d->length;\n", si, si, si);
+                    }
+                    OUT(t, "      _chars[_total_len] = '\\0';\n");
+                    OUT(t, "      ObjString* _res = btl_string_take(vm, _chars, _total_len);\n");
+                    OUT(t, "      sp = vm->stackTop;\n");
+                    OUT(t, "      sp -= 2; PUSH(sp, OBJ_VAL(_res)); } /* fused %d-way string concat */\n", total_ops);
+                    /* Advance ip past the consumed bytes */
+                    for (int si = 0; si < extra_strings; si++) {
+                        ip += extra_bytes[si];
+                    }
+                } else {
+                    /* Regular binary string concat */
+                    OUT(t, "    { ObjString* _sa = AS_STRING(sp[-2]), *_sb = AS_STRING(sp[-1]);\n");
+                    OUT(t, "      int _len = _sa->length + _sb->length;\n");
+                    OUT(t, "      vm->stackTop = sp;\n");
+                    OUT(t, "      char* _chars = BTL_ALLOCATE(vm, char, _len + 1);\n");
+                    OUT(t, "      memcpy(_chars, _sa->chars, _sa->length);\n");
+                    OUT(t, "      memcpy(_chars + _sa->length, _sb->chars, _sb->length);\n");
+                    OUT(t, "      _chars[_len] = '\\0';\n");
+                    OUT(t, "      ObjString* _res = btl_string_take(vm, _chars, _len);\n");
+                    OUT(t, "      sp = vm->stackTop;\n");
+                    OUT(t, "      sp[-2] = OBJ_VAL(_res); sp--; } /* type-specialized string*/\n");
+                }
                 type_push(&ts, TYPE_STRING);
             } else if (tva.type == TYPE_STRING || tvb.type == TYPE_STRING) {
                 /* One side known STRING — skip numeric checks, go straight to string concat */
@@ -3352,6 +3459,22 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) / _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
+            } else if (tva.type == TYPE_INT) {
+                /* Left known INT, right unknown — one-sided fast path */
+                OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(_a / AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL((double)_a / btl_numeric_to_double(_b)); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
+            } else if (tvb.type == TYPE_INT) {
+                /* Right known INT, left unknown — one-sided fast path */
+                OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) / _b); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(btl_numeric_to_double(_a) / (double)_b); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
             } else {
                 OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
@@ -3474,6 +3597,18 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = BOOL_VAL(AS_NUMBER(sp[-2]) == _b); sp--; } /* type-specialized number*/\n");
             } else if (ta == TYPE_BOOL && tb == TYPE_BOOL) {
                 OUT(t, "    { sp[-2] = BOOL_VAL(sp[-2] == sp[-1]); sp--; } /* type-specialized bool*/\n");
+            } else if (ta == TYPE_NIL && tb == TYPE_NIL) {
+                OUT(t, "    sp -= 2; PUSH(sp, BTL_TRUE_VAL); /* nil==nil */\n");
+            } else if (ta == TYPE_NIL) {
+                OUT(t, "    { sp[-2] = BOOL_VAL(IS_NULL(sp[-1])); sp--; } /* nil==? */\n");
+            } else if (tb == TYPE_NIL) {
+                OUT(t, "    { sp[-2] = BOOL_VAL(IS_NULL(sp[-2])); sp--; } /* ?==nil */\n");
+            } else if (ta == TYPE_STRING && tb == TYPE_STRING) {
+                OUT(t, "    { sp[-2] = BOOL_VAL(sp[-2] == sp[-1]); sp--; } /* interned string==string */\n");
+            } else if (ta == TYPE_INT) {
+                OUT(t, "    { BtlValue _b = sp[-1]; sp[-2] = BOOL_VAL(__builtin_expect(IS_INT(_b), 1) ? (AS_INT(sp[-2]) == AS_INT(_b)) : btl_values_equal(sp[-2], _b)); sp--; } /* int==? */\n");
+            } else if (tb == TYPE_INT) {
+                OUT(t, "    { BtlValue _a = sp[-2]; sp[-2] = BOOL_VAL(__builtin_expect(IS_INT(_a), 1) ? (AS_INT(_a) == AS_INT(sp[-1])) : btl_values_equal(_a, sp[-1])); sp--; } /* ?==int */\n");
             } else {
                 OUT(t, "    { BtlValue _b = POP(sp); sp[-1] = BOOL_VAL(btl_values_equal(sp[-1], _b)); }\n");
             }
@@ -3706,6 +3841,18 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                     OUT(t, "    { double _b = AS_NUMBER(POP(sp)); double _a = AS_NUMBER(POP(sp)); if (_a != _b) goto L_%04d; }\n", ip + offset);
                 else if (jne_a == TYPE_BOOL && jne_b == TYPE_BOOL)
                     OUT(t, "    { bool _b = AS_BOOL(POP(sp)); bool _a = AS_BOOL(POP(sp)); if (_a != _b) goto L_%04d; }\n", ip + offset);
+                else if (jne_a == TYPE_NIL && jne_b == TYPE_NIL)
+                    OUT(t, "    sp -= 2; /* nil!=nil always false, no jump */\n");
+                else if (jne_a == TYPE_NIL)
+                    OUT(t, "    { BtlValue _b = POP(sp); sp--; if (!IS_NULL(_b)) goto L_%04d; } /* nil!=? */\n", ip + offset);
+                else if (jne_b == TYPE_NIL)
+                    OUT(t, "    { sp--; BtlValue _a = POP(sp); if (!IS_NULL(_a)) goto L_%04d; } /* ?!=nil */\n", ip + offset);
+                else if (jne_a == TYPE_STRING && jne_b == TYPE_STRING)
+                    OUT(t, "    { BtlValue _b = POP(sp); BtlValue _a = POP(sp); if (_a != _b) goto L_%04d; } /* string!=string */\n", ip + offset);
+                else if (jne_a == TYPE_INT)
+                    OUT(t, "    { BtlValue _b = POP(sp); int64_t _a = AS_INT(POP(sp)); if (!(__builtin_expect(IS_INT(_b), 1) ? (_a == AS_INT(_b)) : btl_values_equal(INT_VAL(_a), _b))) goto L_%04d; }\n", ip + offset);
+                else if (jne_b == TYPE_INT)
+                    OUT(t, "    { int64_t _b = AS_INT(POP(sp)); BtlValue _a = POP(sp); if (!(__builtin_expect(IS_INT(_a), 1) ? (AS_INT(_a) == _b) : btl_values_equal(_a, INT_VAL(_b)))) goto L_%04d; }\n", ip + offset);
                 else
                     OUT(t, "    { BtlValue _b = POP(sp); BtlValue _a = POP(sp); if (!btl_values_equal(_a, _b)) goto L_%04d; }\n", ip + offset);
                 type_pop(&ts); type_pop(&ts);
@@ -3724,6 +3871,18 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                     OUT(t, "    { double _b = AS_NUMBER(POP(sp)); double _a = AS_NUMBER(POP(sp)); if (_a == _b) goto L_%04d; }\n", ip + offset);
                 else if (je_a == TYPE_BOOL && je_b == TYPE_BOOL)
                     OUT(t, "    { bool _b = AS_BOOL(POP(sp)); bool _a = AS_BOOL(POP(sp)); if (_a == _b) goto L_%04d; }\n", ip + offset);
+                else if (je_a == TYPE_NIL && je_b == TYPE_NIL)
+                    OUT(t, "    sp -= 2; goto L_%04d; /* nil==nil always true */\n", ip + offset);
+                else if (je_a == TYPE_NIL)
+                    OUT(t, "    { BtlValue _b = POP(sp); sp--; if (IS_NULL(_b)) goto L_%04d; } /* nil==? */\n", ip + offset);
+                else if (je_b == TYPE_NIL)
+                    OUT(t, "    { sp--; BtlValue _a = POP(sp); if (IS_NULL(_a)) goto L_%04d; } /* ?==nil */\n", ip + offset);
+                else if (je_a == TYPE_STRING && je_b == TYPE_STRING)
+                    OUT(t, "    { BtlValue _b = POP(sp); BtlValue _a = POP(sp); if (_a == _b) goto L_%04d; } /* string==string */\n", ip + offset);
+                else if (je_a == TYPE_INT)
+                    OUT(t, "    { BtlValue _b = POP(sp); int64_t _a = AS_INT(POP(sp)); if (__builtin_expect(IS_INT(_b), 1) ? (_a == AS_INT(_b)) : btl_values_equal(INT_VAL(_a), _b)) goto L_%04d; }\n", ip + offset);
+                else if (je_b == TYPE_INT)
+                    OUT(t, "    { int64_t _b = AS_INT(POP(sp)); BtlValue _a = POP(sp); if (__builtin_expect(IS_INT(_a), 1) ? (AS_INT(_a) == _b) : btl_values_equal(_a, INT_VAL(_b))) goto L_%04d; }\n", ip + offset);
                 else
                     OUT(t, "    { BtlValue _b = POP(sp); BtlValue _a = POP(sp); if (btl_values_equal(_a, _b)) goto L_%04d; }\n", ip + offset);
                 type_pop(&ts); type_pop(&ts);
@@ -3741,6 +3900,10 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                     OUT(t, "    { int64_t _b = AS_INT(POP(sp)); int64_t _a = AS_INT(POP(sp)); if (!(_a > _b)) goto L_%04d; }\n", ip + offset);
                 } else if (tva_jg.type == TYPE_NUMBER && tvb_jg.type == TYPE_NUMBER) {
                     OUT(t, "    { double _b = AS_NUMBER(POP(sp)); double _a = AS_NUMBER(POP(sp)); if (!(_a > _b)) goto L_%04d; }\n", ip + offset);
+                } else if (tva_jg.type == TYPE_INT) {
+                    OUT(t, "    { BtlValue _b = POP(sp); int64_t _a = AS_INT(POP(sp)); if (!(__builtin_expect(IS_INT(_b), 1) ? (_a > AS_INT(_b)) : ((double)_a > btl_numeric_to_double(_b)))) goto L_%04d; }\n", ip + offset);
+                } else if (tvb_jg.type == TYPE_INT) {
+                    OUT(t, "    { int64_t _b = AS_INT(POP(sp)); BtlValue _a = POP(sp); if (!(__builtin_expect(IS_INT(_a), 1) ? (AS_INT(_a) > _b) : (btl_numeric_to_double(_a) > (double)_b))) goto L_%04d; }\n", ip + offset);
                 } else {
                     OUT(t, "    { double _b = btl_numeric_to_double(POP(sp)); double _a = btl_numeric_to_double(POP(sp)); if (!(_a > _b)) goto L_%04d; }\n", ip + offset);
                 }
@@ -3758,6 +3921,10 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                     OUT(t, "    { int64_t _b = AS_INT(POP(sp)); int64_t _a = AS_INT(POP(sp)); if (!(_a < _b)) goto L_%04d; }\n", ip + offset);
                 } else if (tva_jl.type == TYPE_NUMBER && tvb_jl.type == TYPE_NUMBER) {
                     OUT(t, "    { double _b = AS_NUMBER(POP(sp)); double _a = AS_NUMBER(POP(sp)); if (!(_a < _b)) goto L_%04d; }\n", ip + offset);
+                } else if (tva_jl.type == TYPE_INT) {
+                    OUT(t, "    { BtlValue _b = POP(sp); int64_t _a = AS_INT(POP(sp)); if (!(__builtin_expect(IS_INT(_b), 1) ? (_a < AS_INT(_b)) : ((double)_a < btl_numeric_to_double(_b)))) goto L_%04d; }\n", ip + offset);
+                } else if (tvb_jl.type == TYPE_INT) {
+                    OUT(t, "    { int64_t _b = AS_INT(POP(sp)); BtlValue _a = POP(sp); if (!(__builtin_expect(IS_INT(_a), 1) ? (AS_INT(_a) < _b) : (btl_numeric_to_double(_a) < (double)_b))) goto L_%04d; }\n", ip + offset);
                 } else {
                     OUT(t, "    { double _b = btl_numeric_to_double(POP(sp)); double _a = btl_numeric_to_double(POP(sp)); if (!(_a < _b)) goto L_%04d; }\n", ip + offset);
                 }
@@ -4571,6 +4738,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_sync(t);
             OUT(t, "    btl_compiled_close_upvalues(vm, frame); btl_pop(vm);\n");
             emit_light_reload(t);  /* Close upvalues never pushes frames */
+            type_pop(&ts);  /* btl_pop removes one value */
             break;
 
             // ================================================================
@@ -4607,6 +4775,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    btl_compiled_class(vm, fn, %d);\n", nameIdx);
             emit_light_reload(t);
+            type_push(&ts, TYPE_OBJECT);  /* class pushed onto stack */
             break;
         }
         case BTL_OP_CLASS_LONG: {
@@ -4615,6 +4784,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    btl_compiled_class_long(vm, fn, %d);\n", nameIdx);
             emit_light_reload(t);
+            type_push(&ts, TYPE_OBJECT);  /* class pushed onto stack */
             break;
         }
         case BTL_OP_INHERIT:
@@ -4622,6 +4792,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_inherit(vm)) return BTL_INTERPRET_RUNTIME_ERROR;\n");
             emit_light_reload(t);
+            type_pop(&ts); type_pop(&ts);  /* pops superclass and subclass */
             break;
         case BTL_OP_METHOD: {
             uint8_t methodIdx = code[ip++];
@@ -4630,6 +4801,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    btl_compiled_method(vm, %d, %d);\n", methodIdx, arity);
             emit_light_reload(t);
+            type_pop(&ts);  /* pops method closure, class stays */
             break;
         }
         case BTL_OP_METHOD_LONG: {
@@ -4639,6 +4811,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    btl_compiled_method(vm, %d, %d);\n", methodIdx, arity);
             emit_light_reload(t);
+            type_pop(&ts);  /* pops method closure, class stays */
             break;
         }
 
