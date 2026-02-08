@@ -288,6 +288,18 @@ struct ObjString {
 };
 
 // ============================================================================
+// Saved Class Info
+//
+// Compile-time metadata saved for each class so child classes can inherit
+// method and field indices from their parents.
+// ============================================================================
+typedef struct {
+    BtlTable methodIndices;     // Method signature -> vtable index
+    BtlTable fieldIndices;      // Field name -> field index
+    int fieldCount;             // Number of fields
+} BtlSavedClassInfo;
+
+// ============================================================================
 // Module Object
 //
 // A compilation unit containing global variables and class metadata.
