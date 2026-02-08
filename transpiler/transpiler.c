@@ -126,6 +126,7 @@ typedef struct {
     bool isConstant;   /* true if constBtlValue is known at compile time*/
     double numValue;   /* for TYPE_NUMBER constants*/
     int64_t intValue;  /* for TYPE_INT constants*/
+    int stringConstIdx; /* for TYPE_STRING: index into constants array, -1 if unknown*/
 } TrackedValue;
 
 #define MAX_TRACKED_LOCALS 16
@@ -139,23 +140,27 @@ typedef struct {
 
 /* Create a tracked value*/
 static TrackedValue tracked_unknown(void) {
-    return (TrackedValue){ TYPE_UNKNOWN, false, 0.0, 0 };
+    return (TrackedValue){ TYPE_UNKNOWN, false, 0.0, 0, -1 };
 }
 
 static TrackedValue tracked_type(AbstractType t) {
-    return (TrackedValue){ t, false, 0.0, 0 };
+    return (TrackedValue){ t, false, 0.0, 0, -1 };
 }
 
 static TrackedValue tracked_number(double v) {
-    return (TrackedValue){ TYPE_NUMBER, true, v, 0 };
+    return (TrackedValue){ TYPE_NUMBER, true, v, 0, -1 };
 }
 
 static TrackedValue tracked_bool(bool v) {
-    return (TrackedValue){ TYPE_BOOL, true, v ? 1.0 : 0.0, 0 };
+    return (TrackedValue){ TYPE_BOOL, true, v ? 1.0 : 0.0, 0, -1 };
 }
 
 static TrackedValue tracked_int(int64_t v) {
-    return (TrackedValue){ TYPE_INT, true, 0.0, v };
+    return (TrackedValue){ TYPE_INT, true, 0.0, v, -1 };
+}
+
+static TrackedValue tracked_string_const(int constIdx) {
+    return (TrackedValue){ TYPE_STRING, true, 0.0, 0, constIdx };
 }
 
 /* Initialize type state - all unknown*/
@@ -1451,6 +1456,28 @@ static void emit_optimized_call(BtlTranspiler* t, int argc) {
     } else {
         OUT(t, "        if (!btl_compiled_call_class(vm, _klass, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", argc);
     }
+    OUT(t, "      } else if (_ot == BTL_OBJ_BOUND_METHOD) {\n");
+    OUT(t, "        ObjBoundMethod* _bm = AS_BOUND_METHOD(_callee);\n");
+    OUT(t, "        vm->stackTop[-%d] = _bm->receiver;\n", argc + 1);
+    OUT(t, "        ObjClosure* _cl = _bm->method;\n");
+    /* Arity check */
+    OUT(t, "        if (__builtin_expect(_cl->function->arity != %d, 0)) {\n", argc);
+    OUT(t, "          btl_runtime_error(vm, \"Expected %%d arguments but got %d.\", _cl->function->arity);\n", argc);
+    OUT(t, "          return BTL_INTERPRET_RUNTIME_ERROR;\n");
+    OUT(t, "        }\n");
+    /* Frame capacity check */
+    OUT(t, "        if (__builtin_expect(vm->frameCount >= vm->frameCapacity, 0)) {\n");
+    OUT(t, "          if (!btl_ensure_frame_capacity(vm)) return BTL_INTERPRET_RUNTIME_ERROR;\n");
+    OUT(t, "        }\n");
+    /* Inline frame push */
+    OUT(t, "        BtlCallFrame* _nf = &vm->frames[vm->frameCount++];\n");
+    OUT(t, "        _nf->closure = _cl;\n");
+    OUT(t, "        _nf->ip = _cl->function->chunk.code;\n");
+    OUT(t, "        _nf->slots = vm->stackTop - %d;\n", argc + 1);
+    OUT(t, "        _nf->openUpvalues = NULL;\n");
+    OUT(t, "        BtlFnPtr _h = (BtlFnPtr)_cl->function->compiledHandler;\n");
+    OUT(t, "        BtlInterpretResult _r = _h ? _h(vm) : btl_run(vm);\n");
+    OUT(t, "        if (_r != BTL_INTERPRET_OK) return _r;\n");
     OUT(t, "      } else {\n");
     OUT(t, "        BtlInterpretResult _r = btl_call_and_run(vm, _callee, %d);\n", argc);
     OUT(t, "        if (_r != BTL_INTERPRET_OK) return _r;\n");
@@ -2531,7 +2558,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 type_push_tv(&ts, tracked_number(AS_NUMBER(cval)));
             } else if (IS_STRING(cval)) {
                 OUT(t, "    PUSH(sp, fn->chunk.constants.values[%d]);\n", idx);
-                type_push(&ts, TYPE_STRING);
+                type_push_tv(&ts, tracked_string_const(idx));
             } else {
                 OUT(t, "    PUSH(sp, fn->chunk.constants.values[%d]);\n", idx);
                 type_push(&ts, TYPE_UNKNOWN);
@@ -2550,7 +2577,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 type_push_tv(&ts, tracked_number(AS_NUMBER(cval_l)));
             } else if (IS_STRING(cval_l)) {
                 OUT(t, "    PUSH(sp, fn->chunk.constants.values[%d]);\n", idx);
-                type_push(&ts, TYPE_STRING);
+                type_push_tv(&ts, tracked_string_const(idx));
             } else {
                 OUT(t, "    PUSH(sp, fn->chunk.constants.values[%d]);\n", idx);
                 type_push(&ts, TYPE_UNKNOWN);
@@ -2869,24 +2896,28 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_GET_UPVALUE");
             OUT(t, "    { BtlRuntimeUpvalue* _uv = &frame->closure->upvalues[%d];\n", slot);
             OUT(t, "      PUSH(sp, _uv->isOpen ? *_uv->loc.stack : (_uv->isMutable ? _uv->loc.box->closed : _uv->loc.immValue)); }\n");
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_GET_UPVALUE_OPEN: {
             uint8_t slot = code[ip++];
             emit_comment(t, start_ip, "OP_GET_UPVALUE_OPEN");
             OUT(t, "    PUSH(sp, *frame->closure->upvalues[%d].loc.stack);\n", slot);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_GET_UPVALUE_CLOSED: {
             uint8_t slot = code[ip++];
             emit_comment(t, start_ip, "OP_GET_UPVALUE_CLOSED");
             OUT(t, "    PUSH(sp, frame->closure->upvalues[%d].loc.box->closed);\n", slot);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_GET_UPVALUE_IMMUTABLE: {
             uint8_t slot = code[ip++];
             emit_comment(t, start_ip, "OP_GET_UPVALUE_IMMUTABLE");
             OUT(t, "    PUSH(sp, frame->closure->upvalues[%d].loc.immValue);\n", slot);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_SET_UPVALUE: {
@@ -2939,6 +2970,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "      PUSH(sp, _uv->isOpen ? *_uv->loc.stack : (_uv->isMutable ? _uv->loc.box->closed : _uv->loc.immValue)); }\n");
                 break;
             }
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
 
@@ -2982,6 +3014,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             uint8_t idx = code[ip++];
             emit_comment(t, start_ip, "OP_GET_FIELD_THIS");
             OUT(t, "    PUSH(sp, AS_INSTANCE(slots[0])->fields[%d]);\n", idx);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_SET_FIELD_THIS: {
@@ -3081,6 +3114,54 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) + _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
+            } else if (tva.type == TYPE_INT) {
+                /* Left known INT, right unknown — one-sided fast path */
+                OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(_a + AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL((double)_a + btl_numeric_to_double(_b)); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
+            } else if (tvb.type == TYPE_INT) {
+                /* Right known INT, left unknown — one-sided fast path */
+                OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) + _b); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(btl_numeric_to_double(_a) + (double)_b); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
+            } else if (tva.stringConstIdx >= 0 && tvb.stringConstIdx >= 0
+                       && tva.type == TYPE_STRING && tvb.type == TYPE_STRING) {
+                /* Both known string constants — fold at transpile time! */
+                ObjString* sa = AS_STRING(fn->chunk.constants.values[tva.stringConstIdx]);
+                ObjString* sb = AS_STRING(fn->chunk.constants.values[tvb.stringConstIdx]);
+                int newLen = sa->length + sb->length;
+                /* Emit a single interned string from literal — one alloc instead of alloc+2 memcpy+concat */
+                OUT(t, "    { sp -= 2; vm->stackTop = sp;\n");
+                OUT(t, "      ObjString* _fs = btl_string_copy(vm, \"");
+                /* Write string contents, escaping special chars */
+                for (int ci = 0; ci < sa->length; ci++) {
+                    char ch = sa->chars[ci];
+                    if (ch == '"') OUT(t, "\\\"");
+                    else if (ch == '\\') OUT(t, "\\\\");
+                    else if (ch == '\n') OUT(t, "\\n");
+                    else if (ch == '\r') OUT(t, "\\r");
+                    else if (ch == '\t') OUT(t, "\\t");
+                    else OUT(t, "%c", ch);
+                }
+                for (int ci = 0; ci < sb->length; ci++) {
+                    char ch = sb->chars[ci];
+                    if (ch == '"') OUT(t, "\\\"");
+                    else if (ch == '\\') OUT(t, "\\\\");
+                    else if (ch == '\n') OUT(t, "\\n");
+                    else if (ch == '\r') OUT(t, "\\r");
+                    else if (ch == '\t') OUT(t, "\\t");
+                    else OUT(t, "%c", ch);
+                }
+                OUT(t, "\", %d);\n", newLen);
+                OUT(t, "      sp = vm->stackTop;\n");
+                OUT(t, "      PUSH(sp, OBJ_VAL(_fs)); } /* const-folded string */\n");
+                type_push(&ts, TYPE_STRING);
             } else if (tva.type == TYPE_STRING && tvb.type == TYPE_STRING) {
                 /* Both known to be strings - direct concat, no type checks */
                 OUT(t, "    { ObjString* _sa = AS_STRING(sp[-2]), *_sb = AS_STRING(sp[-1]);\n");
@@ -3093,6 +3174,26 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "      ObjString* _res = btl_string_take(vm, _chars, _len);\n");
                 OUT(t, "      sp = vm->stackTop;\n");
                 OUT(t, "      sp[-2] = OBJ_VAL(_res); sp--; } /* type-specialized string*/\n");
+                type_push(&ts, TYPE_STRING);
+            } else if (tva.type == TYPE_STRING || tvb.type == TYPE_STRING) {
+                /* One side known STRING — skip numeric checks, go straight to string concat */
+                OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
+                OUT(t, "      if (__builtin_expect(IS_STRING(_a) & IS_STRING(_b), 1)) {\n");
+                OUT(t, "        ObjString* _sa = AS_STRING(_a), *_sb = AS_STRING(_b);\n");
+                OUT(t, "        int _len = _sa->length + _sb->length;\n");
+                OUT(t, "        vm->stackTop = sp;\n");
+                OUT(t, "        char* _chars = BTL_ALLOCATE(vm, char, _len + 1);\n");
+                OUT(t, "        memcpy(_chars, _sa->chars, _sa->length);\n");
+                OUT(t, "        memcpy(_chars + _sa->length, _sb->chars, _sb->length);\n");
+                OUT(t, "        _chars[_len] = '\\0';\n");
+                OUT(t, "        ObjString* _res = btl_string_take(vm, _chars, _len);\n");
+                OUT(t, "        sp = vm->stackTop;\n");
+                OUT(t, "        sp[-2] = OBJ_VAL(_res); sp--;\n");
+                OUT(t, "      } else {\n");
+                emit_sync(t);
+                OUT(t, "        if (!btl_compiled_add(vm)) return BTL_INTERPRET_RUNTIME_ERROR;\n");
+                emit_light_reload(t);
+                OUT(t, "    } }\n");
                 type_push(&ts, TYPE_STRING);
             } else {
                 /* Fast path: both ints, then both numbers (common case).
@@ -3151,6 +3252,22 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) - _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
+            } else if (tva.type == TYPE_INT) {
+                /* Left known INT, right unknown — one-sided fast path */
+                OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(_a - AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL((double)_a - btl_numeric_to_double(_b)); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
+            } else if (tvb.type == TYPE_INT) {
+                /* Right known INT, left unknown — one-sided fast path */
+                OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) - _b); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(btl_numeric_to_double(_a) - (double)_b); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
             } else {
                 OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
@@ -3185,6 +3302,22 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) * _b); sp--; } /* type-specialized */\n");
                 type_push(&ts, TYPE_NUMBER);
+            } else if (tva.type == TYPE_INT) {
+                /* Left known INT, right unknown — one-sided fast path */
+                OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(_a * AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL((double)_a * btl_numeric_to_double(_b)); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
+            } else if (tvb.type == TYPE_INT) {
+                /* Right known INT, left unknown — one-sided fast path */
+                OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) * _b); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(btl_numeric_to_double(_a) * (double)_b); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
             } else {
                 OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
@@ -3253,6 +3386,22 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 /* Both known to be numbers - skip type check entirely*/
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(fmod(AS_NUMBER(sp[-2]), _b)); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
+            } else if (tva.type == TYPE_INT) {
+                /* Left known INT, right unknown — one-sided fast path */
+                OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_b), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(_a %% AS_INT(_b)); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(fmod((double)_a, btl_numeric_to_double(_b))); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
+            } else if (tvb.type == TYPE_INT) {
+                /* Right known INT, left unknown — one-sided fast path */
+                OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
+                OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
+                OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) %% _b); sp--; }\n");
+                OUT(t, "      else\n");
+                OUT(t, "        { sp[-2] = NUMBER_VAL(fmod(btl_numeric_to_double(_a), (double)_b)); sp--; } }\n");
+                type_push(&ts, TYPE_UNKNOWN);
             } else {
                 OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a) & IS_INT(_b), 1))\n");
@@ -3649,6 +3798,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 emit_optimized_call(t, argc);
             }
             emit_call_bracket_close(t);
+            /* Type tracking: pop callee + args, push result */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_CALL: {
@@ -3657,6 +3809,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             emit_optimized_call(t, argc);
             emit_call_bracket_close(t);
+            /* Type tracking: pop callee + args, push result */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
 
@@ -3725,6 +3880,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "      if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
             emit_reload(t);
             OUT(t, "    L_invoke_%d_done:; }\n", start_ip);
+            /* Type tracking: pop receiver + args, push unknown result */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_INVOKE: {
@@ -3767,6 +3925,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "      if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
             emit_reload(t);
             OUT(t, "    L_invoke_%d_done:; }\n", start_ip);
+            /* Type tracking: pop receiver + args, push unknown result */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_INVOKE_LONG: {
@@ -3809,6 +3970,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "      if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
             emit_reload(t);
             OUT(t, "    L_invoke_%d_done:; }\n", start_ip);
+            /* Type tracking: pop receiver + args, push unknown result */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_INVOKE_IC: {
@@ -4193,6 +4357,26 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_reload(t);
             OUT(t, "    L_invoke_ic_%d_done:;\n", start_ip);
             OUT(t, "    }\n");
+            /* Type tracking: pop receiver + args, push result type */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            if (argc == 0 && strcmp(methodName->chars, "toString") == 0) {
+                type_push(&ts, TYPE_STRING);
+            } else if (argc == 0 && (strcmp(methodName->chars, "length") == 0 ||
+                       strcmp(methodName->chars, "abs") == 0 ||
+                       strcmp(methodName->chars, "sign") == 0)) {
+                type_push(&ts, TYPE_INT);
+            } else if (argc == 0 && (strcmp(methodName->chars, "isEven") == 0 ||
+                       strcmp(methodName->chars, "isOdd") == 0 ||
+                       strcmp(methodName->chars, "isZero") == 0 ||
+                       strcmp(methodName->chars, "isPositive") == 0 ||
+                       strcmp(methodName->chars, "isNegative") == 0 ||
+                       strcmp(methodName->chars, "has") == 0)) {
+                type_push(&ts, TYPE_BOOL);
+            } else if (argc == 0 && strcmp(methodName->chars, "toFloat") == 0) {
+                type_push(&ts, TYPE_NUMBER);
+            } else {
+                type_push(&ts, TYPE_UNKNOWN);
+            }
             break;
         }
 
@@ -4247,6 +4431,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             uint8_t methodIdx = code[ip++];
             emit_comment(t, start_ip, "OP_SUPER_INVOKE_N");
             emit_inline_super_invoke(t, methodIdx, argc);
+            /* Type tracking: pop super + args, push unknown result */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_SUPER_INVOKE: {
@@ -4254,6 +4441,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             uint8_t argc = code[ip++];
             emit_comment(t, start_ip, "OP_SUPER_INVOKE");
             emit_inline_super_invoke(t, methodIdx, argc);
+            /* Type tracking: pop super + args, push unknown result */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_SUPER_INVOKE_LONG: {
@@ -4261,6 +4451,9 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             uint8_t argc = code[ip++];
             emit_comment(t, start_ip, "OP_SUPER_INVOKE_LONG");
             emit_inline_super_invoke(t, methodIdx, argc);
+            /* Type tracking: pop super + args, push unknown result */
+            for (int i = 0; i < argc + 1; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
                                  /* Tail super invoke*/
@@ -4369,6 +4562,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "    }\n");
             /* Reload sp after GC-triggering newClosure*/
             OUT(t, "    sp = vm->stackTop;\n");
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
 
@@ -4457,6 +4651,8 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    btl_compiled_build_list(vm, %d);\n", count);
             emit_light_reload(t);
+            for (int i = 0; i < count; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_BUILD_TABLE: {
@@ -4465,6 +4661,8 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    btl_compiled_build_table(vm, %d);\n", count);
             emit_light_reload(t);
+            for (int i = 0; i < count * 2; i++) type_pop(&ts);
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_INDEX_GET:
@@ -4573,6 +4771,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_import(vm, frame, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameIdx);
             emit_light_call_bracket_close(t);  /* Import never pushes frames */
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
         case BTL_OP_IMPORT_LONG: {
@@ -4581,6 +4780,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_import_long(vm, frame, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameIdx);
             emit_light_call_bracket_close(t);  /* Import never pushes frames */
+            type_push(&ts, TYPE_UNKNOWN);
             break;
         }
 
@@ -4642,9 +4842,10 @@ static void emit_main(BtlTranspiler* t) {
 // Public API
 // ================================================================
 
-BtlTranspiler* btl_transpiler_new(BtlTranspilerConfig config) {
+BtlTranspiler* btl_transpiler_new(BtlTranspilerConfig config, VM* vm) {
     BtlTranspiler* t = calloc(1, sizeof(BtlTranspiler));
     t->config = config;
+    t->vm = vm;
     t->out = fopen(config.output_path, "w");
     if (!t->out) {
         free(t); return NULL;
