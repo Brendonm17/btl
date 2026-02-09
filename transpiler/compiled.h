@@ -26,7 +26,9 @@
 #include "../src/runtime.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 
 // ----------------------------------------------------------------------------
 // External VM functions used by generated code
@@ -49,10 +51,15 @@ static inline bool btl_call_closure(VM* vm, ObjClosure* closure, int argCount) {
 // Inline helpers - hot path, inlined into generated code
 // ----------------------------------------------------------------------------
 
-// Returns true if value is falsey (null or false)
+// Returns true if value is falsey (null, false, 0, 0.0, "", [], {})
 static inline bool btl_compiled_is_falsey(BtlValue value) {
     if (IS_NULL(value)) return true;
     if (IS_BOOL(value)) return !AS_BOOL(value);
+    if (IS_INT(value)) return AS_INT(value) == 0;
+    if (IS_NUMBER(value)) return AS_NUMBER(value) == 0.0;
+    if (IS_STRING(value)) return AS_STRING(value)->length == 0;
+    if (IS_LIST(value)) return AS_LIST(value)->items.count == 0;
+    if (IS_TABLE(value)) return AS_TABLE(value)->table.count == 0;
     return false;
 }
 
@@ -162,5 +169,9 @@ bool btl_compiled_import_long(VM* vm, BtlCallFrame* frame, int nameIdx);
 // Actors
 bool btl_compiled_do_new(VM* vm, int argCount);
 bool btl_compiled_do_invoke(VM* vm, BtlCallFrame* frame, int nameConst, int argCount);
+
+// Iterators (for...in)
+bool btl_compiled_iter_init(VM* vm);
+int btl_compiled_iter_next(VM* vm, int slot);
 
 #endif // btl_compiled_h

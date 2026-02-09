@@ -114,14 +114,14 @@ static BtlValue stringIndexOf(VM* vm, BtlValue receiver, int argCount, BtlValue*
 // substring(start, end?) - returns substring from start to end (exclusive)
 static BtlValue stringSubstring(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     ObjString* str = AS_STRING(receiver);
-    if (!IS_NUMBER(args[0])) {
+    if (!IS_NUMERIC(args[0])) {
         btl_runtime_error(vm, "Start index must be a number.");
         return BTL_NULL_VAL;
     }
-    int start = (int) AS_NUMBER(args[0]);
+    int start = (int) btl_numeric_to_double(args[0]);
     int end = str->length;
-    if (argCount >= 2 && IS_NUMBER(args[1])) {
-        end = (int) AS_NUMBER(args[1]);
+    if (argCount >= 2 && IS_NUMERIC(args[1])) {
+        end = (int) btl_numeric_to_double(args[1]);
     }
     if (start < 0) start = 0;
     if (end > str->length) end = str->length;

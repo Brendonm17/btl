@@ -94,12 +94,12 @@ static BtlValue timeNative(VM* vm, BtlValue receiver, int argCount, BtlValue* ar
 
 static BtlValue sleepNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) receiver;
-    if (argCount < 1 || !IS_NUMBER(args[0])) {
+    if (argCount < 1 || !IS_NUMERIC(args[0])) {
         btl_error(vm, "sleep() requires a number argument.\n");
         return BTL_NULL_VAL;
     }
 
-    double seconds = AS_NUMBER(args[0]);
+    double seconds = btl_numeric_to_double(args[0]);
 
     // Use platform time handles for portability
     if (vm != NULL && vm->runtime != NULL) {
@@ -132,6 +132,7 @@ static BtlValue typeofNative(VM* vm, BtlValue receiver, int argCount, BtlValue* 
 
     if (IS_BOOL(value)) return OBJ_VAL(btl_string_copy(vm, "bool", 4));
     if (IS_NULL(value)) return OBJ_VAL(btl_string_copy(vm, "null", 4));
+    if (IS_INT(value)) return OBJ_VAL(btl_string_copy(vm, "int", 3));
     if (IS_NUMBER(value)) return OBJ_VAL(btl_string_copy(vm, "number", 6));
     if (IS_STRING(value)) return OBJ_VAL(btl_string_copy(vm, "string", 6));
     if (IS_LIST(value)) return OBJ_VAL(btl_string_copy(vm, "list", 4));
@@ -147,6 +148,18 @@ static BtlValue typeofNative(VM* vm, BtlValue receiver, int argCount, BtlValue* 
 }
 
 static BtlValue isNumberNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
+    (void) vm; (void) receiver;
+    if (argCount < 1) return BOOL_VAL(false);
+    return BOOL_VAL(IS_NUMERIC(args[0]));
+}
+
+static BtlValue isIntNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
+    (void) vm; (void) receiver;
+    if (argCount < 1) return BOOL_VAL(false);
+    return BOOL_VAL(IS_INT(args[0]));
+}
+
+static BtlValue isFloatNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     if (argCount < 1) return BOOL_VAL(false);
     return BOOL_VAL(IS_NUMBER(args[0]));
@@ -204,7 +217,9 @@ static BtlValue toStringNative(VM* vm, BtlValue receiver, int argCount, BtlValue
     char buffer[64];
     int len = 0;
 
-    if (IS_NUMBER(value)) {
+    if (IS_INT(value)) {
+        len = snprintf(buffer, sizeof(buffer), "%" PRId64, AS_INT(value));
+    } else if (IS_NUMBER(value)) {
         len = snprintf(buffer, sizeof(buffer), "%g", AS_NUMBER(value));
     } else if (IS_BOOL(value)) {
         const char* str = AS_BOOL(value) ? "true" : "false";
@@ -224,12 +239,20 @@ static BtlValue toNumberNative(VM* vm, BtlValue receiver, int argCount, BtlValue
 
     BtlValue value = args[0];
 
+    if (IS_INT(value)) return value;
     if (IS_NUMBER(value)) return value;
-    if (IS_BOOL(value)) return NUMBER_VAL(AS_BOOL(value) ? 1 : 0);
+    if (IS_BOOL(value)) return INT_VAL(AS_BOOL(value) ? 1 : 0);
     if (IS_STRING(value)) {
+        const char* str = AS_CSTRING(value);
         char* end;
-        double num = strtod(AS_CSTRING(value), &end);
-        if (end == AS_CSTRING(value)) return BTL_NULL_VAL;
+        // Try parsing as integer first (no decimal point, no 'e'/'E')
+        long long intVal = strtoll(str, &end, 10);
+        if (end != str && *end == '\0') {
+            return INT_VAL((int64_t)intVal);
+        }
+        // Fall back to double
+        double num = strtod(str, &end);
+        if (end == str) return BTL_NULL_VAL;
         return NUMBER_VAL(num);
     }
 
@@ -338,8 +361,8 @@ static BtlValue fileExistsNative(VM* vm, BtlValue receiver, int argCount, BtlVal
 static BtlValue exitNative(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) receiver;
     int code = 0;
-    if (argCount > 0 && IS_NUMBER(args[0])) {
-        code = (int) AS_NUMBER(args[0]);
+    if (argCount > 0 && IS_NUMERIC(args[0])) {
+        code = (int) btl_numeric_to_double(args[0]);
     }
     exit(code);
     return BTL_NULL_VAL;
@@ -446,6 +469,8 @@ void btl_system_module_init(VM* vm) {
     // Type checking
     defineModuleFunction(vm, module, "typeof", typeofNative, 1);
     defineModuleFunction(vm, module, "isNumber", isNumberNative, 1);
+    defineModuleFunction(vm, module, "isInt", isIntNative, 1);
+    defineModuleFunction(vm, module, "isFloat", isFloatNative, 1);
     defineModuleFunction(vm, module, "isString", isStringNative, 1);
     defineModuleFunction(vm, module, "isBool", isBoolNative, 1);
     defineModuleFunction(vm, module, "isList", isListNative, 1);

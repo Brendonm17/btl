@@ -112,7 +112,7 @@ int main(int argc, char* argv []) {
         .output_path = outputPath,
     };
 
-    BtlTranspiler* t = btl_transpiler_new(config);
+    BtlTranspiler* t = btl_transpiler_new(config, &vm);
     if (t == NULL) {
         fprintf(stderr, "Error: Could not create output file \"%s\".\n", outputPath);
         free(source);

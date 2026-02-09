@@ -37,8 +37,14 @@ static void repl(BTLRuntime* runtime) {
 static void runFile(BTLRuntime* runtime, const char* path) {
     BTLResult result = btl_runtime_exec_file(runtime, path);
 
-    if (result == BTL_COMPILE_ERROR) exit(65);
-    if (result == BTL_RUNTIME_ERROR) exit(70);
+    if (result == BTL_COMPILE_ERROR) {
+        btl_runtime_free(runtime);
+        exit(65);
+    }
+    if (result == BTL_RUNTIME_ERROR) {
+        btl_runtime_free(runtime);
+        exit(70);
+    }
 }
 
 // ----------------------------------------------------------------------------

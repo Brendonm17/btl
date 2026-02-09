@@ -48,13 +48,14 @@ typedef struct {
     ObjFunction* current_fn;
     int current_fn_id;
     ObjModule* module;
+    VM* vm;  // VM pointer for transpile-time operations (string constant folding)
 } BtlTranspiler;
 
 // ----------------------------------------------------------------------------
 // Public API
 // ----------------------------------------------------------------------------
 
-BtlTranspiler* btl_transpiler_new(BtlTranspilerConfig config);
+BtlTranspiler* btl_transpiler_new(BtlTranspilerConfig config, VM* vm);
 void btl_transpiler_free(BtlTranspiler* t);
 bool btl_transpiler_emit_program(BtlTranspiler* t, ObjFunction* main_fn, ObjModule* module);
 

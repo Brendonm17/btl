@@ -22,7 +22,8 @@ declaration    -> classDecl
 |------|-------------|---------|
 | `null` | Absence of a value | `null` |
 | Boolean | `true` or `false` | `true`, `false` |
-| Number | IEEE 754 double-precision float | `42`, `3.14`, `-1` |
+| Int | 48-bit signed integer | `42`, `0xFF`, `0b1010`, `-1` |
+| Number | IEEE 754 double-precision float | `3.14`, `-0.5`, `1.0` |
 | String | Immutable text | `"hello"`, `""` |
 | List | Ordered, mutable collection | `[1, 2, 3]` |
 | Table | Key-value dictionary | `["name": "Alice"]` |
@@ -192,22 +193,60 @@ while (i < 10) {
 
 ### For Loop
 
+C-style for loop with initializer, condition, and increment:
+
 ```js
 for (var i = 0; i < 10; i++) {
     system.println(i);
 }
 ```
 
+### For...In Loop
+
+Iterate over the elements of a **list** or the keys of a **table**:
+
+```js
+// Iterate over list values
+var nums = [1, 2, 3, 4, 5];
+for (var n in nums) {
+    system.println(n);
+}
+
+// Iterate over table keys
+var person = ["name": "Alice", "age": 30];
+for (var key in person) {
+    system.println(key + ": " + person[key].toString());
+}
+
+// Inline collection
+for (var word in ["hello", "world"]) {
+    system.println(word);
+}
+```
+
+Works with:
+- **Lists** — iterates over values in order
+- **Tables** — iterates over keys (order is not guaranteed)
+
 ### Break and Continue
 
 - `break` exits the innermost loop or switch
 - `continue` skips to the next iteration of the innermost loop
 
+Both work in `while`, `for`, and `for...in` loops:
+
 ```js
+// Skip even numbers, stop at 8
 for (var i = 0; i < 10; i++) {
-    if (i == 5) continue;  // skip 5
-    if (i == 8) break;     // stop at 8
+    if (i % 2 == 0) continue;
+    if (i == 8) break;
     system.println(i);
+}
+
+// Skip specific elements in for-in
+for (var n in [1, 2, 3, 4, 5]) {
+    if (n == 3) continue;
+    system.println(n);  // 1, 2, 4, 5
 }
 ```
 
@@ -215,6 +254,7 @@ for (var i = 0; i < 10; i++) {
 ifStmt       -> "if" "(" expression ")" statement ( "else" statement )?
 whileStmt    -> "while" "(" expression ")" statement
 forStmt      -> "for" "(" forInit? ";" expression? ";" expression? ")" statement
+               | "for" "(" "var" IDENTIFIER "in" expression ")" statement
 forInit      -> varDecl | expression
 returnStmt   -> "return" expression? ";"
 breakStmt    -> "break" expression? ";"
@@ -311,8 +351,10 @@ defaultClause -> "default" ":" statement*
 | `+` | Addition / String concatenation |
 | `-` | Subtraction / Negation |
 | `*` | Multiplication |
-| `/` | Division |
+| `/` | Division (truncating for int/int) |
 | `%` | Modulo |
+
+**Int vs Float arithmetic:** When both operands are ints, the result is an int. When either operand is a float, the int is promoted to float and the result is a float. Int division truncates toward zero: `7 / 2` is `3`, but `7 / 2.0` is `3.5`.
 
 ### Increment / Decrement
 
@@ -350,6 +392,8 @@ system.println(++x);  // 7 (increments, then returns new)
 | `<=` | Less than or equal |
 | `>` | Greater than |
 | `>=` | Greater than or equal |
+
+Ints and floats are compared by numeric value: `3 == 3.0` is `true`.
 
 ### Logical
 
@@ -544,18 +588,26 @@ doExpr -> "do" IDENTIFIER "(" arguments? ")"
 
 ### Truthiness
 
-- `false` and `null` are falsey
-- Everything else is truthy (including `0` and `""`)
+The following values are falsey:
+
+- `false` and `null`
+- `0` (int zero) and `0.0` (float zero)
+- `""` (empty string)
+- `[]` (empty list) and `[:]` (empty table)
+
+Everything else is truthy. Special cases:
+
 - Futures: `false` if error, `null`-like if pending, `true` if ready
 - Actors: `false` if dead, `true` if alive
 
 ### String Concatenation
 
-The `+` operator concatenates when either operand is a string:
+The `+` operator concatenates when either operand is a string. Ints and floats are automatically converted:
 
 ```js
 "Hello " + "World"  // "Hello World"
 "Value: " + 42      // "Value: 42"
+"Pi: " + 3.14       // "Pi: 3.14"
 123 + "!"           // "123!"
 ```
 
@@ -588,6 +640,7 @@ var x = 10;  // inline comment
 | `func` | Function declaration |
 | `if` | Conditional |
 | `import` | Import module |
+| `in` | For-in loop iterator |
 | `null` | Null value |
 | `or` | Logical OR |
 | `return` | Return from function |
@@ -641,11 +694,15 @@ primary        -> "true" | "false" | "null"
 ### Lexical Grammar
 
 ```ebnf
-NUMBER     -> DIGIT+ ( "." DIGIT+ )?
+NUMBER     -> DIGIT+ ( "." DIGIT+ )?   // with "." -> float, without -> int
+           | "0" ( "x" | "X" ) HEXDIGIT+    // hex literal (always int)
+           | "0" ( "b" | "B" ) BINDIGIT+    // binary literal (always int)
 STRING     -> '"' ( <any char except '"' and newline> )* '"'
 IDENTIFIER -> ALPHA ( ALPHA | DIGIT )*
 ALPHA      -> "a"..."z" | "A"..."Z" | "_"
 DIGIT      -> "0"..."9"
+HEXDIGIT   -> DIGIT | "a"..."f" | "A"..."F"
+BINDIGIT   -> "0" | "1"
 COMMENT    -> "//" <any char except newline>* newline
 ```
 

@@ -75,6 +75,7 @@ typedef enum {
     BTL_TOKEN_FUNC,            // func
     BTL_TOKEN_IF,              // if
     BTL_TOKEN_IMPORT,          // import
+    BTL_TOKEN_IN,              // in
     BTL_TOKEN_NULL,            // null
     BTL_TOKEN_OR,              // or
     BTL_TOKEN_RETURN,          // return

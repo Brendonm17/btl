@@ -19,6 +19,7 @@
 #include "native_list.h"
 #include "native_table.h"
 #include "native_number.h"
+#include "native_int.h"
 #include "native_system.h"
 #include "native_math.h"
 #include "native_random.h"
@@ -178,6 +179,11 @@ BtlValue btl_pop(VM* vm) {
 static bool isFalsey(BtlValue value) {
     if (IS_NULL(value)) return true;
     if (IS_BOOL(value)) return !AS_BOOL(value);
+    if (IS_INT(value)) return AS_INT(value) == 0;
+    if (IS_NUMBER(value)) return AS_NUMBER(value) == 0.0;
+    if (IS_STRING(value)) return AS_STRING(value)->length == 0;
+    if (IS_LIST(value)) return AS_LIST(value)->items.count == 0;
+    if (IS_TABLE(value)) return AS_TABLE(value)->table.count == 0;
     if (IS_FUTURE(value)) {
         BtlFutureState state = btl_future_get_state(AS_FUTURE(value));
         return state == BTL_FUTURE_ERROR;
@@ -191,6 +197,7 @@ static bool isFalsey(BtlValue value) {
 // Helper: Get native class for a value
 static ObjNativeClass* getNativeClass(VM* vm, BtlValue value) {
     if (IS_STRING(value)) return vm->stringClass;
+    if (IS_INT(value))    return vm->intClass;
     if (IS_NUMBER(value)) return vm->numberClass;
     if (IS_LIST(value)) return vm->listClass;
     if (IS_TABLE(value)) return vm->tableClass;
@@ -351,7 +358,7 @@ bool btl_call_value(VM* vm, BtlValue callee, int argCount) {
             return call(vm, AS_CLOSURE(callee), argCount);
         case BTL_OBJ_NATIVE: {
             BtlNativeFn native = AS_NATIVE(callee);
-            BtlValue result = native(argCount, vm->stackTop - argCount);
+            BtlValue result = native(vm, argCount, vm->stackTop - argCount);
             vm->stackTop -= argCount + 1;
             btl_push(vm, result);
             return true;
@@ -402,12 +409,16 @@ bool btl_call_value(VM* vm, BtlValue callee, int argCount) {
 static ObjString* valueToString(VM* vm, BtlValue value) {
     if (IS_STRING(value)) return AS_STRING(value);
     char buf[32];
+    if (IS_INT(value)) {
+        int len = snprintf(buf, 32, "%" PRId64, AS_INT(value));
+        return btl_string_copy(vm, buf, len);
+    }
     if (IS_NUMBER(value)) {
         int len = snprintf(buf, 32, "%g", AS_NUMBER(value));
         return btl_string_copy(vm, buf, len);
     }
     if (IS_BOOL(value)) return btl_string_copy(vm, AS_BOOL(value) ? "true" : "false", AS_BOOL(value) ? 4 : 5);
-    if (IS_NULL(value)) return btl_string_copy(vm, "null", 3);
+    if (IS_NULL(value)) return btl_string_copy(vm, "null", 4);
     return btl_string_copy(vm, "<object>", 8);
 }
 
@@ -432,6 +443,8 @@ static void printValueTrace(VM* vm, BtlValue value) {
         snprintf(buffer, sizeof(buffer), "%s", AS_BOOL(value) ? "true" : "false");
     } else if (IS_NULL(value)) {
         snprintf(buffer, sizeof(buffer), "null");
+    } else if (IS_INT(value)) {
+        snprintf(buffer, sizeof(buffer), "%" PRId64, AS_INT(value));
     } else if (IS_NUMBER(value)) {
         snprintf(buffer, sizeof(buffer), "%g", AS_NUMBER(value));
     } else if (IS_OBJ(value)) {
@@ -571,6 +584,7 @@ void btl_vm_init(VM* vm) {
     btl_table_init(&vm->nativeModules);
     vm->stringClass = NULL;
     vm->numberClass = NULL;
+    vm->intClass = NULL;
     vm->listClass = NULL;
     vm->tableClass = NULL;
     vm->rootModule = btl_module_new(vm, btl_string_copy(vm, "main", 4));
@@ -584,6 +598,7 @@ void btl_vm_init(VM* vm) {
     btl_list_class_init(vm);
     btl_table_class_init(vm);
     btl_number_class_init(vm);
+    btl_int_class_init(vm);
 
     // Initialize native modules
     btl_system_module_init(vm);
@@ -688,10 +703,37 @@ BtlInterpretResult btl_run(VM* vm) {
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 #define READ_STRING_LONG() AS_STRING(READ_CONSTANT_LONG())
 
-#define BINARY_OP(vType, op) do { \
-    if (IS_NUMBER(peek(vm, 0)) && IS_NUMBER(peek(vm, 1))) { \
-        double b = AS_NUMBER(btl_pop(vm)); double a = AS_NUMBER(btl_pop(vm)); \
-        btl_push(vm, vType(a op b)); \
+// Arithmetic: int+int -> int, double+double -> double, mixed -> double
+#define ARITH_OP(op) do { \
+    BtlValue _bv = peek(vm, 0), _av = peek(vm, 1); \
+    if (IS_INT(_bv) && IS_INT(_av)) { \
+        int64_t _bi = AS_INT(btl_pop(vm)); int64_t _ai = AS_INT(btl_pop(vm)); \
+        btl_push(vm, INT_VAL(_ai op _bi)); \
+    } else if (IS_NUMBER(_bv) && IS_NUMBER(_av)) { \
+        double _bd = AS_NUMBER(btl_pop(vm)); double _ad = AS_NUMBER(btl_pop(vm)); \
+        btl_push(vm, NUMBER_VAL(_ad op _bd)); \
+    } else if (IS_NUMERIC(_bv) && IS_NUMERIC(_av)) { \
+        double _bd = btl_numeric_to_double(btl_pop(vm)); \
+        double _ad = btl_numeric_to_double(btl_pop(vm)); \
+        btl_push(vm, NUMBER_VAL(_ad op _bd)); \
+    } else { \
+        STORE_FRAME(); btl_runtime_error(vm, "Operands must be numbers."); return BTL_INTERPRET_RUNTIME_ERROR; \
+    } \
+  } while (false)
+
+// Comparison: always returns BOOL_VAL
+#define COMPARE_OP(op) do { \
+    BtlValue _bv = peek(vm, 0), _av = peek(vm, 1); \
+    if (IS_INT(_bv) && IS_INT(_av)) { \
+        int64_t _bi = AS_INT(btl_pop(vm)); int64_t _ai = AS_INT(btl_pop(vm)); \
+        btl_push(vm, BOOL_VAL(_ai op _bi)); \
+    } else if (IS_NUMBER(_bv) && IS_NUMBER(_av)) { \
+        double _bd = AS_NUMBER(btl_pop(vm)); double _ad = AS_NUMBER(btl_pop(vm)); \
+        btl_push(vm, BOOL_VAL(_ad op _bd)); \
+    } else if (IS_NUMERIC(_bv) && IS_NUMERIC(_av)) { \
+        double _bd = btl_numeric_to_double(btl_pop(vm)); \
+        double _ad = btl_numeric_to_double(btl_pop(vm)); \
+        btl_push(vm, BOOL_VAL(_ad op _bd)); \
     } else { \
         STORE_FRAME(); btl_runtime_error(vm, "Operands must be numbers."); return BTL_INTERPRET_RUNTIME_ERROR; \
     } \
@@ -713,6 +755,9 @@ BtlInterpretResult btl_run(VM* vm) {
     && L_BTL_OP_0,
     && L_BTL_OP_1,
     && L_BTL_OP_2,
+    && L_BTL_OP_INT_0,
+    && L_BTL_OP_INT_1,
+    && L_BTL_OP_INT_2,
     && L_BTL_OP_POP,
     && L_BTL_OP_POP_N,
     && L_BTL_OP_DUP,
@@ -897,7 +942,9 @@ BtlInterpretResult btl_run(VM* vm) {
     && L_BTL_OP_IMPORT,
     && L_BTL_OP_IMPORT_LONG,
     && L_BTL_OP_DO_NEW,
-    && L_BTL_OP_DO_INVOKE
+    && L_BTL_OP_DO_INVOKE,
+    && L_BTL_OP_ITER_INIT,
+    && L_BTL_OP_ITER_NEXT
     };
 
 #define DISPATCH() do { \
@@ -920,6 +967,9 @@ BtlInterpretResult btl_run(VM* vm) {
             OPCODE(BTL_OP_0) : btl_push(vm, NUMBER_VAL(0.0)); DISPATCH();
             OPCODE(BTL_OP_1) : btl_push(vm, NUMBER_VAL(1.0)); DISPATCH();
             OPCODE(BTL_OP_2) : btl_push(vm, NUMBER_VAL(2.0)); DISPATCH();
+            OPCODE(BTL_OP_INT_0) : btl_push(vm, INT_VAL(0)); DISPATCH();
+            OPCODE(BTL_OP_INT_1) : btl_push(vm, INT_VAL(1)); DISPATCH();
+            OPCODE(BTL_OP_INT_2) : btl_push(vm, INT_VAL(2)); DISPATCH();
             OPCODE(BTL_OP_POP) : btl_pop(vm); DISPATCH();
             OPCODE(BTL_OP_POP_N) : vm->stackTop -= READ_BYTE(); DISPATCH();
             OPCODE(BTL_OP_DUP) : btl_push(vm, peek(vm, 0)); DISPATCH();
@@ -958,39 +1008,59 @@ BtlInterpretResult btl_run(VM* vm) {
             OPCODE(BTL_OP_INC_LOCAL_POP) : {
                 uint8_t slot = READ_BYTE();
                 BtlValue val = frame->slots[slot];
-                if (!IS_NUMBER(val)) {
+                if (IS_INT(val)) {
+                    frame->slots[slot] = INT_VAL(AS_INT(val) + 1);
+                } else if (IS_NUMBER(val)) {
+                    frame->slots[slot] = NUMBER_VAL(AS_NUMBER(val) + 1.0);
+                } else {
                     STORE_FRAME(); btl_runtime_error(vm, "Can only increment numbers."); return BTL_INTERPRET_RUNTIME_ERROR;
                 }
-                frame->slots[slot] = NUMBER_VAL(AS_NUMBER(val) + 1.0);
                 DISPATCH();
             }
             OPCODE(BTL_OP_INC_LOCAL) : {
                 uint8_t slot = READ_BYTE();
                 BtlValue val = frame->slots[slot];
-                if (!IS_NUMBER(val)) {
+                if (IS_INT(val)) {
+                    BtlValue res = INT_VAL(AS_INT(val) + 1);
+                    frame->slots[slot] = res;
+                    btl_push(vm, res);
+                } else if (IS_NUMBER(val)) {
+                    double num = AS_NUMBER(val) + 1.0;
+                    frame->slots[slot] = NUMBER_VAL(num);
+                    btl_push(vm, NUMBER_VAL(num));
+                } else {
                     STORE_FRAME(); btl_runtime_error(vm, "Can only increment numbers."); return BTL_INTERPRET_RUNTIME_ERROR;
                 }
-                double num = AS_NUMBER(val) + 1.0;
-                frame->slots[slot] = NUMBER_VAL(num);
-                btl_push(vm, NUMBER_VAL(num));
                 DISPATCH();
             }
             OPCODE(BTL_OP_INCREMENT) : {
-                if (!IS_NUMBER(peek(vm, 0))) {
+                BtlValue val = peek(vm, 0);
+                if (IS_INT(val)) {
+                    btl_pop(vm);
+                    btl_push(vm, INT_VAL(AS_INT(val) + 1));
+                } else if (IS_NUMBER(val)) {
+                    btl_pop(vm);
+                    btl_push(vm, NUMBER_VAL(AS_NUMBER(val) + 1));
+                } else {
                     STORE_FRAME();
                     btl_runtime_error(vm, "Operand must be a number.");
                     return BTL_INTERPRET_RUNTIME_ERROR;
                 }
-                btl_push(vm, NUMBER_VAL(AS_NUMBER(btl_pop(vm)) + 1));
                 DISPATCH();
             }
             OPCODE(BTL_OP_DECREMENT) : {
-                if (!IS_NUMBER(peek(vm, 0))) {
+                BtlValue val = peek(vm, 0);
+                if (IS_INT(val)) {
+                    btl_pop(vm);
+                    btl_push(vm, INT_VAL(AS_INT(val) - 1));
+                } else if (IS_NUMBER(val)) {
+                    btl_pop(vm);
+                    btl_push(vm, NUMBER_VAL(AS_NUMBER(val) - 1));
+                } else {
                     STORE_FRAME();
                     btl_runtime_error(vm, "Operand must be a number.");
                     return BTL_INTERPRET_RUNTIME_ERROR;
                 }
-                btl_push(vm, NUMBER_VAL(AS_NUMBER(btl_pop(vm)) - 1));
                 DISPATCH();
             }
             OPCODE(BTL_OP_GET_GLOBAL) : {
@@ -1278,6 +1348,10 @@ BtlInterpretResult btl_run(VM* vm) {
                     if (nativeClass != NULL) {
                         ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
                         ObjNativeMethod* method = findNativeMethod(nativeClass, name);
+                        // Int fallback: if method not found on intClass, try numberClass
+                        if (method == NULL && IS_INT(receiver)) {
+                            method = findNativeMethod(vm->numberClass, name);
+                        }
                         if (method != NULL) {
                             // Leave receiver on stack, push method
                             // This will be handled by INVOKE
@@ -1395,39 +1469,75 @@ BtlInterpretResult btl_run(VM* vm) {
                 btl_push(vm, BOOL_VAL(btl_values_equal(a, b)));
                 DISPATCH();
             }
-            OPCODE(BTL_OP_GREATER) : { BINARY_OP(BOOL_VAL, > ); DISPATCH(); }
-            OPCODE(BTL_OP_LESS) : { BINARY_OP(BOOL_VAL, < ); DISPATCH(); }
+            OPCODE(BTL_OP_GREATER) : { COMPARE_OP(>); DISPATCH(); }
+            OPCODE(BTL_OP_LESS) : { COMPARE_OP(<); DISPATCH(); }
             OPCODE(BTL_OP_ADD) : {
-                if (IS_STRING(peek(vm, 0)) || IS_STRING(peek(vm, 1))) {
-                    if ((IS_STRING(peek(vm, 0)) || IS_NUMBER(peek(vm, 0))) &&
-                        (IS_STRING(peek(vm, 1)) || IS_NUMBER(peek(vm, 1)))) {
+                BtlValue _peek0 = peek(vm, 0), _peek1 = peek(vm, 1);
+                if (IS_INT(_peek0) && IS_INT(_peek1)) {
+                    int64_t b = AS_INT(btl_pop(vm)); int64_t a = AS_INT(btl_pop(vm));
+                    btl_push(vm, INT_VAL(a + b));
+                } else if (IS_NUMBER(_peek0) && IS_NUMBER(_peek1)) {
+                    double b = AS_NUMBER(btl_pop(vm)); double a = AS_NUMBER(btl_pop(vm));
+                    btl_push(vm, NUMBER_VAL(a + b));
+                } else if (IS_NUMERIC(_peek0) && IS_NUMERIC(_peek1)) {
+                    double b = btl_numeric_to_double(btl_pop(vm));
+                    double a = btl_numeric_to_double(btl_pop(vm));
+                    btl_push(vm, NUMBER_VAL(a + b));
+                } else if (IS_STRING(_peek0) || IS_STRING(_peek1)) {
+                    if ((IS_STRING(_peek0) || IS_NUMERIC(_peek0)) &&
+                        (IS_STRING(_peek1) || IS_NUMERIC(_peek1))) {
                         STORE_FRAME(); concatenate(vm);
                     } else {
                         STORE_FRAME(); btl_runtime_error(vm, "Operands must be two numbers or two strings."); return BTL_INTERPRET_RUNTIME_ERROR;
                     }
-                } else if (IS_NUMBER(peek(vm, 0)) && IS_NUMBER(peek(vm, 1))) {
-                    double b = AS_NUMBER(btl_pop(vm)); double a = AS_NUMBER(btl_pop(vm)); btl_push(vm, NUMBER_VAL(a + b));
                 } else {
                     STORE_FRAME(); btl_runtime_error(vm, "Operands must be two numbers or two strings."); return BTL_INTERPRET_RUNTIME_ERROR;
                 }
                 DISPATCH();
             }
-            OPCODE(BTL_OP_SUBTRACT) : { BINARY_OP(NUMBER_VAL, -); DISPATCH(); }
-            OPCODE(BTL_OP_MULTIPLY) : { BINARY_OP(NUMBER_VAL, *); DISPATCH(); }
-            OPCODE(BTL_OP_DIVIDE) : { BINARY_OP(NUMBER_VAL, / ); DISPATCH(); }
-            OPCODE(BTL_OP_MODULO) : {
-                if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) {
+            OPCODE(BTL_OP_SUBTRACT) : { ARITH_OP(-); DISPATCH(); }
+            OPCODE(BTL_OP_MULTIPLY) : { ARITH_OP(*); DISPATCH(); }
+            OPCODE(BTL_OP_DIVIDE) : {
+                BtlValue _dv0 = peek(vm, 0), _dv1 = peek(vm, 1);
+                if (IS_INT(_dv0) && IS_INT(_dv1)) {
+                    int64_t b = AS_INT(btl_pop(vm)); int64_t a = AS_INT(btl_pop(vm));
+                    if (b == 0) { STORE_FRAME(); btl_runtime_error(vm, "Division by zero."); return BTL_INTERPRET_RUNTIME_ERROR; }
+                    btl_push(vm, INT_VAL(a / b));
+                } else if (IS_NUMERIC(_dv0) && IS_NUMERIC(_dv1)) {
+                    double b = btl_numeric_to_double(btl_pop(vm));
+                    double a = btl_numeric_to_double(btl_pop(vm));
+                    btl_push(vm, NUMBER_VAL(a / b));
+                } else {
                     STORE_FRAME(); btl_runtime_error(vm, "Operands must be numbers."); return BTL_INTERPRET_RUNTIME_ERROR;
                 }
-                double b = AS_NUMBER(btl_pop(vm)); double a = AS_NUMBER(btl_pop(vm));
-                btl_push(vm, NUMBER_VAL(fmod(a, b))); DISPATCH();
+                DISPATCH();
+            }
+            OPCODE(BTL_OP_MODULO) : {
+                BtlValue _mv0 = peek(vm, 0), _mv1 = peek(vm, 1);
+                if (IS_INT(_mv0) && IS_INT(_mv1)) {
+                    int64_t b = AS_INT(btl_pop(vm)); int64_t a = AS_INT(btl_pop(vm));
+                    if (b == 0) { STORE_FRAME(); btl_runtime_error(vm, "Division by zero."); return BTL_INTERPRET_RUNTIME_ERROR; }
+                    btl_push(vm, INT_VAL(a % b));
+                } else if (IS_NUMERIC(_mv0) && IS_NUMERIC(_mv1)) {
+                    double b = btl_numeric_to_double(btl_pop(vm));
+                    double a = btl_numeric_to_double(btl_pop(vm));
+                    btl_push(vm, NUMBER_VAL(fmod(a, b)));
+                } else {
+                    STORE_FRAME(); btl_runtime_error(vm, "Operands must be numbers."); return BTL_INTERPRET_RUNTIME_ERROR;
+                }
+                DISPATCH();
             }
             OPCODE(BTL_OP_NOT) : { btl_push(vm, BOOL_VAL(isFalsey(btl_pop(vm)))); DISPATCH(); }
             OPCODE(BTL_OP_NEGATE) : {
-                if (!IS_NUMBER(peek(vm, 0))) {
+                BtlValue _nv = peek(vm, 0);
+                if (IS_INT(_nv)) {
+                    btl_pop(vm); btl_push(vm, INT_VAL(-AS_INT(_nv)));
+                } else if (IS_NUMBER(_nv)) {
+                    btl_pop(vm); btl_push(vm, NUMBER_VAL(-AS_NUMBER(_nv)));
+                } else {
                     STORE_FRAME(); btl_runtime_error(vm, "Must be number."); return BTL_INTERPRET_RUNTIME_ERROR;
                 }
-                btl_push(vm, NUMBER_VAL(-AS_NUMBER(btl_pop(vm)))); DISPATCH();
+                DISPATCH();
             }
 
             OPCODE(BTL_OP_JUMP) : { uint16_t offset = READ_SHORT(); ip += offset; DISPATCH(); }
@@ -1451,24 +1561,34 @@ BtlInterpretResult btl_run(VM* vm) {
             }
             OPCODE(BTL_OP_JUMP_IF_NOT_GREATER) : {
                 uint16_t offset = READ_SHORT();
-                if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) {
+                BtlValue _jb = peek(vm, 0), _ja = peek(vm, 1);
+                if (IS_INT(_jb) && IS_INT(_ja)) {
+                    int64_t b = AS_INT(btl_pop(vm)); int64_t a = AS_INT(btl_pop(vm));
+                    if (!(a > b)) ip += offset;
+                } else if (IS_NUMERIC(_jb) && IS_NUMERIC(_ja)) {
+                    double b = btl_numeric_to_double(btl_pop(vm));
+                    double a = btl_numeric_to_double(btl_pop(vm));
+                    if (!(a > b)) ip += offset;
+                } else {
                     btl_runtime_error(vm, "Operands must be numbers.");
                     return BTL_INTERPRET_RUNTIME_ERROR;
                 }
-                double b = AS_NUMBER(btl_pop(vm));
-                double a = AS_NUMBER(btl_pop(vm));
-                if (!(a > b)) ip += offset;
                 DISPATCH();
             }
             OPCODE(BTL_OP_JUMP_IF_NOT_LESS) : {
                 uint16_t offset = READ_SHORT();
-                if (!IS_NUMBER(peek(vm, 0)) || !IS_NUMBER(peek(vm, 1))) {
+                BtlValue _jb2 = peek(vm, 0), _ja2 = peek(vm, 1);
+                if (IS_INT(_jb2) && IS_INT(_ja2)) {
+                    int64_t b = AS_INT(btl_pop(vm)); int64_t a = AS_INT(btl_pop(vm));
+                    if (!(a < b)) ip += offset;
+                } else if (IS_NUMERIC(_jb2) && IS_NUMERIC(_ja2)) {
+                    double b = btl_numeric_to_double(btl_pop(vm));
+                    double a = btl_numeric_to_double(btl_pop(vm));
+                    if (!(a < b)) ip += offset;
+                } else {
                     btl_runtime_error(vm, "Operands must be numbers.");
                     return BTL_INTERPRET_RUNTIME_ERROR;
                 }
-                double b = AS_NUMBER(btl_pop(vm));
-                double a = AS_NUMBER(btl_pop(vm));
-                if (!(a < b)) ip += offset;
                 DISPATCH();
             }
             OPCODE(BTL_OP_LOOP) : { uint16_t offset = READ_SHORT(); ip -= offset; DISPATCH(); }
@@ -1708,27 +1828,21 @@ BtlInterpretResult btl_run(VM* vm) {
                 DISPATCH();
             }
 
-            // Search methods by name - find method with matching name (use pointer comparison for interned strings)
+            // Search methods by name AND arity (supports method overloading)
             {
                 int foundIndex = -1;
                 for (int i = 0; i < instance->klass->methodCount; i++) {
                     ObjString* methodName = instance->klass->methods[i].name;
                     if (instance->klass->methods[i].closure != NULL &&
                         methodName != NULL &&
-                        methodName == name) {  // Interned string pointer comparison
+                        methodName == name &&
+                        instance->klass->methods[i].arity == argCount) {
                         foundIndex = i;
                         break;
                     }
                 }
 
                 if (foundIndex >= 0) {
-                    if (argCount != instance->klass->methods[foundIndex].arity) {
-                        STORE_FRAME();
-                        btl_runtime_error(vm, "Expected %d arguments but got %d.",
-                                          instance->klass->methods[foundIndex].arity, argCount);
-                        return BTL_INTERPRET_RUNTIME_ERROR;
-                    }
-
                     ic->cachedClass = instance->klass;
                     ic->methodIndex = foundIndex;
 
@@ -1803,6 +1917,14 @@ BtlInterpretResult btl_run(VM* vm) {
             if (nativeClass != NULL) {
                 ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
                 ObjNativeMethod* method = findNativeMethod(nativeClass, name);
+                // Int fallback: if method not found on intClass, try numberClass
+                // Promote receiver to double so Number methods work correctly
+                if (method == NULL && IS_INT(receiver)) {
+                    method = findNativeMethod(vm->numberClass, name);
+                    if (method != NULL) {
+                        receiver = NUMBER_VAL((double)AS_INT(receiver));
+                    }
+                }
                 if (method != NULL) {
                     // Check arity
                     if (method->arity >= 0 && argCount != method->arity) {
@@ -1986,13 +2108,12 @@ OPCODE(BTL_OP_TAIL_INVOKE_IC) : {
             // SLOW PATH
             ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
 
-            // Search methods by name AND arity
+            // Search methods by name AND arity (supports method overloading)
             for (int i = 0; i < instance->klass->methodCount; i++) {
                 ObjString* methodName = instance->klass->methods[i].name;
                 if (instance->klass->methods[i].closure != NULL &&
                     methodName != NULL &&
-                    methodName->length == name->length &&
-                    memcmp(methodName->chars, name->chars, name->length) == 0 &&
+                    methodName == name &&
                     instance->klass->methods[i].arity == argCount) {
 
                     ic->cachedClass = instance->klass;
@@ -2211,10 +2332,10 @@ OPCODE(BTL_OP_CLASS) : {
     ObjString* name = READ_STRING();
     ObjClass* klass = btl_class_new(vm, name);
 
-    BtlValue savedIndicesValue;
-    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedIndicesValue)) {
-        BtlTable* savedIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-        btl_table_add_all(vm, savedIndices, &klass->methodIndices);
+    BtlValue savedInfoValue;
+    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedInfoValue)) {
+        BtlSavedClassInfo* savedInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
+        btl_table_add_all(vm, &savedInfo->methodIndices, &klass->methodIndices);
     }
 
     btl_push(vm, OBJ_VAL(klass));
@@ -2225,10 +2346,10 @@ OPCODE(BTL_OP_CLASS_LONG) : {
     ObjString* name = READ_STRING_LONG();
     ObjClass* klass = btl_class_new(vm, name);
 
-    BtlValue savedIndicesValue;
-    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedIndicesValue)) {
-        BtlTable* savedIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-        btl_table_add_all(vm, savedIndices, &klass->methodIndices);
+    BtlValue savedInfoValue;
+    if (btl_table_get(&vm->rootModule->classInfo, OBJ_VAL(name), &savedInfoValue)) {
+        BtlSavedClassInfo* savedInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
+        btl_table_add_all(vm, &savedInfo->methodIndices, &klass->methodIndices);
     }
 
     btl_push(vm, OBJ_VAL(klass));
@@ -2353,13 +2474,13 @@ OPCODE(BTL_OP_INDEX_GET) : {
     BtlValue key = btl_pop(vm);
     BtlValue obj = btl_pop(vm);
     if (IS_LIST(obj)) {
-        if (!IS_NUMBER(key)) {
+        if (!IS_NUMERIC(key)) {
             STORE_FRAME();
             btl_runtime_error(vm, "List index must be a number.");
             return BTL_INTERPRET_RUNTIME_ERROR;
         }
         ObjList* l = AS_LIST(obj);
-        int idx = (int) AS_NUMBER(key);
+        int idx = (int) btl_numeric_to_double(key);
         if (idx < 0 || idx >= l->items.count) {
             STORE_FRAME();
             btl_runtime_error(vm, "List index out of bounds.");
@@ -2375,13 +2496,13 @@ OPCODE(BTL_OP_INDEX_GET) : {
             btl_push(vm, value);
         }
     } else if (IS_STRING(obj)) {
-        if (!IS_NUMBER(key)) {
+        if (!IS_NUMERIC(key)) {
             STORE_FRAME();
             btl_runtime_error(vm, "String index must be a number.");
             return BTL_INTERPRET_RUNTIME_ERROR;
         }
         ObjString* str = AS_STRING(obj);
-        int idx = (int) AS_NUMBER(key);
+        int idx = (int) btl_numeric_to_double(key);
         if (idx < 0 || idx >= str->length) {
             STORE_FRAME();
             btl_runtime_error(vm, "String index out of bounds.");
@@ -2402,13 +2523,13 @@ OPCODE(BTL_OP_INDEX_SET) : {
     BtlValue key = btl_pop(vm);
     BtlValue obj = btl_pop(vm);
     if (IS_LIST(obj)) {
-        if (!IS_NUMBER(key)) {
+        if (!IS_NUMERIC(key)) {
             STORE_FRAME();
             btl_runtime_error(vm, "List index must be a number.");
             return BTL_INTERPRET_RUNTIME_ERROR;
         }
         ObjList* l = AS_LIST(obj);
-        int idx = (int) AS_NUMBER(key);
+        int idx = (int) btl_numeric_to_double(key);
         if (idx < 0 || idx > l->items.count) {
             STORE_FRAME();
             btl_runtime_error(vm, "List index out of bounds.");
@@ -2538,6 +2659,7 @@ OPCODE(BTL_OP_DO_NEW) : {
         // Copy native classes
         asyncVM->stringClass = vm->stringClass;
         asyncVM->numberClass = vm->numberClass;
+        asyncVM->intClass = vm->intClass;
         asyncVM->listClass = vm->listClass;
         asyncVM->tableClass = vm->tableClass;
         asyncVM->rootModule = closure->function->module;
@@ -2613,6 +2735,58 @@ OPCODE(BTL_OP_DO_INVOKE) : {
     for (int i = 0; i <= argCount; i++) btl_pop(vm);
 
     btl_push(vm, OBJ_VAL(future));
+    DISPATCH();
+}
+OPCODE(BTL_OP_ITER_INIT) : {
+    // Stack: [..., collection]
+    // Validates collection is a list or table, pushes index 0
+    BtlValue collection = peek(vm, 0);
+    if (!IS_LIST(collection) && !IS_TABLE(collection)) {
+        STORE_FRAME();
+        btl_runtime_error(vm, "Can only iterate over lists and tables.");
+        return BTL_INTERPRET_RUNTIME_ERROR;
+    }
+    btl_push(vm, INT_VAL(0));  // push index 0
+    // Stack: [..., collection, 0]
+    DISPATCH();
+}
+OPCODE(BTL_OP_ITER_NEXT) : {
+    // Operands: [slot:8][offset:16]
+    // Stack: [..., loop_var, collection, index]
+    uint8_t slot = READ_BYTE();
+    uint16_t offset = READ_SHORT();
+    BtlValue indexVal = peek(vm, 0);    // index
+    BtlValue collection = peek(vm, 1);  // collection
+    int index = (int) AS_INT(indexVal);
+
+    if (IS_LIST(collection)) {
+        ObjList* list = AS_LIST(collection);
+        if (index >= list->items.count) {
+            // Done iterating - jump to exit
+            ip += offset;
+            DISPATCH();
+        }
+        // Set loop variable to current element
+        frame->slots[slot] = list->items.values[index];
+        // Increment index
+        vm->stackTop[-1] = INT_VAL(index + 1);
+    } else {
+        // Table iteration: find next non-empty entry
+        ObjTable* table = AS_TABLE(collection);
+        while (index < table->table.capacity) {
+            BtlEntry* entry = &table->table.entries[index];
+            if (!IS_EMPTY(entry->key)) {
+                // Found a valid entry - set loop variable to the key
+                frame->slots[slot] = entry->key;
+                // Increment index past this entry
+                vm->stackTop[-1] = INT_VAL(index + 1);
+                DISPATCH();
+            }
+            index++;
+        }
+        // No more entries - jump to exit
+        ip += offset;
+    }
     DISPATCH();
 }
 #ifndef BTL_HAS_COMPUTED_GOTOS

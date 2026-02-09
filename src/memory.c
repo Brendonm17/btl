@@ -207,6 +207,8 @@ void btl_print_value(VM* vm, BtlValue value) {
         btl_print(vm, AS_BOOL(value) ? "true" : "false");
     } else if (IS_NULL(value)) {
         btl_print(vm, "null");
+    } else if (IS_INT(value)) {
+        btl_printf(vm, "%" PRId64, AS_INT(value));
     } else if (IS_NUMBER(value)) {
         btl_printf(vm, "%g", AS_NUMBER(value));
     } else if (IS_OBJ(value)) {
@@ -598,6 +600,16 @@ static void blackenObject(VM* vm, BtlObj* object) {
         btl_gc_mark_object(vm, (BtlObj*) m->name);
         btl_table_mark(vm, &m->globalNames);
         markArray(vm, &m->globalValues);
+        // Mark classInfo keys and saved table contents
+        btl_table_mark(vm, &m->classInfo);
+        for (int i = 0; i < m->classInfo.capacity; i++) {
+            BtlEntry* entry = &m->classInfo.entries[i];
+            if (!IS_EMPTY(entry->key)) {
+                BtlSavedClassInfo* savedInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(entry->value);
+                btl_table_mark(vm, &savedInfo->methodIndices);
+                btl_table_mark(vm, &savedInfo->fieldIndices);
+            }
+        }
         break;
     }
     case BTL_OBJ_UPVALUE:
@@ -1011,6 +1023,83 @@ static void scanObject(VM* vm, BtlObj* object) {
     }
 }
 
+// Free external (heap-allocated) data owned by nursery objects.
+// Called before resetting the nursery bump pointer so that external arrays
+// (list items, table entries, instance fields) are not leaked.
+// The object structs themselves live inside the nursery slab and are
+// reclaimed when the bump pointer resets — only their external data needs
+// explicit freeing.
+static void freeNurseryExternals(VM* vm) {
+    uint8_t* ptr = vm->nursery.fromSpace;
+    uint8_t* end = vm->nursery.allocPtr;
+
+    while (ptr < end) {
+        BtlObj* obj = (BtlObj*) ptr;
+        size_t size;
+        bool promoted = (obj->forwarding != NULL);
+
+        switch (obj->type) {
+        case BTL_OBJ_LIST: {
+            ObjList* list = (ObjList*) obj;
+            // promoteObject always duplicates items when capacity > 0,
+            // so free the old data for both promoted and dead objects.
+            if (list->items.values != NULL && list->items.capacity > 0) {
+                btl_realloc(vm, list->items.values,
+                            sizeof(BtlValue) * list->items.capacity, 0);
+            }
+            size = sizeof(ObjList);
+            break;
+        }
+        case BTL_OBJ_TABLE: {
+            ObjTable* table = (ObjTable*) obj;
+            if (table->table.entries != NULL && table->table.capacity > 0) {
+                btl_realloc(vm, table->table.entries,
+                            sizeof(BtlEntry) * table->table.capacity, 0);
+            }
+            size = sizeof(ObjTable);
+            break;
+        }
+        case BTL_OBJ_INSTANCE: {
+            ObjInstance* inst = (ObjInstance*) obj;
+            if (inst->fields != NULL) {
+                if (promoted) {
+                    // promoteObject only duplicates fields when fieldCount > 0.
+                    // When fieldCount == 0, the promoted copy shares this pointer
+                    // and will free it during freeObject — don't double-free.
+                    if (inst->klass != NULL && inst->klass->fieldCount > 0) {
+                        btl_realloc(vm, inst->fields,
+                                    sizeof(BtlValue) * inst->klass->fieldCount, 0);
+                    }
+                } else {
+                    // Dead object — we own the only reference. Use the actual
+                    // allocated size: max(fieldCount, 1) per btl_instance_new.
+                    int count = (inst->klass != NULL && inst->klass->fieldCount > 0)
+                                ? inst->klass->fieldCount : 1;
+                    btl_realloc(vm, inst->fields,
+                                sizeof(BtlValue) * count, 0);
+                }
+            }
+            size = sizeof(ObjInstance);
+            break;
+        }
+        case BTL_OBJ_BOUND_METHOD:
+            size = sizeof(ObjBoundMethod);
+            break;
+        case BTL_OBJ_UPVALUE:
+            size = sizeof(ObjUpvalue);
+            break;
+        default:
+            // Should not happen — only the above types go into the nursery.
+            // But if it does, we can't determine the size, so bail out.
+            return;
+        }
+
+        // Advance by aligned size (same alignment as nurseryAlloc)
+        size = (size + 7) & ~7;
+        ptr += size;
+    }
+}
+
 void btl_gc_minor(VM* vm) {
     if (vm->inMinorGC) return;
     if (vm->nurseryAllocated == 0 || vm->nursery.fromSpace == NULL) return;
@@ -1039,6 +1128,7 @@ void btl_gc_minor(VM* vm) {
 
     if (vm->stringClass) vm->stringClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->stringClass);
     if (vm->numberClass) vm->numberClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->numberClass);
+    if (vm->intClass) vm->intClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->intClass);
     if (vm->listClass) vm->listClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->listClass);
     if (vm->tableClass) vm->tableClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->tableClass);
 
@@ -1089,6 +1179,12 @@ void btl_gc_minor(VM* vm) {
     for (BtlObj* obj = vm->objects; obj != NULL && obj != oldGenHead; obj = obj->next) {
         obj->isMarked = false;
     }
+
+    // Free external allocations owned by nursery objects before resetting.
+    // Promoted objects had their data duplicated into new heap allocations;
+    // dead objects' data also needs freeing. The object structs themselves
+    // live in the nursery slab and are reclaimed by the bump-pointer reset.
+    freeNurseryExternals(vm);
 
     vm->nursery.allocPtr = vm->nursery.fromSpace;
     vm->nurseryAllocated = 0;
@@ -1166,9 +1262,10 @@ static void freeObject(VM* vm, BtlObj* object) {
         for (int i = 0; i < m->classInfo.capacity; i++) {
             BtlEntry* entry = &m->classInfo.entries[i];
             if (!IS_EMPTY(entry->key)) {
-                BtlTable* savedTable = (BtlTable*) (uintptr_t) AS_NUMBER(entry->value);
-                btl_table_free(vm, savedTable);
-                BTL_FREE(vm, BtlTable, savedTable);
+                BtlSavedClassInfo* savedInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(entry->value);
+                btl_table_free(vm, &savedInfo->methodIndices);
+                btl_table_free(vm, &savedInfo->fieldIndices);
+                BTL_FREE(vm, BtlSavedClassInfo, savedInfo);
             }
         }
         btl_table_free(vm, &m->classInfo);
@@ -1240,6 +1337,7 @@ static void markRoots(VM* vm) {
 
     if (vm->stringClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->stringClass);
     if (vm->numberClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->numberClass);
+    if (vm->intClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->intClass);
     if (vm->listClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->listClass);
     if (vm->tableClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->tableClass);
     btl_table_mark(vm, &vm->nativeModules);
@@ -1320,6 +1418,13 @@ void btl_gc_collect(VM* vm) {
 // ============================================================================
 
 void btl_gc_free_all(VM* vm) {
+    // Free external allocations of any objects still in the nursery BEFORE
+    // freeing old-gen objects, because nursery instances may reference
+    // old-gen classes (inst->klass) to determine field count.
+    if (vm->nursery.fromSpace != NULL && vm->nursery.allocPtr > vm->nursery.fromSpace) {
+        freeNurseryExternals(vm);
+    }
+
     BtlObj* object = vm->objects;
     while (object != NULL) {
         BtlObj* next = object->next;

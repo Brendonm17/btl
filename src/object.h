@@ -147,8 +147,8 @@ typedef struct ObjActor {
 // Native Function Types
 // ============================================================================
 
-// Simple native function (no receiver)
-typedef BtlValue (*BtlNativeFn)(int argCount, BtlValue* args);
+// Simple native function (no receiver, but has VM access for object creation/error reporting)
+typedef BtlValue (*BtlNativeFn)(VM* vm, int argCount, BtlValue* args);
 
 // Native method (has receiver)
 typedef BtlValue (*BtlNativeMethodFn)(VM* vm, BtlValue receiver, int argCount, BtlValue* args);
@@ -286,6 +286,18 @@ struct ObjString {
     char* chars;         // Null-terminated character data
     uint32_t hash;       // Pre-computed hash for fast table lookup
 };
+
+// ============================================================================
+// Saved Class Info
+//
+// Compile-time metadata saved for each class so child classes can inherit
+// method and field indices from their parents.
+// ============================================================================
+typedef struct {
+    BtlTable methodIndices;     // Method signature -> vtable index
+    BtlTable fieldIndices;      // Field name -> field index
+    int fieldCount;             // Number of fields
+} BtlSavedClassInfo;
 
 // ============================================================================
 // Module Object

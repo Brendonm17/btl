@@ -14,7 +14,7 @@ func test() {
     increment();
   }
 
-  system.println(count); // expect: 1e+06
+  system.println(count); // expect: 1000000
 }
 
 test();

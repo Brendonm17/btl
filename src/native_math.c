@@ -14,180 +14,180 @@
 // ----------------------------------------------------------------------------
 
 // abs(x) - returns absolute value
-static BtlValue mathAbs(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(fabs(AS_NUMBER(args[0])));
+static BtlValue mathAbs(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(fabs(btl_numeric_to_double(args[0])));
 }
 
 // floor(x) - rounds down to nearest integer
-static BtlValue mathFloor(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(floor(AS_NUMBER(args[0])));
+static BtlValue mathFloor(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(floor(btl_numeric_to_double(args[0])));
 }
 
 // ceil(x) - rounds up to nearest integer
-static BtlValue mathCeil(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(ceil(AS_NUMBER(args[0])));
+static BtlValue mathCeil(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(ceil(btl_numeric_to_double(args[0])));
 }
 
 // round(x) - rounds to nearest integer
-static BtlValue mathRound(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(round(AS_NUMBER(args[0])));
+static BtlValue mathRound(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(round(btl_numeric_to_double(args[0])));
 }
 
 // trunc(x) - truncates toward zero
-static BtlValue mathTrunc(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(trunc(AS_NUMBER(args[0])));
+static BtlValue mathTrunc(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(trunc(btl_numeric_to_double(args[0])));
 }
 
 // sqrt(x) - returns square root
-static BtlValue mathSqrt(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(sqrt(AS_NUMBER(args[0])));
+static BtlValue mathSqrt(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(sqrt(btl_numeric_to_double(args[0])));
 }
 
 // pow(base, exp) - returns base raised to exp
-static BtlValue mathPow(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(pow(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
+static BtlValue mathPow(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(pow(btl_numeric_to_double(args[0]), btl_numeric_to_double(args[1])));
 }
 
 // sin(x) - returns sine (x in radians)
-static BtlValue mathSin(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(sin(AS_NUMBER(args[0])));
+static BtlValue mathSin(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(sin(btl_numeric_to_double(args[0])));
 }
 
 // cos(x) - returns cosine (x in radians)
-static BtlValue mathCos(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(cos(AS_NUMBER(args[0])));
+static BtlValue mathCos(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(cos(btl_numeric_to_double(args[0])));
 }
 
 // tan(x) - returns tangent (x in radians)
-static BtlValue mathTan(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(tan(AS_NUMBER(args[0])));
+static BtlValue mathTan(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(tan(btl_numeric_to_double(args[0])));
 }
 
 // asin(x) - returns arc sine (result in radians)
-static BtlValue mathAsin(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(asin(AS_NUMBER(args[0])));
+static BtlValue mathAsin(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(asin(btl_numeric_to_double(args[0])));
 }
 
 // acos(x) - returns arc cosine (result in radians)
-static BtlValue mathAcos(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(acos(AS_NUMBER(args[0])));
+static BtlValue mathAcos(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(acos(btl_numeric_to_double(args[0])));
 }
 
 // atan(x) - returns arc tangent (result in radians)
-static BtlValue mathAtan(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(atan(AS_NUMBER(args[0])));
+static BtlValue mathAtan(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(atan(btl_numeric_to_double(args[0])));
 }
 
 // atan2(y, x) - returns arc tangent of y/x (result in radians)
-static BtlValue mathAtan2(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(atan2(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
+static BtlValue mathAtan2(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(atan2(btl_numeric_to_double(args[0]), btl_numeric_to_double(args[1])));
 }
 
 // log(x) - returns natural logarithm
-static BtlValue mathLog(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(log(AS_NUMBER(args[0])));
+static BtlValue mathLog(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(log(btl_numeric_to_double(args[0])));
 }
 
 // log10(x) - returns base-10 logarithm
-static BtlValue mathLog10(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(log10(AS_NUMBER(args[0])));
+static BtlValue mathLog10(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(log10(btl_numeric_to_double(args[0])));
 }
 
 // log2(x) - returns base-2 logarithm
-static BtlValue mathLog2(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(log2(AS_NUMBER(args[0])));
+static BtlValue mathLog2(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(log2(btl_numeric_to_double(args[0])));
 }
 
 // exp(x) - returns e raised to x
-static BtlValue mathExp(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(exp(AS_NUMBER(args[0])));
+static BtlValue mathExp(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(exp(btl_numeric_to_double(args[0])));
 }
 
 // sign(x) - returns -1, 0, or 1 based on sign
-static BtlValue mathSign(int argCount, BtlValue* args) {
-    (void) argCount;
-    double n = AS_NUMBER(args[0]);
+static BtlValue mathSign(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    double n = btl_numeric_to_double(args[0]);
     if (n > 0) return NUMBER_VAL(1);
     if (n < 0) return NUMBER_VAL(-1);
     return NUMBER_VAL(0);
 }
 
 // min(a, b) - returns smaller value
-static BtlValue mathMin(int argCount, BtlValue* args) {
-    (void) argCount;
-    double a = AS_NUMBER(args[0]);
-    double b = AS_NUMBER(args[1]);
+static BtlValue mathMin(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    double a = btl_numeric_to_double(args[0]);
+    double b = btl_numeric_to_double(args[1]);
     return NUMBER_VAL(a < b ? a : b);
 }
 
 // max(a, b) - returns larger value
-static BtlValue mathMax(int argCount, BtlValue* args) {
-    (void) argCount;
-    double a = AS_NUMBER(args[0]);
-    double b = AS_NUMBER(args[1]);
+static BtlValue mathMax(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    double a = btl_numeric_to_double(args[0]);
+    double b = btl_numeric_to_double(args[1]);
     return NUMBER_VAL(a > b ? a : b);
 }
 
 // clamp(x, min, max) - constrains value to range
-static BtlValue mathClamp(int argCount, BtlValue* args) {
-    (void) argCount;
-    double n = AS_NUMBER(args[0]);
-    double minVal = AS_NUMBER(args[1]);
-    double maxVal = AS_NUMBER(args[2]);
+static BtlValue mathClamp(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    double n = btl_numeric_to_double(args[0]);
+    double minVal = btl_numeric_to_double(args[1]);
+    double maxVal = btl_numeric_to_double(args[2]);
     if (n < minVal) return NUMBER_VAL(minVal);
     if (n > maxVal) return NUMBER_VAL(maxVal);
     return NUMBER_VAL(n);
 }
 
 // lerp(a, b, t) - linear interpolation
-static BtlValue mathLerp(int argCount, BtlValue* args) {
-    (void) argCount;
-    double a = AS_NUMBER(args[0]);
-    double b = AS_NUMBER(args[1]);
-    double t = AS_NUMBER(args[2]);
+static BtlValue mathLerp(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    double a = btl_numeric_to_double(args[0]);
+    double b = btl_numeric_to_double(args[1]);
+    double t = btl_numeric_to_double(args[2]);
     return NUMBER_VAL(a + t * (b - a));
 }
 
 // hypot(a, b) - returns sqrt(a^2 + b^2)
-static BtlValue mathHypot(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(hypot(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
+static BtlValue mathHypot(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(hypot(btl_numeric_to_double(args[0]), btl_numeric_to_double(args[1])));
 }
 
 // fmod(a, b) - returns floating-point remainder
-static BtlValue mathFmod(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(fmod(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
+static BtlValue mathFmod(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(fmod(btl_numeric_to_double(args[0]), btl_numeric_to_double(args[1])));
 }
 
 // deg(rad) - converts radians to degrees
-static BtlValue mathDeg(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(AS_NUMBER(args[0]) * 180.0 / 3.14159265358979323846);
+static BtlValue mathDeg(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(btl_numeric_to_double(args[0]) * 180.0 / 3.14159265358979323846);
 }
 
 // rad(deg) - converts degrees to radians
-static BtlValue mathRad(int argCount, BtlValue* args) {
-    (void) argCount;
-    return NUMBER_VAL(AS_NUMBER(args[0]) * 3.14159265358979323846 / 180.0);
+static BtlValue mathRad(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
+    return NUMBER_VAL(btl_numeric_to_double(args[0]) * 3.14159265358979323846 / 180.0);
 }
 
 // ----------------------------------------------------------------------------

@@ -1,6 +1,9 @@
 import "system";
 
-if (0) { system.println("0 is true"); }        // expect: 0 is true
-if ("") { system.println("empty is true"); }   // expect: empty is true
+if (0) { system.println("0 is true"); } else { system.println("0 is false"); }        // expect: 0 is false
+if ("") { system.println("empty is true"); } else { system.println("empty is false"); }   // expect: empty is false
 if (null) { system.println("null is true"); } else { system.println("null is false"); } // expect: null is false
 if (false) { system.println("f is true"); } else { system.println("f is false"); }   // expect: f is false
+if (1) { system.println("1 is true"); }   // expect: 1 is true
+if ("hello") { system.println("hello is true"); }   // expect: hello is true
+if (0.0) { system.println("0.0 is true"); } else { system.println("0.0 is false"); }   // expect: 0.0 is false

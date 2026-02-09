@@ -258,18 +258,14 @@ static void emitPopOrRemoveLoad(Parser* p, BtlCompiler* c) {
     if (c->lastInstruction >= 0 && c->lastInstruction < chunk->count) {
         uint8_t prevOp = chunk->code[c->lastInstruction];
         if (prevOp == BTL_OP_RETURN) return;
-    }
-    if (chunk->count >= 2) {
-        int lastIndex = chunk->count - 1;
-        int opcodeIndex = lastIndex - 1;
-        if (opcodeIndex >= 0) {
-            uint8_t possibleOp = chunk->code[opcodeIndex];
-            if (possibleOp == BTL_OP_GET_LOCAL || possibleOp == BTL_OP_GET_UPVALUE) {
-                removeChunkTail(chunk, 2);
-                c->lastInstruction = (chunk->count > 0) ? chunk->count - 1 : -1;
-                c->previousInstruction = -1;
-                return;
-            }
+        // If the last instruction is a 2-byte GET_LOCAL or GET_UPVALUE,
+        // remove it instead of emitting POP (the value is unused).
+        if ((prevOp == BTL_OP_GET_LOCAL || prevOp == BTL_OP_GET_UPVALUE) &&
+            c->lastInstruction + 2 == chunk->count) {
+            removeChunkTail(chunk, 2);
+            c->lastInstruction = c->previousInstruction;
+            c->previousInstruction = -1;
+            return;
         }
     }
     emitByte(p, c, BTL_OP_POP);
@@ -833,9 +829,37 @@ static void binary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
     LastInstruction rhs = getInstructionAt(c, rhsOffset);
 
     if (lhs.isConstant && rhs.isConstant && (lhsOffset + lhs.length == rhsOffset)) {
-        if (IS_NUMBER(lhs.value) && IS_NUMBER(rhs.value)) {
-            double a = AS_NUMBER(lhs.value);
-            double b = AS_NUMBER(rhs.value);
+        // Int + Int constant folding
+        if (IS_INT(lhs.value) && IS_INT(rhs.value)) {
+            int64_t a = AS_INT(lhs.value);
+            int64_t b = AS_INT(rhs.value);
+            int64_t res;
+            bool folded = true;
+            switch (opType) {
+            case BTL_TOKEN_PLUS:    res = a + b; break;
+            case BTL_TOKEN_MINUS:   res = a - b; break;
+            case BTL_TOKEN_STAR:    res = a * b; break;
+            case BTL_TOKEN_SLASH:
+                if (b == 0) { errorAt(p, &p->previous, "Division by zero."); return; }
+                res = a / b; break;
+            case BTL_TOKEN_PERCENT:
+                if (b == 0) { errorAt(p, &p->previous, "Division by zero."); return; }
+                res = a % b; break;
+            default: folded = false; res = 0;
+            }
+            if (folded) {
+                currentChunk(c)->count = lhsOffset;
+                c->lastInstruction = c->previousInstruction;
+                emitConstant(p, c, INT_VAL(res));
+                return;
+            }
+        }
+        // Double + Double or mixed numeric constant folding
+        if ((IS_NUMBER(lhs.value) || IS_INT(lhs.value)) &&
+            (IS_NUMBER(rhs.value) || IS_INT(rhs.value)) &&
+            (IS_NUMBER(lhs.value) || IS_NUMBER(rhs.value))) {
+            double a = IS_INT(lhs.value) ? (double)AS_INT(lhs.value) : AS_NUMBER(lhs.value);
+            double b = IS_INT(rhs.value) ? (double)AS_INT(rhs.value) : AS_NUMBER(rhs.value);
             double res;
             bool folded = true;
             switch (opType) {
@@ -850,7 +874,7 @@ static void binary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
                 res = a / b;
                 break;
             case BTL_TOKEN_PERCENT: res = fmod(a, b); break;
-            default: folded = false;
+            default: folded = false; res = 0;
             }
             if (folded) {
                 currentChunk(c)->count = lhsOffset;
@@ -895,16 +919,50 @@ static void grouping(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler*
 
 static void number(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
-    double value = strtod(p->previous.start, NULL);
 
-    if (value == 0.0) {
-        emitByte(p, c, BTL_OP_0);
-    } else if (value == 1.0) {
-        emitByte(p, c, BTL_OP_1);
-    } else if (value == 2.0) {
-        emitByte(p, c, BTL_OP_2);
+    // Detect hex (0x...) or binary (0b...) prefix — always int
+    if (p->previous.length > 2 && p->previous.start[0] == '0') {
+        char prefix = p->previous.start[1];
+        if (prefix == 'x' || prefix == 'X') {
+            int64_t value = strtoll(p->previous.start + 2, NULL, 16);
+            emitConstant(p, c, INT_VAL(value));
+            return;
+        }
+        if (prefix == 'b' || prefix == 'B') {
+            int64_t value = strtoll(p->previous.start + 2, NULL, 2);
+            emitConstant(p, c, INT_VAL(value));
+            return;
+        }
+    }
+
+    // Check if the literal contains a decimal point to distinguish int from float
+    bool isFloat = false;
+    for (int i = 0; i < p->previous.length; i++) {
+        if (p->previous.start[i] == '.') { isFloat = true; break; }
+    }
+
+    if (isFloat) {
+        double value = strtod(p->previous.start, NULL);
+        if (value == 0.0) {
+            emitByte(p, c, BTL_OP_0);
+        } else if (value == 1.0) {
+            emitByte(p, c, BTL_OP_1);
+        } else if (value == 2.0) {
+            emitByte(p, c, BTL_OP_2);
+        } else {
+            emitConstant(p, c, NUMBER_VAL(value));
+        }
     } else {
-        emitConstant(p, c, NUMBER_VAL(value));
+        int64_t value = strtoll(p->previous.start, NULL, 10);
+        if (value == 0) {
+            emitByte(p, c, BTL_OP_INT_0);
+        } else if (value == 1) {
+            emitByte(p, c, BTL_OP_INT_1);
+        } else if (value == 2) {
+            emitByte(p, c, BTL_OP_INT_2);
+        } else {
+            emitConstant(p, c, INT_VAL(value));
+        }
     }
 }
 
@@ -1247,6 +1305,12 @@ static void unary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc
     int operandOffset = c->lastInstruction;
     LastInstruction operand = getInstructionAt(c, operandOffset);
     if (operand.isConstant) {
+        if (opType == BTL_TOKEN_MINUS && IS_INT(operand.value)) {
+            currentChunk(c)->count = operandOffset;
+            c->lastInstruction = c->previousInstruction;
+            emitConstant(p, c, INT_VAL(-AS_INT(operand.value)));
+            return;
+        }
         if (opType == BTL_TOKEN_MINUS && IS_NUMBER(operand.value)) {
             currentChunk(c)->count = operandOffset;
             c->lastInstruction = c->previousInstruction;
@@ -1256,8 +1320,10 @@ static void unary(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc
         if (opType == BTL_TOKEN_BANG) {
             currentChunk(c)->count = operandOffset;
             c->lastInstruction = c->previousInstruction;
-            bool isFalsey = IS_NULL(operand.value) || (IS_BOOL(operand.value) && !AS_BOOL(operand.value));
-            emitByte(p, c, isFalsey ? BTL_OP_TRUE : BTL_OP_FALSE);
+            bool valFalsey = IS_NULL(operand.value) || (IS_BOOL(operand.value) && !AS_BOOL(operand.value))
+                || (IS_INT(operand.value) && AS_INT(operand.value) == 0)
+                || (IS_NUMBER(operand.value) && AS_NUMBER(operand.value) == 0.0);
+            emitByte(p, c, valFalsey ? BTL_OP_TRUE : BTL_OP_FALSE);
             return;
         }
     }
@@ -1336,11 +1402,13 @@ static void super_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
     BtlToken name = p->previous;
 
     BtlToken thisT = { .start = "this", .length = 4 };
-    namedVariable(p, s, c, cc, thisT, false);
     BtlToken superT = { .start = "super", .length = 5 };
-    namedVariable(p, s, c, cc, superT, false);
 
     if (match(p, s, BTL_TOKEN_LEFT_PAREN)) {
+        // Push this (receiver) first
+        namedVariable(p, s, c, cc, thisT, false);
+
+        // Push args
         uint8_t args = 0;
         if (!check(p, BTL_TOKEN_RIGHT_PAREN)) {
             do {
@@ -1349,6 +1417,10 @@ static void super_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
             } while (match(p, s, BTL_TOKEN_COMMA));
         }
         consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')'.");
+
+        // Push super AFTER args so it's on top for the invoke to pop
+        namedVariable(p, s, c, cc, superT, false);
+
         int methodIndex = tryResolveMethodIndex(c, cc, &name, args);
 
         if (methodIndex < 0) {
@@ -1358,6 +1430,8 @@ static void super_(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
 
         emitSuperInvokeIndexed(p, c, methodIndex, args);
     } else {
+        namedVariable(p, s, c, cc, thisT, false);
+        namedVariable(p, s, c, cc, superT, false);
         int nameIdx = makeConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, name.start, name.length)));
         emitLong(p, c, BTL_OP_GET_SUPER, BTL_OP_GET_SUPER_LONG, nameIdx);
     }
@@ -1663,6 +1737,7 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
 
     classC.fieldInfoCapacity = 8;
     classC.fieldInfos = BTL_ALLOCATE(c->vm, BtlFieldInfo, classC.fieldInfoCapacity);
+    memset(classC.fieldInfos, 0, sizeof(BtlFieldInfo) * classC.fieldInfoCapacity);
 
     bool userDefinedInit = false;
     bool hasFieldInitializers = false;
@@ -1674,20 +1749,35 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
         ObjString* parentName = btl_string_copy(c->vm, superClassName.start, superClassName.length);
         btl_push(c->vm, OBJ_VAL(parentName));
 
-        BtlValue savedIndicesValue;
-        if (btl_table_get(&c->module->classInfo, OBJ_VAL(parentName), &savedIndicesValue)) {
-            BtlTable* parentIndices = (BtlTable*) (uintptr_t) AS_NUMBER(savedIndicesValue);
-            btl_table_add_all(c->vm, parentIndices, &classC.methodIndices);
+        BtlValue savedInfoValue;
+        if (btl_table_get(&c->module->classInfo, OBJ_VAL(parentName), &savedInfoValue)) {
+            BtlSavedClassInfo* parentInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
+            btl_table_add_all(c->vm, &parentInfo->methodIndices, &classC.methodIndices);
 
             int maxParentIndex = -1;
-            for (int i = 0; i < parentIndices->capacity; i++) {
-                BtlEntry* entry = &parentIndices->entries[i];
+            for (int i = 0; i < parentInfo->methodIndices.capacity; i++) {
+                BtlEntry* entry = &parentInfo->methodIndices.entries[i];
                 if (IS_STRING(entry->key) && IS_NUMBER(entry->value)) {
                     int idx = (int) AS_NUMBER(entry->value);
                     if (idx > maxParentIndex) maxParentIndex = idx;
                 }
             }
             classC.nextMethodIndex = maxParentIndex + 1;
+
+            // Inherit parent field indices so child fields don't collide
+            btl_table_add_all(c->vm, &parentInfo->fieldIndices, &classC.fields);
+            classC.fieldCount = parentInfo->fieldCount;
+
+            // Ensure fieldInfos capacity and mark inherited fields as no-init
+            while (classC.fieldCount > classC.fieldInfoCapacity) {
+                int oldCap = classC.fieldInfoCapacity;
+                classC.fieldInfoCapacity *= 2;
+                classC.fieldInfos = BTL_GROW_ARRAY(c->vm, BtlFieldInfo, classC.fieldInfos,
+                    oldCap, classC.fieldInfoCapacity);
+            }
+            for (int i = 0; i < classC.fieldCount; i++) {
+                classC.fieldInfos[i].hasInit = false;
+            }
         }
 
         btl_pop(c->vm);
@@ -1731,6 +1821,8 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
                         classC.fieldInfoCapacity *= 2;
                         classC.fieldInfos = BTL_GROW_ARRAY(c->vm, BtlFieldInfo, classC.fieldInfos,
                             oldCap, classC.fieldInfoCapacity);
+                        memset(classC.fieldInfos + oldCap, 0,
+                            sizeof(BtlFieldInfo) * (classC.fieldInfoCapacity - oldCap));
                     }
 
                     classC.fieldInfos[fieldIndex].fieldName = name;
@@ -1901,20 +1993,22 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
         endScope(p, c);
     }
 
-    btl_table_free(c->vm, &classC.fields);
-
-    // Save method indices AFTER auto-generated init is added
+    // Save method and field indices AFTER auto-generated init is added
     ObjString* className = btl_string_copy(c->vm, nameToken.start, nameToken.length);
     btl_push(c->vm, OBJ_VAL(className));
 
-    BtlTable* savedIndices = BTL_ALLOCATE(c->vm, BtlTable, 1);
-    btl_table_init(savedIndices);
-    btl_table_add_all(c->vm, &classC.methodIndices, savedIndices);
+    BtlSavedClassInfo* savedInfo = BTL_ALLOCATE(c->vm, BtlSavedClassInfo, 1);
+    btl_table_init(&savedInfo->methodIndices);
+    btl_table_init(&savedInfo->fieldIndices);
+    btl_table_add_all(c->vm, &classC.methodIndices, &savedInfo->methodIndices);
+    btl_table_add_all(c->vm, &classC.fields, &savedInfo->fieldIndices);
+    savedInfo->fieldCount = classC.fieldCount;
 
     btl_table_set(c->vm, &c->module->classInfo, OBJ_VAL(className),
-        NUMBER_VAL((double) (uintptr_t) savedIndices));
+        NUMBER_VAL((double) (uintptr_t) savedInfo));
 
     btl_pop(c->vm);
+    btl_table_free(c->vm, &classC.fields);
     btl_table_free(c->vm, &classC.methodIndices);
     BTL_FREE_ARRAY(c->vm, BtlFieldInfo, classC.fieldInfos, classC.fieldInfoCapacity);
 }
@@ -2170,22 +2264,113 @@ static void switchStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCo
     c->currentSwitch = switchCtx.enclosing;
 }
 
+// for-in statement: for (var x in collection) { ... }
+static void forInStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, int varSlot) {
+    // At this point we've already parsed: for ( var <name> in
+    // varSlot is the local slot for the loop variable
+
+    // Compile the collection expression — pushes collection onto stack
+    expression(p, s, c, cc);
+    consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')' after for-in.");
+
+    // Register the collection as an anonymous local so the compiler knows
+    // this stack slot is occupied (prevents slot collisions with shadow vars)
+    addLocal(p, c, syntheticToken(""));
+    c->locals[c->localCount - 1].depth = c->scopeDepth;
+
+    // Emit OP_ITER_INIT: validates collection is list/table, pushes index 0
+    emitByte(p, c, BTL_OP_ITER_INIT);
+
+    // Register the index as an anonymous local too
+    addLocal(p, c, syntheticToken(""));
+    c->locals[c->localCount - 1].depth = c->scopeDepth;
+
+    // Stack: [..., loop_var(varSlot), collection(varSlot+1), index(varSlot+2)]
+
+    // Loop start point
+    int loopStart = currentChunk(c)->count;
+
+    // Emit OP_ITER_NEXT: checks if more elements; if not, jumps to exit
+    // Operands: [slot:8][offset:16] — slot is the loop variable to set
+    emitByte(p, c, BTL_OP_ITER_NEXT);
+    emitByte(p, c, (uint8_t) varSlot);
+    int exitJumpOffset = currentChunk(c)->count;
+    btl_chunk_write(c->vm, currentChunk(c), 0xff, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), 0xff, p->previous.line);
+    // If we get here (didn't jump), the loop variable is set and we continue
+
+    // Set up the loop structure for break/continue
+    BtlLoop loop = { .enclosing = c->currentLoop, .start = loopStart,
+                     .scopeDepth = c->scopeDepth, .breakCount = 0 };
+    c->currentLoop = &loop;
+
+    // Compile the loop body with variable shadowing (same as C-style for)
+    beginScope(c);
+    int shadowVar = -1;
+    if (varSlot != -1) {
+        emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) varSlot);
+        shadowVar = c->localCount;
+        BtlLocal* shadow = &c->locals[c->localCount++];
+        shadow->name = c->locals[varSlot].name;
+        shadow->depth = c->scopeDepth;
+        shadow->isCaptured = false;
+        shadow->isModified = false;
+    }
+    statement(p, s, c, cc);
+    if (varSlot != -1) {
+        emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) shadowVar);
+        emitBytes(p, c, BTL_OP_SET_LOCAL, (uint8_t) varSlot);
+        emitPopOrRemoveLoad(p, c);
+    }
+    endScope(p, c);
+
+    // Loop back to OP_ITER_NEXT
+    emitLoop(p, c, loopStart);
+
+    // Patch the exit jump
+    patchJump(p, c, exitJumpOffset);
+
+    // Patch break jumps
+    for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
+    c->currentLoop = loop.enclosing;
+
+    // Pop iterator state: index and collection
+    emitByte(p, c, BTL_OP_POP);  // index
+    emitByte(p, c, BTL_OP_POP);  // collection
+    // Remove the anonymous locals from the compiler
+    c->localCount -= 2;
+}
+
 static void forStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
     beginScope(c);
     consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '('.");
-    if (match(p, s, BTL_TOKEN_SEMICOLON)) {
-    } else if (match(p, s, BTL_TOKEN_VAR)) {
-        int global = parseVariable(p, s, c, "Expect name.");
+
+    // Check for for-in pattern: for (var x in expr)
+    if (match(p, s, BTL_TOKEN_VAR)) {
+        int global = parseVariable(p, s, c, "Expect variable name.");
+        if (match(p, s, BTL_TOKEN_IN)) {
+            // for-in loop: for (var x in collection)
+            emitByte(p, c, BTL_OP_NULL);  // initialize loop var to null
+            defineVariable(p, c, global);
+            int varSlot = c->localCount - 1;
+            forInStatement(p, s, c, cc, varSlot);
+            endScope(p, c);
+            return;
+        }
+        // Not for-in, continue as C-style: for (var x = expr; ...)
         if (match(p, s, BTL_TOKEN_EQUAL)) expression(p, s, c, cc);
         else emitByte(p, c, BTL_OP_NULL);
         consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
         defineVariable(p, c, global);
+    } else if (match(p, s, BTL_TOKEN_SEMICOLON)) {
+        // for (; ...) - no initializer
     } else {
         expression(p, s, c, cc);
         consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
         emitPopOrRemoveLoad(p, c);
     }
 
+    // C-style for loop: condition
     int loopStart = currentChunk(c)->count;
     int exitJump = -1;
     if (!match(p, s, BTL_TOKEN_SEMICOLON)) {
@@ -2194,6 +2379,7 @@ static void forStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompi
         exitJump = emitJump(p, c, BTL_OP_POP_JUMP_IF_FALSE);
     }
 
+    // C-style for loop: increment
     if (!match(p, s, BTL_TOKEN_RIGHT_PAREN)) {
         int bodyJump = emitJump(p, c, BTL_OP_JUMP);
         int incrementStart = currentChunk(c)->count;
@@ -2387,6 +2573,31 @@ static void statement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler
         }
 
         // DON'T decrement c->localCount here - the switch end will handle it!
+    } else if (match(p, s, BTL_TOKEN_CONTINUE)) {
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';' after continue.");
+
+        if (c->currentLoop == NULL) {
+            errorAt(p, &p->previous, "Can't use 'continue' outside of a loop.");
+            return;
+        }
+
+        // Pop locals up to the loop's scope depth
+        int popCount = 0;
+        for (int i = c->localCount - 1; i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth; i--) {
+            if (c->locals[i].isCaptured) {
+                if (popCount > 0) {
+                    emitPopN(p, c, popCount);
+                    popCount = 0;
+                }
+                emitByte(p, c, BTL_OP_CLOSE_UPVALUE);
+            } else {
+                popCount++;
+            }
+        }
+        if (popCount > 0) emitPopN(p, c, popCount);
+
+        // Jump back to loop start (condition/increment/iterator)
+        emitLoop(p, c, c->currentLoop->start);
     } else if (match(p, s, BTL_TOKEN_LEFT_BRACE)) {
         beginScope(c);
         block(p, s, c, cc);

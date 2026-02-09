@@ -77,6 +77,18 @@ static uint32_t hashValue(BtlValue value) {
         return (uint32_t)((uintptr_t)AS_OBJ(value) >> 3);
     }
 
+    // For int values, hash the double representation so that
+    // INT_VAL(42) and NUMBER_VAL(42.0) hash to the same bucket
+    if (IS_INT(value)) {
+        double d = (double)AS_INT(value);
+        BtlValue numVal = NUMBER_VAL(d);
+        uint64_t bits = numVal;
+        bits ^= bits >> 33;
+        bits *= 0xff51afd7ed558ccd;
+        bits ^= bits >> 33;
+        return (uint32_t)bits;
+    }
+
     // Mix bits for numbers/bools to get good distribution
     uint64_t bits = value;
     bits ^= bits >> 33;
@@ -90,6 +102,14 @@ static uint32_t hashValue(BtlValue value) {
 
         case BTL_VAL_NIL:
             return 5;
+
+        case BTL_VAL_INT: {
+            // Hash as double so INT_VAL(42) == NUMBER_VAL(42.0) hash the same
+            double d = (double)AS_INT(value);
+            uint64_t bits;
+            memcpy(&bits, &d, sizeof(double));
+            return (uint32_t)(bits ^ (bits >> 32));
+        }
 
         case BTL_VAL_NUMBER: {
             uint64_t bits;
