@@ -8,7 +8,7 @@
 - Classes with single inheritance
 - First-class functions and closures
 - Distinct int and float types with automatic promotion
-- Built-in lists and tables (dictionaries)
+- Built-in lists and tables (dictionaries) with `for...in` iteration
 - Native methods on strings, ints, floats, lists, and tables
 - Bitwise operations on integers
 - Switch expressions with comparison operators

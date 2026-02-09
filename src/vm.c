@@ -358,7 +358,7 @@ bool btl_call_value(VM* vm, BtlValue callee, int argCount) {
             return call(vm, AS_CLOSURE(callee), argCount);
         case BTL_OBJ_NATIVE: {
             BtlNativeFn native = AS_NATIVE(callee);
-            BtlValue result = native(argCount, vm->stackTop - argCount);
+            BtlValue result = native(vm, argCount, vm->stackTop - argCount);
             vm->stackTop -= argCount + 1;
             btl_push(vm, result);
             return true;
@@ -942,7 +942,9 @@ BtlInterpretResult btl_run(VM* vm) {
     && L_BTL_OP_IMPORT,
     && L_BTL_OP_IMPORT_LONG,
     && L_BTL_OP_DO_NEW,
-    && L_BTL_OP_DO_INVOKE
+    && L_BTL_OP_DO_INVOKE,
+    && L_BTL_OP_ITER_INIT,
+    && L_BTL_OP_ITER_NEXT
     };
 
 #define DISPATCH() do { \
@@ -2733,6 +2735,58 @@ OPCODE(BTL_OP_DO_INVOKE) : {
     for (int i = 0; i <= argCount; i++) btl_pop(vm);
 
     btl_push(vm, OBJ_VAL(future));
+    DISPATCH();
+}
+OPCODE(BTL_OP_ITER_INIT) : {
+    // Stack: [..., collection]
+    // Validates collection is a list or table, pushes index 0
+    BtlValue collection = peek(vm, 0);
+    if (!IS_LIST(collection) && !IS_TABLE(collection)) {
+        STORE_FRAME();
+        btl_runtime_error(vm, "Can only iterate over lists and tables.");
+        return BTL_INTERPRET_RUNTIME_ERROR;
+    }
+    btl_push(vm, INT_VAL(0));  // push index 0
+    // Stack: [..., collection, 0]
+    DISPATCH();
+}
+OPCODE(BTL_OP_ITER_NEXT) : {
+    // Operands: [slot:8][offset:16]
+    // Stack: [..., loop_var, collection, index]
+    uint8_t slot = READ_BYTE();
+    uint16_t offset = READ_SHORT();
+    BtlValue indexVal = peek(vm, 0);    // index
+    BtlValue collection = peek(vm, 1);  // collection
+    int index = (int) AS_INT(indexVal);
+
+    if (IS_LIST(collection)) {
+        ObjList* list = AS_LIST(collection);
+        if (index >= list->items.count) {
+            // Done iterating - jump to exit
+            ip += offset;
+            DISPATCH();
+        }
+        // Set loop variable to current element
+        frame->slots[slot] = list->items.values[index];
+        // Increment index
+        vm->stackTop[-1] = INT_VAL(index + 1);
+    } else {
+        // Table iteration: find next non-empty entry
+        ObjTable* table = AS_TABLE(collection);
+        while (index < table->table.capacity) {
+            BtlEntry* entry = &table->table.entries[index];
+            if (!IS_EMPTY(entry->key)) {
+                // Found a valid entry - set loop variable to the key
+                frame->slots[slot] = entry->key;
+                // Increment index past this entry
+                vm->stackTop[-1] = INT_VAL(index + 1);
+                DISPATCH();
+            }
+            index++;
+        }
+        // No more entries - jump to exit
+        ip += offset;
+    }
     DISPATCH();
 }
 #ifndef BTL_HAS_COMPUTED_GOTOS

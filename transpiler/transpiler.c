@@ -278,6 +278,14 @@ static void collect_jump_targets(ObjFunction* fn, bool* targets, int code_len, L
             if (target <= code_len) targets[target] = true;
             break;
         }
+                                /* 1-byte slot + 16-bit forward jump (iterator)*/
+        case BTL_OP_ITER_NEXT: {
+            ip += 1; /* skip slot byte */
+            uint16_t offset = (uint16_t) ((code[ip] << 8) | code[ip + 1]); ip += 2;
+            int target = ip + offset;
+            if (target <= code_len) targets[target] = true;
+            break;
+        }
                                 /* 16-bit backward jump - this is a loop!*/
         case BTL_OP_LOOP: {
             uint16_t offset = (uint16_t) ((code[ip] << 8) | code[ip + 1]); ip += 2;
@@ -4975,6 +4983,27 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_do_invoke(vm, frame, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameConst, argc);
             emit_call_bracket_close(t);
+            break;
+        }
+
+                           // ================================================================
+                           // ITERATORS (for...in)
+                           // ================================================================
+        case BTL_OP_ITER_INIT: {
+            emit_comment(t, start_ip, "OP_ITER_INIT");
+            emit_sync(t);
+            OUT(t, "    if (!btl_compiled_iter_init(vm)) return BTL_INTERPRET_RUNTIME_ERROR;\n");
+            emit_reload(t);
+            type_push(&ts, TYPE_UNKNOWN);  /* pushed index 0 */
+            break;
+        }
+        case BTL_OP_ITER_NEXT: {
+            uint8_t slot = code[ip++];
+            uint16_t offset = (uint16_t) ((code[ip] << 8) | code[ip + 1]); ip += 2;
+            emit_comment(t, start_ip, "OP_ITER_NEXT");
+            emit_sync(t);
+            OUT(t, "    if (!btl_compiled_iter_next(vm, %d)) goto L_%04d;\n", slot, ip + offset);
+            emit_reload(t);
             break;
         }
 

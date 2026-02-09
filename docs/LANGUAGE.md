@@ -193,22 +193,60 @@ while (i < 10) {
 
 ### For Loop
 
+C-style for loop with initializer, condition, and increment:
+
 ```js
 for (var i = 0; i < 10; i++) {
     system.println(i);
 }
 ```
 
+### For...In Loop
+
+Iterate over the elements of a **list** or the keys of a **table**:
+
+```js
+// Iterate over list values
+var nums = [1, 2, 3, 4, 5];
+for (var n in nums) {
+    system.println(n);
+}
+
+// Iterate over table keys
+var person = ["name": "Alice", "age": 30];
+for (var key in person) {
+    system.println(key + ": " + person[key].toString());
+}
+
+// Inline collection
+for (var word in ["hello", "world"]) {
+    system.println(word);
+}
+```
+
+Works with:
+- **Lists** — iterates over values in order
+- **Tables** — iterates over keys (order is not guaranteed)
+
 ### Break and Continue
 
 - `break` exits the innermost loop or switch
 - `continue` skips to the next iteration of the innermost loop
 
+Both work in `while`, `for`, and `for...in` loops:
+
 ```js
+// Skip even numbers, stop at 8
 for (var i = 0; i < 10; i++) {
-    if (i == 5) continue;  // skip 5
-    if (i == 8) break;     // stop at 8
+    if (i % 2 == 0) continue;
+    if (i == 8) break;
     system.println(i);
+}
+
+// Skip specific elements in for-in
+for (var n in [1, 2, 3, 4, 5]) {
+    if (n == 3) continue;
+    system.println(n);  // 1, 2, 4, 5
 }
 ```
 
@@ -216,6 +254,7 @@ for (var i = 0; i < 10; i++) {
 ifStmt       -> "if" "(" expression ")" statement ( "else" statement )?
 whileStmt    -> "while" "(" expression ")" statement
 forStmt      -> "for" "(" forInit? ";" expression? ";" expression? ")" statement
+               | "for" "(" "var" IDENTIFIER "in" expression ")" statement
 forInit      -> varDecl | expression
 returnStmt   -> "return" expression? ";"
 breakStmt    -> "break" expression? ";"
@@ -601,6 +640,7 @@ var x = 10;  // inline comment
 | `func` | Function declaration |
 | `if` | Conditional |
 | `import` | Import module |
+| `in` | For-in loop iterator |
 | `null` | Null value |
 | `or` | Logical OR |
 | `return` | Return from function |

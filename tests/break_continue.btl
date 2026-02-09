@@ -1,0 +1,120 @@
+// break_continue.btl - Test break and continue in all loop types
+import "system";
+// expect: --- while break ---
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: --- while continue ---
+// expect: 1
+// expect: 2
+// expect: 4
+// expect: 5
+// expect: --- for break ---
+// expect: 0
+// expect: 1
+// expect: 2
+// expect: --- for continue ---
+// expect: 0
+// expect: 1
+// expect: 3
+// expect: 4
+// expect: --- for-in break ---
+// expect: a
+// expect: b
+// expect: --- for-in continue ---
+// expect: 1
+// expect: 2
+// expect: 4
+// expect: 5
+// expect: --- nested break ---
+// expect: 0:0
+// expect: 0:1
+// expect: 1:0
+// expect: 1:1
+// expect: 2:0
+// expect: 2:1
+// expect: --- nested continue ---
+// expect: 0:1
+// expect: 0:2
+// expect: 1:1
+// expect: 1:2
+// expect: 2:1
+// expect: 2:2
+// expect: --- continue accumulate ---
+// expect: 12
+// expect: done
+
+// Test 1: while + break
+system.println("--- while break ---");
+var i = 0;
+while (i < 10) {
+    i = i + 1;
+    if (i > 3) break;
+    system.println(i);
+}
+
+// Test 2: while + continue
+system.println("--- while continue ---");
+i = 0;
+while (i < 5) {
+    i = i + 1;
+    if (i == 3) continue;
+    system.println(i);
+}
+
+// Test 3: C-style for + break
+system.println("--- for break ---");
+for (var j = 0; j < 10; j++) {
+    if (j == 3) break;
+    system.println(j);
+}
+
+// Test 4: C-style for + continue
+system.println("--- for continue ---");
+for (var j = 0; j < 5; j++) {
+    if (j == 2) continue;
+    system.println(j);
+}
+
+// Test 5: for-in + break
+system.println("--- for-in break ---");
+for (var x in ["a", "b", "c", "d", "e"]) {
+    if (x == "c") break;
+    system.println(x);
+}
+
+// Test 6: for-in + continue
+system.println("--- for-in continue ---");
+for (var n in [1, 2, 3, 4, 5]) {
+    if (n == 3) continue;
+    system.println(n);
+}
+
+// Test 7: nested loops with break
+system.println("--- nested break ---");
+for (var a = 0; a < 3; a++) {
+    for (var b = 0; b < 3; b++) {
+        if (b == 2) break;
+        system.println(a.toString() + ":" + b.toString());
+    }
+}
+
+// Test 8: nested for-in with continue
+system.println("--- nested continue ---");
+for (var a in [0, 1, 2]) {
+    for (var b in [0, 1, 2]) {
+        if (b == 0) continue;
+        system.println(a.toString() + ":" + b.toString());
+    }
+}
+
+// Test 9: continue with accumulation (for-in)
+system.println("--- continue accumulate ---");
+var sum = 0;
+for (var n in [1, 2, 3, 4, 5]) {
+    if (n == 3) continue;
+    sum = sum + n;
+}
+system.println(sum);
+
+system.println("done");

@@ -369,6 +369,16 @@ typedef enum {
     BTL_OP_DO_NEW,              //                | do Class(args) - create actor
     BTL_OP_DO_INVOKE,           //                | do actor.method(args) - send message
 
+    // ========================================================================
+    // ITERATION (for...in)
+    //
+    // Iterator opcodes for for-in loops over lists and tables.
+    // Stack layout during iteration:
+    //   [..., loop_var, collection, index]
+    // ========================================================================
+    BTL_OP_ITER_INIT,           //                | Validate collection, push index 0
+    BTL_OP_ITER_NEXT,           // [slot:8][offset:16] | Advance iterator or jump to exit
+
 } BtlOpCode;
 
 // ----------------------------------------------------------------------------

@@ -519,6 +519,15 @@ int btl_disassemble_instruction(BTLRuntime* runtime, BtlChunk* chunk, int offset
     case BTL_OP_DO_NEW:             return btl_byte(runtime, "OP_DO_NEW", chunk, offset);
     case BTL_OP_DO_INVOKE:          return btl_invoke(runtime, "OP_DO_INVOKE", chunk, offset);
 
+        // Iterator operations
+    case BTL_OP_ITER_INIT:          return btl_simple(runtime, "OP_ITER_INIT", offset);
+    case BTL_OP_ITER_NEXT: {
+        uint8_t slot = chunk->code[offset + 1];
+        uint16_t jmp = (uint16_t) (chunk->code[offset + 2] << 8 | chunk->code[offset + 3]);
+        btl_debug_print(runtime, "%-24s slot=%d -> %d\n", "OP_ITER_NEXT", slot, offset + 4 + (int)jmp);
+        return offset + 4;
+    }
+
     default:
         btl_debug_print(runtime, "UNKNOWN_OP %d\n", op);
         return offset + 1;

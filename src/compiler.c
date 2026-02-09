@@ -2264,22 +2264,113 @@ static void switchStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCo
     c->currentSwitch = switchCtx.enclosing;
 }
 
+// for-in statement: for (var x in collection) { ... }
+static void forInStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, int varSlot) {
+    // At this point we've already parsed: for ( var <name> in
+    // varSlot is the local slot for the loop variable
+
+    // Compile the collection expression — pushes collection onto stack
+    expression(p, s, c, cc);
+    consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')' after for-in.");
+
+    // Register the collection as an anonymous local so the compiler knows
+    // this stack slot is occupied (prevents slot collisions with shadow vars)
+    addLocal(p, c, syntheticToken(""));
+    c->locals[c->localCount - 1].depth = c->scopeDepth;
+
+    // Emit OP_ITER_INIT: validates collection is list/table, pushes index 0
+    emitByte(p, c, BTL_OP_ITER_INIT);
+
+    // Register the index as an anonymous local too
+    addLocal(p, c, syntheticToken(""));
+    c->locals[c->localCount - 1].depth = c->scopeDepth;
+
+    // Stack: [..., loop_var(varSlot), collection(varSlot+1), index(varSlot+2)]
+
+    // Loop start point
+    int loopStart = currentChunk(c)->count;
+
+    // Emit OP_ITER_NEXT: checks if more elements; if not, jumps to exit
+    // Operands: [slot:8][offset:16] — slot is the loop variable to set
+    emitByte(p, c, BTL_OP_ITER_NEXT);
+    emitByte(p, c, (uint8_t) varSlot);
+    int exitJumpOffset = currentChunk(c)->count;
+    btl_chunk_write(c->vm, currentChunk(c), 0xff, p->previous.line);
+    btl_chunk_write(c->vm, currentChunk(c), 0xff, p->previous.line);
+    // If we get here (didn't jump), the loop variable is set and we continue
+
+    // Set up the loop structure for break/continue
+    BtlLoop loop = { .enclosing = c->currentLoop, .start = loopStart,
+                     .scopeDepth = c->scopeDepth, .breakCount = 0 };
+    c->currentLoop = &loop;
+
+    // Compile the loop body with variable shadowing (same as C-style for)
+    beginScope(c);
+    int shadowVar = -1;
+    if (varSlot != -1) {
+        emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) varSlot);
+        shadowVar = c->localCount;
+        BtlLocal* shadow = &c->locals[c->localCount++];
+        shadow->name = c->locals[varSlot].name;
+        shadow->depth = c->scopeDepth;
+        shadow->isCaptured = false;
+        shadow->isModified = false;
+    }
+    statement(p, s, c, cc);
+    if (varSlot != -1) {
+        emitBytes(p, c, BTL_OP_GET_LOCAL, (uint8_t) shadowVar);
+        emitBytes(p, c, BTL_OP_SET_LOCAL, (uint8_t) varSlot);
+        emitPopOrRemoveLoad(p, c);
+    }
+    endScope(p, c);
+
+    // Loop back to OP_ITER_NEXT
+    emitLoop(p, c, loopStart);
+
+    // Patch the exit jump
+    patchJump(p, c, exitJumpOffset);
+
+    // Patch break jumps
+    for (int i = 0; i < loop.breakCount; i++) patchJump(p, c, loop.breakJumps[i]);
+    c->currentLoop = loop.enclosing;
+
+    // Pop iterator state: index and collection
+    emitByte(p, c, BTL_OP_POP);  // index
+    emitByte(p, c, BTL_OP_POP);  // collection
+    // Remove the anonymous locals from the compiler
+    c->localCount -= 2;
+}
+
 static void forStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc) {
     beginScope(c);
     consume(p, s, BTL_TOKEN_LEFT_PAREN, "Expect '('.");
-    if (match(p, s, BTL_TOKEN_SEMICOLON)) {
-    } else if (match(p, s, BTL_TOKEN_VAR)) {
-        int global = parseVariable(p, s, c, "Expect name.");
+
+    // Check for for-in pattern: for (var x in expr)
+    if (match(p, s, BTL_TOKEN_VAR)) {
+        int global = parseVariable(p, s, c, "Expect variable name.");
+        if (match(p, s, BTL_TOKEN_IN)) {
+            // for-in loop: for (var x in collection)
+            emitByte(p, c, BTL_OP_NULL);  // initialize loop var to null
+            defineVariable(p, c, global);
+            int varSlot = c->localCount - 1;
+            forInStatement(p, s, c, cc, varSlot);
+            endScope(p, c);
+            return;
+        }
+        // Not for-in, continue as C-style: for (var x = expr; ...)
         if (match(p, s, BTL_TOKEN_EQUAL)) expression(p, s, c, cc);
         else emitByte(p, c, BTL_OP_NULL);
         consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
         defineVariable(p, c, global);
+    } else if (match(p, s, BTL_TOKEN_SEMICOLON)) {
+        // for (; ...) - no initializer
     } else {
         expression(p, s, c, cc);
         consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';'.");
         emitPopOrRemoveLoad(p, c);
     }
 
+    // C-style for loop: condition
     int loopStart = currentChunk(c)->count;
     int exitJump = -1;
     if (!match(p, s, BTL_TOKEN_SEMICOLON)) {
@@ -2288,6 +2379,7 @@ static void forStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompi
         exitJump = emitJump(p, c, BTL_OP_POP_JUMP_IF_FALSE);
     }
 
+    // C-style for loop: increment
     if (!match(p, s, BTL_TOKEN_RIGHT_PAREN)) {
         int bodyJump = emitJump(p, c, BTL_OP_JUMP);
         int incrementStart = currentChunk(c)->count;
@@ -2481,6 +2573,31 @@ static void statement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler
         }
 
         // DON'T decrement c->localCount here - the switch end will handle it!
+    } else if (match(p, s, BTL_TOKEN_CONTINUE)) {
+        consume(p, s, BTL_TOKEN_SEMICOLON, "Expect ';' after continue.");
+
+        if (c->currentLoop == NULL) {
+            errorAt(p, &p->previous, "Can't use 'continue' outside of a loop.");
+            return;
+        }
+
+        // Pop locals up to the loop's scope depth
+        int popCount = 0;
+        for (int i = c->localCount - 1; i >= 0 && c->locals[i].depth > c->currentLoop->scopeDepth; i--) {
+            if (c->locals[i].isCaptured) {
+                if (popCount > 0) {
+                    emitPopN(p, c, popCount);
+                    popCount = 0;
+                }
+                emitByte(p, c, BTL_OP_CLOSE_UPVALUE);
+            } else {
+                popCount++;
+            }
+        }
+        if (popCount > 0) emitPopN(p, c, popCount);
+
+        // Jump back to loop start (condition/increment/iterator)
+        emitLoop(p, c, c->currentLoop->start);
     } else if (match(p, s, BTL_TOKEN_LEFT_BRACE)) {
         beginScope(c);
         block(p, s, c, cc);

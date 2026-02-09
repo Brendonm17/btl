@@ -132,10 +132,28 @@ while (i < 10) {
     i++;
 }
 
-// For loop
+// C-style for loop
 for (var i = 0; i < 10; i++) {
     if (i == 8) break;  // Exit early
     system.println(i);
+}
+
+// For-in loop: iterate over list values
+for (var n in [1, 2, 3, 4, 5]) {
+    system.println(n);
+}
+
+// For-in loop: iterate over table keys
+var person = ["name": "Alice", "age": 30];
+for (var key in person) {
+    system.println(key + ": " + person[key].toString());
+}
+
+// Break and continue in for-in
+for (var n in [1, 2, 3, 4, 5]) {
+    if (n == 3) continue;  // skip 3
+    if (n == 5) break;     // stop at 5
+    system.println(n);     // 1, 2, 4
 }
 ```
 
@@ -234,6 +252,51 @@ person["city"] = "NYC";          // Add new key
 
 // Empty table
 var empty = [:];
+```
+
+---
+
+## Iterating with For...In
+
+```js
+import "system";
+
+// Sum a list of numbers
+var total = 0;
+for (var n in [1, 2, 3, 4, 5]) {
+    total = total + n;
+}
+system.println(total);  // 15
+
+// Nested iteration over a matrix
+var matrix = [[1, 2], [3, 4], [5, 6]];
+for (var row in matrix) {
+    var line = "";
+    for (var val in row) {
+        line = line + val.toString() + " ";
+    }
+    system.println(line);
+}
+// 1 2
+// 3 4
+// 5 6
+
+// Table iteration: sum all values
+var scores = ["math": 90, "english": 85, "science": 92];
+var sum = 0;
+for (var subject in scores) {
+    system.println(subject + ": " + scores[subject].toString());
+    sum = sum + scores[subject];
+}
+system.println("Average: " + (sum / 3).toString());
+
+// Empty collections are safe (loop body never executes)
+for (var x in []) {
+    system.println("never printed");
+}
+for (var k in [:]) {
+    system.println("never printed");
+}
 ```
 
 ---

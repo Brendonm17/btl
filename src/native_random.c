@@ -45,14 +45,14 @@ static double randomDouble(void) {
 // ----------------------------------------------------------------------------
 
 // random() - returns float in [0, 1)
-static BtlValue randomRandom(int argCount, BtlValue* args) {
-    (void) argCount; (void) args;
+static BtlValue randomRandom(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount; (void) args;
     return NUMBER_VAL(randomDouble());
 }
 
 // int(min, max) - returns integer in [min, max] inclusive
-static BtlValue randomInt(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomInt(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     int min = (int) btl_numeric_to_double(args[0]);
     int max = (int) btl_numeric_to_double(args[1]);
     if (min > max) {
@@ -65,37 +65,37 @@ static BtlValue randomInt(int argCount, BtlValue* args) {
 }
 
 // float(min, max) - returns float in [min, max)
-static BtlValue randomFloat(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomFloat(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     double min = btl_numeric_to_double(args[0]);
     double max = btl_numeric_to_double(args[1]);
     return NUMBER_VAL(min + randomDouble() * (max - min));
 }
 
 // seed(n) - seed the RNG
-static BtlValue randomSeed(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomSeed(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     randState = (uint64_t) btl_numeric_to_double(args[0]);
     randSeeded = true;
     return BTL_NULL_VAL;
 }
 
 // bool() - returns true or false with 50% chance
-static BtlValue randomBool(int argCount, BtlValue* args) {
-    (void) argCount; (void) args;
+static BtlValue randomBool(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount; (void) args;
     return BOOL_VAL(xorshift64() & 1);
 }
 
 // chance(p) - returns true with probability p (0.0 to 1.0)
-static BtlValue randomChance(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomChance(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     double p = btl_numeric_to_double(args[0]);
     return BOOL_VAL(randomDouble() < p);
 }
 
 // choice(list) - returns random element from list
-static BtlValue randomChoice(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomChoice(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     if (!IS_LIST(args[0])) {
         return BTL_NULL_VAL;
     }
@@ -108,8 +108,8 @@ static BtlValue randomChoice(int argCount, BtlValue* args) {
 }
 
 // shuffle(list) - shuffles list in place using Fisher-Yates, returns it
-static BtlValue randomShuffle(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomShuffle(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     if (!IS_LIST(args[0])) {
         return BTL_NULL_VAL;
     }
@@ -124,8 +124,8 @@ static BtlValue randomShuffle(int argCount, BtlValue* args) {
 }
 
 // normal(mean, stddev) - returns normally distributed random number (Box-Muller)
-static BtlValue randomNormal(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomNormal(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     double mean = btl_numeric_to_double(args[0]);
     double stddev = btl_numeric_to_double(args[1]);
 
@@ -139,16 +139,16 @@ static BtlValue randomNormal(int argCount, BtlValue* args) {
 }
 
 // dice(sides) - roll a die with n sides (1 to sides)
-static BtlValue randomDice(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomDice(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     int sides = (int) btl_numeric_to_double(args[0]);
     if (sides < 1) sides = 1;
     return INT_VAL((int64_t) (1 + (int) (xorshift64() % (uint64_t) sides)));
 }
 
 // diceSum(count, sides) - roll 'count' dice with 'sides' sides, return sum
-static BtlValue randomDiceSum(int argCount, BtlValue* args) {
-    (void) argCount;
+static BtlValue randomDiceSum(VM* vm, int argCount, BtlValue* args) {
+    (void) vm; (void) argCount;
     int count = (int) btl_numeric_to_double(args[0]);
     int sides = (int) btl_numeric_to_double(args[1]);
     if (count < 1) count = 1;

@@ -1010,3 +1010,56 @@ bool btl_compiled_do_invoke(VM* vm, BtlCallFrame* frame, int nameConst, int argC
     btl_push(vm, OBJ_VAL(future));
     return true;
 }
+
+// ----------------------------------------------------------------------------
+// Iterators (for...in)
+// ----------------------------------------------------------------------------
+
+// OP_ITER_INIT: Validate collection is a list or table, push index 0.
+// Stack before: [..., collection]
+// Stack after:  [..., collection, 0]
+bool btl_compiled_iter_init(VM* vm) {
+    BtlValue collection = vm->stackTop[-1];
+    if (!IS_LIST(collection) && !IS_TABLE(collection)) {
+        btl_runtime_error(vm, "Can only iterate over lists and tables.");
+        return false;
+    }
+    btl_push(vm, INT_VAL(0));
+    return true;
+}
+
+// OP_ITER_NEXT: Advance iterator. Returns 1 if there's a next value, 0 if done.
+// When returning 1, the loop variable at frame->slots[slot] is set.
+// Stack layout: [..., loop_var, collection, index]
+// On next: index is incremented in place, loop var is updated.
+// On done: no stack changes (caller will pop).
+int btl_compiled_iter_next(VM* vm, int slot) {
+    BtlValue indexVal = vm->stackTop[-1];
+    BtlValue collection = vm->stackTop[-2];
+    int index = (int) AS_INT(indexVal);
+
+    BtlCallFrame* frame = &vm->frames[vm->frameCount - 1];
+
+    if (IS_LIST(collection)) {
+        ObjList* list = AS_LIST(collection);
+        if (index >= list->items.count) {
+            return 0;  // done
+        }
+        frame->slots[slot] = list->items.values[index];
+        vm->stackTop[-1] = INT_VAL(index + 1);
+        return 1;  // has next
+    } else {
+        // Table iteration: find next non-empty entry
+        ObjTable* table = AS_TABLE(collection);
+        while (index < table->table.capacity) {
+            BtlEntry* entry = &table->table.entries[index];
+            if (!IS_EMPTY(entry->key)) {
+                frame->slots[slot] = entry->key;
+                vm->stackTop[-1] = INT_VAL(index + 1);
+                return 1;  // has next
+            }
+            index++;
+        }
+        return 0;  // done
+    }
+}

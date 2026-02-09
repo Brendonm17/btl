@@ -227,11 +227,12 @@ static BtlTokenType identifierType(BtlScanner* scanner) {
             break;
 
         case 'i':
-            // "if", "import"
+            // "if", "import", "in"
             if (scanner->current - scanner->start > 1) {
                 switch (scanner->start[1]) {
                     case 'f': return checkKeyword(scanner, 2, 0, "", BTL_TOKEN_IF);
                     case 'm': return checkKeyword(scanner, 2, 4, "port", BTL_TOKEN_IMPORT);
+                    case 'n': return checkKeyword(scanner, 2, 0, "", BTL_TOKEN_IN);
                 }
             }
             break;

@@ -170,4 +170,8 @@ bool btl_compiled_import_long(VM* vm, BtlCallFrame* frame, int nameIdx);
 bool btl_compiled_do_new(VM* vm, int argCount);
 bool btl_compiled_do_invoke(VM* vm, BtlCallFrame* frame, int nameConst, int argCount);
 
+// Iterators (for...in)
+bool btl_compiled_iter_init(VM* vm);
+int btl_compiled_iter_next(VM* vm, int slot);
+
 #endif // btl_compiled_h

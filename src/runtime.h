@@ -139,6 +139,42 @@ ThreadPool* btl_runtime_get_pool(BTLRuntime* runtime);
 int btl_runtime_thread_count(BTLRuntime* runtime);
 
 // ----------------------------------------------------------------------------
+// Embedding API
+//
+// These functions allow external applications (e.g., game engines) to:
+// - Access the VM for native module registration
+// - Register custom native modules
+// - Call BTL functions from C
+// - Access BTL global variables
+// ----------------------------------------------------------------------------
+
+#include "value.h"
+
+// Get the internal VM handle (for native module registration)
+VM* btl_runtime_get_vm(BTLRuntime* runtime);
+
+// Module initializer callback: receives VM, should register native functions
+typedef void (*BtlModuleInitFn)(VM* vm);
+
+// Register a native module initializer
+// The init function will be called immediately to register the module
+void btl_runtime_register_module(BTLRuntime* runtime, const char* name, BtlModuleInitFn init_fn);
+
+// Call a BTL callable value (closure, function, native) from C
+// Pushes the callable and args onto the VM stack, invokes it, returns the result
+// Sets *ok to false on error (NULL ok pointer is allowed)
+BtlValue btl_runtime_call(BTLRuntime* runtime, BtlValue callable,
+                           int argCount, BtlValue* args, bool* ok);
+
+// Get a global variable by name from the root module
+// Returns BTL_NULL_VAL if not found
+BtlValue btl_runtime_get_global(BTLRuntime* runtime, const char* name);
+
+// Set a global variable by name in the root module
+// Creates the global if it doesn't exist
+void btl_runtime_set_global(BTLRuntime* runtime, const char* name, BtlValue value);
+
+// ----------------------------------------------------------------------------
 // Utility
 // ----------------------------------------------------------------------------
 

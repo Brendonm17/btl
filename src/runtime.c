@@ -244,3 +244,122 @@ bool btl_runtime_get_result(BTLRuntime* runtime, void* out_value) {
     (void) out_value;
     return true;
 }
+
+// ============================================================================
+// Embedding API
+// ============================================================================
+
+// Returns the internal VM handle for native module registration
+VM* btl_runtime_get_vm(BTLRuntime* runtime) {
+    if (runtime == NULL) return NULL;
+    return runtime->vm;
+}
+
+// Registers a native module by calling the initializer immediately
+// The init_fn should call btl_native_module_new() and register functions
+void btl_runtime_register_module(BTLRuntime* runtime, const char* name,
+                                  BtlModuleInitFn init_fn) {
+    if (runtime == NULL || !runtime->initialized || init_fn == NULL) return;
+    (void) name;  // The init_fn is responsible for creating the module with the right name
+    init_fn(runtime->vm);
+}
+
+// Calls a BTL callable value from C code
+// Pushes the callable and arguments onto the VM stack, invokes it, returns result
+BtlValue btl_runtime_call(BTLRuntime* runtime, BtlValue callable,
+                            int argCount, BtlValue* args, bool* ok) {
+    if (runtime == NULL || !runtime->initialized) {
+        if (ok) *ok = false;
+        return BTL_NULL_VAL;
+    }
+
+    VM* vm = runtime->vm;
+
+    // Ensure stack has enough space for callable + args
+    btl_ensure_stack_capacity(vm, argCount + 1);
+
+    // Push the callable (will be the "receiver" slot)
+    btl_push(vm, callable);
+
+    // Push all arguments
+    for (int i = 0; i < argCount; i++) {
+        btl_push(vm, args[i]);
+    }
+
+    // Call the value
+    if (!btl_call_value(vm, callable, argCount)) {
+        if (ok) *ok = false;
+        // Pop the callable + args that were pushed
+        vm->stackTop -= argCount + 1;
+        return BTL_NULL_VAL;
+    }
+
+    // Run the VM to execute the call
+    BtlInterpretResult result = btl_run(vm);
+    if (result != BTL_INTERPRET_OK) {
+        if (ok) *ok = false;
+        return BTL_NULL_VAL;
+    }
+
+    // The result should be on top of the stack
+    if (ok) *ok = true;
+    return btl_pop(vm);
+}
+
+// Gets a global variable by name from the root module
+BtlValue btl_runtime_get_global(BTLRuntime* runtime, const char* name) {
+    if (runtime == NULL || !runtime->initialized || name == NULL) {
+        return BTL_NULL_VAL;
+    }
+
+    VM* vm = runtime->vm;
+    ObjModule* module = vm->rootModule;
+    if (module == NULL) return BTL_NULL_VAL;
+
+    // Look up the name in the module's global names table
+    ObjString* nameStr = btl_string_copy(vm, name, (int) strlen(name));
+    btl_push(vm, OBJ_VAL(nameStr));  // GC root
+
+    BtlValue indexVal;
+    if (btl_table_get(&module->globalNames, OBJ_VAL(nameStr), &indexVal)) {
+        int index = (int) AS_NUMBER(indexVal);
+        btl_pop(vm);  // nameStr
+        if (index >= 0 && index < module->globalValues.count) {
+            return module->globalValues.values[index];
+        }
+    }
+
+    btl_pop(vm);  // nameStr
+    return BTL_NULL_VAL;
+}
+
+// Sets a global variable by name in the root module
+void btl_runtime_set_global(BTLRuntime* runtime, const char* name, BtlValue value) {
+    if (runtime == NULL || !runtime->initialized || name == NULL) return;
+
+    VM* vm = runtime->vm;
+    ObjModule* module = vm->rootModule;
+    if (module == NULL) return;
+
+    // Look up the name in the module's global names table
+    ObjString* nameStr = btl_string_copy(vm, name, (int) strlen(name));
+    btl_push(vm, OBJ_VAL(nameStr));  // GC root
+    btl_push(vm, value);             // GC root
+
+    BtlValue indexVal;
+    if (btl_table_get(&module->globalNames, OBJ_VAL(nameStr), &indexVal)) {
+        // Global exists, update its value
+        int index = (int) AS_NUMBER(indexVal);
+        if (index >= 0 && index < module->globalValues.count) {
+            module->globalValues.values[index] = value;
+        }
+    } else {
+        // Global doesn't exist, create it
+        int index = module->globalValues.count;
+        btl_value_array_write(vm, &module->globalValues, value);
+        btl_table_set(vm, &module->globalNames, OBJ_VAL(nameStr), NUMBER_VAL(index));
+    }
+
+    btl_pop(vm);  // value
+    btl_pop(vm);  // nameStr
+}

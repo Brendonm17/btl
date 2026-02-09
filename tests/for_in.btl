@@ -1,0 +1,88 @@
+// for_in.btl - Test for...in iteration over lists and tables
+import "system";
+// expect: 1
+// expect: 2
+// expect: 3
+// expect: 4
+// expect: 5
+// expect: ---
+// expect: hello
+// expect: world
+// expect: ---
+// expect: 15
+// expect: ---
+// expect: 1 2
+// expect: 3 4
+// expect: 5 6
+// expect: ---
+// expect: 1
+// expect: 2
+// expect: ---
+// expect: empty list ok
+// expect: empty table ok
+// expect: ---
+// expect: sum: 10
+// expect: done
+
+// Test 1: Basic list iteration
+var nums = [1, 2, 3, 4, 5];
+for (var n in nums) {
+    system.println(n);
+}
+system.println("---");
+
+// Test 2: String list iteration
+var words = ["hello", "world"];
+for (var w in words) {
+    system.println(w);
+}
+system.println("---");
+
+// Test 3: Accumulating in for-in
+var total = 0;
+for (var n in [1, 2, 3, 4, 5]) {
+    total = total + n;
+}
+system.println(total);
+system.println("---");
+
+// Test 4: Nested for-in
+var matrix = [[1, 2], [3, 4], [5, 6]];
+for (var row in matrix) {
+    var line = "";
+    for (var val in row) {
+        line = line + val.toString() + " ";
+    }
+    system.println(line);
+}
+system.println("---");
+
+// Test 5: Break in for-in
+for (var n in [1, 2, 3, 4, 5]) {
+    if (n == 3) break;
+    system.println(n);
+}
+system.println("---");
+
+// Test 6: Empty list (should not enter body)
+for (var x in []) {
+    system.println("should not print");
+}
+system.println("empty list ok");
+
+// Test 7: Empty table (should not enter body)
+for (var k in [:]) {
+    system.println("should not print");
+}
+system.println("empty table ok");
+system.println("---");
+
+// Test 8: Table iteration (keys)
+var data = ["a": 1, "b": 2, "c": 3, "d": 4];
+var sum = 0;
+for (var key in data) {
+    sum = sum + data[key];
+}
+system.println("sum: " + sum.toString());
+
+system.println("done");
