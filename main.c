@@ -1,8 +1,22 @@
+// ============================================================================
+// main.c - BTL Entry Point
+//
+// This is the main entry point for the BTL interpreter. It handles:
+// - Command line argument parsing
+// - REPL (Read-Eval-Print Loop) mode for interactive use
+// - File execution mode for running scripts
+// ============================================================================
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "runtime.h"
 
+// ----------------------------------------------------------------------------
+// REPL - Interactive interpreter loop
+//
+// Reads lines from stdin and executes them until EOF.
+// ----------------------------------------------------------------------------
 static void repl(BTLRuntime* runtime) {
     char line[1024];
     for (;;) {
@@ -15,13 +29,27 @@ static void repl(BTLRuntime* runtime) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// runFile - Execute a BTL script from a file
+//
+// Exits with code 65 for compile errors, 70 for runtime errors.
+// ----------------------------------------------------------------------------
 static void runFile(BTLRuntime* runtime, const char* path) {
     BTLResult result = btl_runtime_exec_file(runtime, path);
 
-    if (result == BTL_COMPILE_ERROR) exit(65);
-    if (result == BTL_RUNTIME_ERROR) exit(70);
+    if (result == BTL_COMPILE_ERROR) {
+        btl_runtime_free(runtime);
+        exit(65);
+    }
+    if (result == BTL_RUNTIME_ERROR) {
+        btl_runtime_free(runtime);
+        exit(70);
+    }
 }
 
+// ----------------------------------------------------------------------------
+// printUsage - Display help message
+// ----------------------------------------------------------------------------
 static void printUsage(const char* program) {
     fprintf(stderr, "BTL %s\n", btl_version());
     fprintf(stderr, "Usage: %s [options] [script]\n", program);
@@ -31,32 +59,33 @@ static void printUsage(const char* program) {
     fprintf(stderr, "  -v, --version      Show version\n");
 }
 
-int main(int argc, const char* argv []) {
-    // Parse command line options
+// ----------------------------------------------------------------------------
+// main - Entry point
+//
+// Parses command line arguments, creates runtime, runs script or REPL.
+// ----------------------------------------------------------------------------
+int main(int argc, const char* argv[]) {
+    // Initialize default configuration
     BTLConfig config = btl_config_default();
 
-    /*
-    // Override specific settings
-    config.nursery_size = 512 * 1024;           // 512KB nursery instead of 256KB
-    config.initial_heap_size = 2 * 1024 * 1024; // 2MB initial heap
-    config.max_heap_size = 100 * 1024 * 1024;   // 100MB max heap
-    config.gc_threshold = 512 * 1024;           // First GC at 512KB
-    config.gc_grow_factor = 1.5f;               // Grow heap by 1.5x after GC
+    // Configuration can be customized here:
+    // config.nursery_size = 512 * 1024;           // 512KB nursery
+    // config.initial_heap_size = 2 * 1024 * 1024; // 2MB initial heap
+    // config.max_heap_size = 100 * 1024 * 1024;   // 100MB max heap
+    // config.gc_threshold = 512 * 1024;           // First GC at 512KB
+    // config.gc_grow_factor = 1.5f;               // Heap growth factor
+    // config.user_data = custom_context;          // Custom allocator context
+    // config.alloc = custom_alloc;                // Custom allocation
+    // config.realloc = custom_realloc;            // Custom reallocation
+    // config.free = custom_free;                  // Custom deallocation
+    // config.print = custom_print;                // Custom print output
+    // config.error = custom_error;                // Custom error output
 
-    // Custom allocators (e.g., for embedding in a game engine)
-    config.user_data = my_allocator_context;
-    config.alloc = my_alloc;
-    config.realloc = my_realloc;
-    config.free = my_free;
-
-    // Custom I/O (e.g., redirect to a log file or GUI console)
-    config.print = my_print_handler;
-    config.error = my_error_handler;
-    */
-
-    setSystemArgs(argc, argv);
+    // Make command line args available to scripts via system.args
+    btl_set_system_args(argc, argv);
     const char* script = NULL;
 
+    // Parse command line options
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--threads") == 0) {
             if (i + 1 >= argc) {
@@ -83,16 +112,14 @@ int main(int argc, const char* argv []) {
         }
     }
 
-    // Create runtime
+    // Create runtime with configuration
     BTLRuntime* runtime = btl_runtime_new(&config);
     if (!runtime) {
         fprintf(stderr, "Error: failed to create BTL runtime\n");
         return 1;
     }
 
-    //printf("BTL %s (using %d threads)\n", btl_version(), btl_runtime_thread_count(runtime));
-
-    // Run script or REPL
+    // Run script file or interactive REPL
     if (script) {
         runFile(runtime, script);
     } else {
