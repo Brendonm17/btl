@@ -57,7 +57,8 @@ typedef enum BtlObjType {
     BTL_OBJ_NATIVE_CLASS,   // Native class wrapper
     BTL_OBJ_NATIVE_MODULE,  // Native module wrapper
     BTL_OBJ_FUTURE,         // Async result placeholder
-    BTL_OBJ_ACTOR           // Actor for concurrency
+    BTL_OBJ_ACTOR,          // Actor for concurrency
+    BTL_OBJ_ENTITY          // Entity wrapper for game engine integration
 } BtlObjType;
 
 // ============================================================================
@@ -153,6 +154,9 @@ typedef BtlValue (*BtlNativeFn)(VM* vm, int argCount, BtlValue* args);
 // Native method (has receiver)
 typedef BtlValue (*BtlNativeMethodFn)(VM* vm, BtlValue receiver, int argCount, BtlValue* args);
 
+// Native data destructor — called when an instance is GC'd to free nativeData
+typedef void (*BtlNativeDataFreeFn)(void* data);
+
 // ============================================================================
 // Native Method Object
 // ============================================================================
@@ -207,6 +211,7 @@ typedef struct {
 #define IS_NATIVE_MODULE(v)    btl_is_obj_type(v, BTL_OBJ_NATIVE_MODULE)
 #define IS_FUTURE(value)       btl_is_obj_type(value, BTL_OBJ_FUTURE)
 #define IS_ACTOR(value)        btl_is_obj_type(value, BTL_OBJ_ACTOR)
+#define IS_ENTITY(value)       btl_is_obj_type(value, BTL_OBJ_ENTITY)
 
 // ============================================================================
 // Type Cast Macros
@@ -229,6 +234,7 @@ typedef struct {
 #define AS_NATIVE_MODULE(v)    ((ObjNativeModule*)AS_OBJ(v))
 #define AS_FUTURE(value)       ((ObjFuture*)AS_OBJ(value))
 #define AS_ACTOR(value)        ((ObjActor*)AS_OBJ(value))
+#define AS_ENTITY(value)       ((ObjEntity*)AS_OBJ(value))
 
 // ============================================================================
 // Upvalue Box
@@ -351,6 +357,18 @@ typedef struct {
 } BtlMethodEntry;
 
 // ============================================================================
+// Native Field Accessor Types (for engine-backed components)
+//
+// These allow ObjClass to have fields whose get/set operations are intercepted
+// by native C functions instead of reading/writing the ObjInstance fields array.
+// ============================================================================
+typedef BtlValue (*BtlFieldGetterFn)(VM* vm, void* backingData, int fieldIndex);
+typedef void     (*BtlFieldSetterFn)(VM* vm, void* backingData, int fieldIndex, BtlValue value);
+
+// Native constructor callback — replaces default btl_instance_new() + init() flow
+typedef BtlValue (*BtlNativeConstructorFn)(VM* vm, int argCount, BtlValue* args);
+
+// ============================================================================
 // Class Object
 //
 // Represents a class with methods and field layout.
@@ -365,6 +383,16 @@ typedef struct ObjClass {
     BtlTable fieldIndices;          // Maps field names to field indices
     int fieldCount;              // Number of instance fields
     int initCache[9];            // Cached init method indices for arities 0-8 (-1 = not cached, -2 = no init)
+
+    // Native field accessors (NULL = normal BTL fields)
+    BtlFieldGetterFn* nativeGetters;   // Array[fieldCount], NULL entries = use fields[]
+    BtlFieldSetterFn* nativeSetters;   // Array[fieldCount], NULL entries = use fields[]
+
+    // Native constructor (NULL = normal instantiation)
+    BtlNativeConstructorFn nativeConstructor;
+
+    // Native data destructor (NULL = no-op). Called when instance is GC'd to free nativeData.
+    BtlNativeDataFreeFn nativeDataFree;
 } ObjClass;
 
 // ============================================================================
@@ -376,6 +404,7 @@ typedef struct ObjInstance {
     BtlObj obj;
     ObjClass* klass;         // The instance's class
     BtlValue* fields;           // Field values array
+    void* nativeData;        // Optional native backing data (NULL for normal instances)
 } ObjInstance;
 
 // ============================================================================
@@ -408,6 +437,20 @@ typedef struct ObjBoundMethod {
     BtlValue receiver;          // The receiver (this)
     ObjClosure* method;      // The method closure
 } ObjBoundMethod;
+
+// ============================================================================
+// Entity Object
+//
+// Wraps a game engine entity ID with a script-component table.
+// Methods dispatched via ObjNativeClass (same pattern as String/List).
+// ============================================================================
+typedef struct ObjEntity {
+    BtlObj obj;
+    uint64_t id;                    // Engine entity ID
+    void* world;                    // Pointer to engine ECS world (opaque)
+    void* engine;                   // Pointer to engine context (opaque)
+    BtlTable scriptComponents;      // ObjClass* -> ObjInstance* for user BTL components
+} ObjEntity;
 
 // ============================================================================
 // Object Creation Functions
@@ -448,6 +491,20 @@ ObjString* btl_string_copy(VM* vm, const char* chars, int length);
 
 // Create an empty table
 ObjTable* btl_table_obj_new(VM* vm);
+
+// Create an entity object (for game engine integration)
+ObjEntity* btl_entity_new(VM* vm, uint64_t id, void* world, void* engine);
+
+// ============================================================================
+// Native Field Accessor API (for engine-backed component classes)
+// ============================================================================
+
+// Initialize native field accessor arrays on a class
+void btl_class_init_native_fields(VM* vm, ObjClass* klass);
+
+// Add a native-backed field with getter/setter. Returns the field index.
+int btl_class_add_native_field(VM* vm, ObjClass* klass, const char* name,
+                                BtlFieldGetterFn getter, BtlFieldSetterFn setter);
 
 // ============================================================================
 // Native Class/Method/Module Functions

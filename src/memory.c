@@ -282,6 +282,11 @@ void btl_print_value(VM* vm, BtlValue value) {
             }
             break;
         }
+        case BTL_OBJ_ENTITY: {
+            ObjEntity* entity = AS_ENTITY(value);
+            btl_printf(vm, "<entity %" PRIu64 ">", entity->id);
+            break;
+        }
         case BTL_OBJ_UPVALUE:
             btl_print(vm, "<upvalue>");
             break;
@@ -474,7 +479,8 @@ void* btl_object_allocate(VM* vm, size_t size, BtlObjType type) {
     if (type == BTL_OBJ_MODULE || type == BTL_OBJ_CLASS || type == BTL_OBJ_FUNCTION ||
         type == BTL_OBJ_CLOSURE || type == BTL_OBJ_NATIVE || type == BTL_OBJ_NATIVE_CLASS ||
         type == BTL_OBJ_NATIVE_MODULE || type == BTL_OBJ_NATIVE_METHOD ||
-        type == BTL_OBJ_ACTOR || type == BTL_OBJ_FUTURE) {
+        type == BTL_OBJ_ACTOR || type == BTL_OBJ_FUTURE ||
+        type == BTL_OBJ_ENTITY) {
         return allocateInOldGen(vm, size, type);
     }
 
@@ -641,6 +647,11 @@ static void blackenObject(VM* vm, BtlObj* object) {
         btl_gc_mark_value(vm, actor->instance);
         break;
     }
+    case BTL_OBJ_ENTITY: {
+        ObjEntity* entity = (ObjEntity*) object;
+        btl_table_mark(vm, &entity->scriptComponents);
+        break;
+    }
     case BTL_OBJ_NATIVE:
     case BTL_OBJ_STRING:
         break;
@@ -681,6 +692,7 @@ static BtlObj* promoteObject(VM* vm, BtlObj* object) {
     case BTL_OBJ_NATIVE_MODULE: size = sizeof(ObjNativeModule); break;
     case BTL_OBJ_FUTURE: size = sizeof(ObjFuture); break;
     case BTL_OBJ_ACTOR: size = sizeof(ObjActor); break;
+    case BTL_OBJ_ENTITY: size = sizeof(ObjEntity); break;
     default: size = sizeof(BtlObj); break;
     }
 
@@ -783,6 +795,18 @@ static BtlObj* promoteObject(VM* vm, BtlObj* object) {
             newClass->fieldIndices.entries = btl_realloc(vm, NULL, 0, entrySize);
             memcpy(newClass->fieldIndices.entries, oldClass->fieldIndices.entries, entrySize);
         }
+
+        if (oldClass->nativeGetters != NULL && oldClass->fieldCount > 0) {
+            size_t getterSize = sizeof(BtlFieldGetterFn) * oldClass->fieldCount;
+            newClass->nativeGetters = btl_realloc(vm, NULL, 0, getterSize);
+            memcpy(newClass->nativeGetters, oldClass->nativeGetters, getterSize);
+        }
+
+        if (oldClass->nativeSetters != NULL && oldClass->fieldCount > 0) {
+            size_t setterSize = sizeof(BtlFieldSetterFn) * oldClass->fieldCount;
+            newClass->nativeSetters = btl_realloc(vm, NULL, 0, setterSize);
+            memcpy(newClass->nativeSetters, oldClass->nativeSetters, setterSize);
+        }
         break;
     }
     case BTL_OBJ_MODULE: {
@@ -838,6 +862,17 @@ static BtlObj* promoteObject(VM* vm, BtlObj* object) {
             size_t entrySize = sizeof(BtlEntry) * oldNM->globals.capacity;
             newNM->globals.entries = btl_realloc(vm, NULL, 0, entrySize);
             memcpy(newNM->globals.entries, oldNM->globals.entries, entrySize);
+        }
+        break;
+    }
+    case BTL_OBJ_ENTITY: {
+        ObjEntity* oldEntity = (ObjEntity*) object;
+        ObjEntity* newEntity = (ObjEntity*) copy;
+
+        if (oldEntity->scriptComponents.entries != NULL && oldEntity->scriptComponents.capacity > 0) {
+            size_t entrySize = sizeof(BtlEntry) * oldEntity->scriptComponents.capacity;
+            newEntity->scriptComponents.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newEntity->scriptComponents.entries, oldEntity->scriptComponents.entries, entrySize);
         }
         break;
     }
@@ -984,6 +1019,19 @@ static void scanObject(VM* vm, BtlObj* object) {
         actor->klass = (ObjClass*) promoteObject(vm, (BtlObj*) actor->klass);
         break;
     }
+    case BTL_OBJ_ENTITY: {
+        ObjEntity* entity = (ObjEntity*) object;
+        if (entity->scriptComponents.entries != NULL) {
+            for (int i = 0; i < entity->scriptComponents.capacity; i++) {
+                BtlEntry* entry = &entity->scriptComponents.entries[i];
+                if (!IS_EMPTY(entry->key)) {
+                    entry->key = promoteValue(vm, entry->key);
+                    entry->value = promoteValue(vm, entry->value);
+                }
+            }
+        }
+        break;
+    }
     case BTL_OBJ_NATIVE_METHOD: {
         ObjNativeMethod* method = (ObjNativeMethod*) object;
         method->name = (ObjString*) promoteObject(vm, (BtlObj*) method->name);
@@ -1082,6 +1130,15 @@ static void freeNurseryExternals(VM* vm) {
             size = sizeof(ObjInstance);
             break;
         }
+        case BTL_OBJ_ENTITY: {
+            ObjEntity* entity = (ObjEntity*) obj;
+            if (entity->scriptComponents.entries != NULL && entity->scriptComponents.capacity > 0) {
+                btl_realloc(vm, entity->scriptComponents.entries,
+                            sizeof(BtlEntry) * entity->scriptComponents.capacity, 0);
+            }
+            size = sizeof(ObjEntity);
+            break;
+        }
         case BTL_OBJ_BOUND_METHOD:
             size = sizeof(ObjBoundMethod);
             break;
@@ -1131,6 +1188,7 @@ void btl_gc_minor(VM* vm) {
     if (vm->intClass) vm->intClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->intClass);
     if (vm->listClass) vm->listClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->listClass);
     if (vm->tableClass) vm->tableClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->tableClass);
+    if (vm->entityClass) vm->entityClass = (ObjNativeClass*) promoteObject(vm, (BtlObj*) vm->entityClass);
 
     if (vm->modules.entries != NULL) {
         for (int i = 0; i < vm->modules.capacity; i++) {
@@ -1222,6 +1280,12 @@ static void freeObject(VM* vm, BtlObj* object) {
         }
         btl_table_free(vm, &klass->methodIndices);
         btl_table_free(vm, &klass->fieldIndices);
+        if (klass->nativeGetters != NULL) {
+            BTL_FREE_ARRAY(vm, BtlFieldGetterFn, klass->nativeGetters, klass->fieldCount);
+        }
+        if (klass->nativeSetters != NULL) {
+            BTL_FREE_ARRAY(vm, BtlFieldSetterFn, klass->nativeSetters, klass->fieldCount);
+        }
         BTL_FREE(vm, ObjClass, object);
         break;
     }
@@ -1245,6 +1309,9 @@ static void freeObject(VM* vm, BtlObj* object) {
     }
     case BTL_OBJ_INSTANCE: {
         ObjInstance* instance = (ObjInstance*) object;
+        if (instance->nativeData && instance->klass->nativeDataFree) {
+            instance->klass->nativeDataFree(instance->nativeData);
+        }
         if (instance->fields != NULL) {
             BTL_FREE_ARRAY(vm, BtlValue, instance->fields, instance->klass->fieldCount);
         }
@@ -1319,6 +1386,12 @@ static void freeObject(VM* vm, BtlObj* object) {
         BTL_FREE(vm, ObjActor, object);
         break;
     }
+    case BTL_OBJ_ENTITY: {
+        ObjEntity* entity = (ObjEntity*) object;
+        btl_table_free(vm, &entity->scriptComponents);
+        BTL_FREE(vm, ObjEntity, object);
+        break;
+    }
     }
 }
 
@@ -1340,11 +1413,17 @@ static void markRoots(VM* vm) {
     if (vm->intClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->intClass);
     if (vm->listClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->listClass);
     if (vm->tableClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->tableClass);
+    if (vm->entityClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->entityClass);
     btl_table_mark(vm, &vm->nativeModules);
 
     btl_compiler_mark_roots(vm);
     btl_gc_mark_object(vm, (BtlObj*) vm->initString);
     btl_gc_mark_value(vm, vm->lastReturnValue);
+
+    // Mark native GC roots (engine-registered values)
+    for (int i = 0; i < vm->nativeRootCount; i++) {
+        btl_gc_mark_value(vm, vm->nativeRoots[i]);
+    }
 }
 
 void btl_gc_major(VM* vm) {

@@ -244,7 +244,7 @@ BtlValue btl_deep_copy_value(VM* destVM, VM* srcVM, BtlValue value) {
         return OBJ_VAL(dest);
     }
 
-    if (IS_ACTOR(value) || IS_FUTURE(value)) {
+    if (IS_ACTOR(value) || IS_FUTURE(value) || IS_ENTITY(value)) {
         return value;  // Pass by reference - safe to share
     }
 
@@ -367,6 +367,7 @@ ObjActor* btl_actor_new(VM* parentVM, ObjClass* klass, BtlValue* args, int argCo
     actor->vm->numberClass = parentVM->numberClass;
     actor->vm->listClass = parentVM->listClass;
     actor->vm->tableClass = parentVM->tableClass;
+    actor->vm->entityClass = parentVM->entityClass;
 
     // Share the module (contains globals, class definitions)
     actor->vm->rootModule = parentVM->rootModule;
@@ -558,6 +559,12 @@ ObjClass* btl_class_new(struct VM* vm, struct ObjString* name) {
         klass->initCache[i] = -1;
     }
 
+    // Native field accessors (NULL = normal BTL fields)
+    klass->nativeGetters = NULL;
+    klass->nativeSetters = NULL;
+    klass->nativeConstructor = NULL;
+    klass->nativeDataFree = NULL;
+
     return klass;
 }
 
@@ -611,6 +618,7 @@ ObjInstance* btl_instance_new(struct VM* vm, ObjClass* klass) {
 
     ObjInstance* instance = BTL_ALLOCATE_OBJ(vm, ObjInstance, BTL_OBJ_INSTANCE);
     instance->klass = klass;
+    instance->nativeData = NULL;
 
     // Safety: always allocate at least 1 byte if count is 0
     // to prevent malloc(0) implementation-defined behavior
@@ -629,6 +637,43 @@ ObjList* btl_list_new(struct VM* vm) {
     ObjList* list = BTL_ALLOCATE_OBJ(vm, ObjList, BTL_OBJ_LIST);
     btl_value_array_init(&list->items);
     return list;
+}
+
+ObjEntity* btl_entity_new(VM* vm, uint64_t id, void* world, void* engine) {
+    ObjEntity* entity = BTL_ALLOCATE_OBJ(vm, ObjEntity, BTL_OBJ_ENTITY);
+    entity->id = id;
+    entity->world = world;
+    entity->engine = engine;
+    btl_table_init(&entity->scriptComponents);
+    return entity;
+}
+
+void btl_class_init_native_fields(VM* vm, ObjClass* klass) {
+    (void)vm;
+    klass->nativeGetters = NULL;
+    klass->nativeSetters = NULL;
+}
+
+int btl_class_add_native_field(VM* vm, ObjClass* klass, const char* name,
+                                BtlFieldGetterFn getter, BtlFieldSetterFn setter) {
+    ObjString* fieldName = btl_string_copy(vm, name, (int)strlen(name));
+    btl_push(vm, OBJ_VAL(fieldName));
+
+    int index = klass->fieldCount;
+    btl_table_set(vm, &klass->fieldIndices, OBJ_VAL(fieldName), NUMBER_VAL((double)index));
+    klass->fieldCount++;
+
+    // Grow accessor arrays
+    klass->nativeGetters = BTL_GROW_ARRAY(vm, BtlFieldGetterFn,
+        klass->nativeGetters, index, klass->fieldCount);
+    klass->nativeSetters = BTL_GROW_ARRAY(vm, BtlFieldSetterFn,
+        klass->nativeSetters, index, klass->fieldCount);
+
+    klass->nativeGetters[index] = getter;
+    klass->nativeSetters[index] = setter;
+
+    btl_pop(vm);
+    return index;
 }
 
 ObjModule* btl_module_new(struct VM* vm, struct ObjString* name) {
@@ -785,6 +830,11 @@ void btl_object_print(BtlValue value) {
         } else {
             printf("<actor:dead>");
         }
+        break;
+    }
+    case BTL_OBJ_ENTITY: {
+        ObjEntity* entity = AS_ENTITY(value);
+        printf("<entity:%llu>", (unsigned long long)entity->id);
         break;
     }
     default:

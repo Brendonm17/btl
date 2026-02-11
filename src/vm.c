@@ -201,6 +201,7 @@ static ObjNativeClass* getNativeClass(VM* vm, BtlValue value) {
     if (IS_NUMBER(value)) return vm->numberClass;
     if (IS_LIST(value)) return vm->listClass;
     if (IS_TABLE(value)) return vm->tableClass;
+    if (IS_ENTITY(value)) return vm->entityClass;
     return NULL;
 }
 
@@ -324,6 +325,15 @@ bool btl_call_value(VM* vm, BtlValue callee, int argCount) {
         }
         case BTL_OBJ_CLASS: {
             ObjClass* klass = AS_CLASS(callee);
+
+            // Native constructor: bypass normal instantiation
+            if (klass->nativeConstructor) {
+                BtlValue result = klass->nativeConstructor(vm, argCount, vm->stackTop - argCount);
+                vm->stackTop -= argCount + 1;  // Pop args + callee
+                btl_push(vm, result);
+                return true;
+            }
+
             vm->stackTop[-argCount - 1] = OBJ_VAL(btl_instance_new(vm, klass));
 
             char initSig[6];
@@ -505,6 +515,9 @@ static void printValueTrace(VM* vm, BtlValue value) {
             }
             break;
         }
+        case BTL_OBJ_ENTITY:
+            snprintf(buffer, sizeof(buffer), "<entity:%llu>", (unsigned long long)AS_ENTITY(value)->id);
+            break;
         default:
             snprintf(buffer, sizeof(buffer), "<obj>");
             break;
@@ -587,10 +600,13 @@ void btl_vm_init(VM* vm) {
     vm->intClass = NULL;
     vm->listClass = NULL;
     vm->tableClass = NULL;
+    vm->entityClass = NULL;
     vm->rootModule = btl_module_new(vm, btl_string_copy(vm, "main", 4));
     vm->initString = btl_string_copy(vm, "init", 4);
     vm->lastReturnValue = BTL_NULL_VAL;
     vm->runFloor = 0;
+    vm->nativeRootCount = 0;
+    memset(vm->nativeRoots, 0, sizeof(vm->nativeRoots));
     //defineNative(vm, "clock", clockNative);
 
     // Initialize native classes
@@ -1257,7 +1273,11 @@ BtlInterpretResult btl_run(VM* vm) {
                 uint8_t index = READ_BYTE();
                 BtlValue receiver = frame->slots[0];
                 ObjInstance* instance = AS_INSTANCE(receiver);
-                btl_push(vm, instance->fields[index]);
+                if (instance->klass->nativeGetters && instance->klass->nativeGetters[index]) {
+                    btl_push(vm, instance->klass->nativeGetters[index](vm, instance->nativeData, index));
+                } else {
+                    btl_push(vm, instance->fields[index]);
+                }
                 DISPATCH();
             }
             OPCODE(BTL_OP_SET_FIELD_THIS) : {
@@ -1265,8 +1285,12 @@ BtlInterpretResult btl_run(VM* vm) {
                 BtlValue receiver = frame->slots[0];
                 ObjInstance* instance = AS_INSTANCE(receiver);
                 BtlValue value = peek(vm, 0);
-                instance->fields[index] = value;
-                btl_gc_write_barrier(vm, (BtlObj*) instance, value);
+                if (instance->klass->nativeSetters && instance->klass->nativeSetters[index]) {
+                    instance->klass->nativeSetters[index](vm, instance->nativeData, index, value);
+                } else {
+                    instance->fields[index] = value;
+                    btl_gc_write_barrier(vm, (BtlObj*) instance, value);
+                }
                 DISPATCH();
             }
 
@@ -1282,7 +1306,12 @@ BtlInterpretResult btl_run(VM* vm) {
 
                     // FAST PATH
                     if (ic->cachedClass == instance->klass && ic->fieldIndex >= 0) {
-                        vm->stackTop[-1] = instance->fields[ic->fieldIndex];
+                        int fi = ic->fieldIndex;
+                        if (instance->klass->nativeGetters && instance->klass->nativeGetters[fi]) {
+                            vm->stackTop[-1] = instance->klass->nativeGetters[fi](vm, instance->nativeData, fi);
+                        } else {
+                            vm->stackTop[-1] = instance->fields[fi];
+                        }
                         DISPATCH();
                     }
 
@@ -1294,7 +1323,11 @@ BtlInterpretResult btl_run(VM* vm) {
                         int idx = (int) AS_NUMBER(indexVal);
                         ic->cachedClass = instance->klass;
                         ic->fieldIndex = idx;
-                        vm->stackTop[-1] = instance->fields[idx];
+                        if (instance->klass->nativeGetters && instance->klass->nativeGetters[idx]) {
+                            vm->stackTop[-1] = instance->klass->nativeGetters[idx](vm, instance->nativeData, idx);
+                        } else {
+                            vm->stackTop[-1] = instance->fields[idx];
+                        }
                         DISPATCH();
                     }
 
@@ -1378,8 +1411,13 @@ BtlInterpretResult btl_run(VM* vm) {
 
                     // FAST PATH
                     if (ic->cachedClass == instance->klass && ic->fieldIndex >= 0) {
+                        int fi = ic->fieldIndex;
                         BtlValue val = peek(vm, 0);
-                        instance->fields[ic->fieldIndex] = val;
+                        if (instance->klass->nativeSetters && instance->klass->nativeSetters[fi]) {
+                            instance->klass->nativeSetters[fi](vm, instance->nativeData, fi, val);
+                        } else {
+                            instance->fields[fi] = val;
+                        }
                         btl_pop(vm);
                         btl_pop(vm);
                         btl_push(vm, val);
@@ -1395,7 +1433,11 @@ BtlInterpretResult btl_run(VM* vm) {
                         ic->cachedClass = instance->klass;
                         ic->fieldIndex = idx;
                         BtlValue val = peek(vm, 0);
-                        instance->fields[idx] = val;
+                        if (instance->klass->nativeSetters && instance->klass->nativeSetters[idx]) {
+                            instance->klass->nativeSetters[idx](vm, instance->nativeData, idx, val);
+                        } else {
+                            instance->fields[idx] = val;
+                        }
                         btl_pop(vm);
                         btl_pop(vm);
                         btl_push(vm, val);
@@ -2662,6 +2704,7 @@ OPCODE(BTL_OP_DO_NEW) : {
         asyncVM->intClass = vm->intClass;
         asyncVM->listClass = vm->listClass;
         asyncVM->tableClass = vm->tableClass;
+        asyncVM->entityClass = vm->entityClass;
         asyncVM->rootModule = closure->function->module;
 
         AsyncCallTask* task = btl_realloc(vm, NULL, 0, sizeof(AsyncCallTask));
@@ -2800,4 +2843,30 @@ BtlInterpretResult btl_interpret(VM* vm, ObjModule* m, const char* src) {
     ObjClosure* c = btl_closure_new(vm, f);
     btl_pop(vm); btl_push(vm, OBJ_VAL(c));
     call(vm, c, 0); return btl_run(vm);
+}
+
+// ============================================================================
+// Native GC Roots
+// ============================================================================
+
+int btl_gc_add_root(VM* vm, BtlValue value) {
+    if (vm->nativeRootCount >= BTL_MAX_NATIVE_ROOTS) {
+        fprintf(stderr, "[BTL] Warning: Max native GC roots (%d) reached\n", BTL_MAX_NATIVE_ROOTS);
+        return -1;
+    }
+    int index = vm->nativeRootCount++;
+    vm->nativeRoots[index] = value;
+    return index;
+}
+
+void btl_gc_remove_root(VM* vm, int index) {
+    if (index < 0 || index >= vm->nativeRootCount) return;
+    vm->nativeRoots[index] = BTL_NULL_VAL;
+}
+
+void btl_gc_clear_roots(VM* vm) {
+    for (int i = 0; i < vm->nativeRootCount; i++) {
+        vm->nativeRoots[i] = BTL_NULL_VAL;
+    }
+    vm->nativeRootCount = 0;
 }

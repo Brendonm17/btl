@@ -85,6 +85,7 @@ struct VM {
     ObjNativeClass* intClass;    // Native int methods
     ObjNativeClass* listClass;   // Native list methods
     ObjNativeClass* tableClass;  // Native table methods
+    ObjNativeClass* entityClass; // Native entity methods (game engine)
 
     // Old generation GC fields
     size_t bytesAllocated;      // Total bytes allocated in old gen
@@ -109,6 +110,11 @@ struct VM {
     BtlValue lastReturnValue;     // Last returned value
     BTLRuntime* runtime;          // Parent runtime context
     int runFloor;                 // Frame count floor for run() - stops when reached
+
+    // Native GC roots (engine-registered values protected from collection)
+    #define BTL_MAX_NATIVE_ROOTS 64
+    BtlValue nativeRoots[BTL_MAX_NATIVE_ROOTS];
+    int nativeRootCount;
 };
 
 // ----------------------------------------------------------------------------
@@ -170,5 +176,18 @@ bool btl_ensure_stack_capacity(VM* vm, int needed);
 
 // Ensure frame stack has space for one more frame
 bool btl_ensure_frame_capacity(VM* vm);
+
+// ----------------------------------------------------------------------------
+// Native GC Roots
+// ----------------------------------------------------------------------------
+
+// Register a value as a GC root (prevents collection). Returns root index, or -1 if full.
+int btl_gc_add_root(VM* vm, BtlValue value);
+
+// Remove a GC root by index
+void btl_gc_remove_root(VM* vm, int index);
+
+// Clear all native GC roots
+void btl_gc_clear_roots(VM* vm);
 
 #endif // btl_vm_h
