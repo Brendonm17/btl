@@ -141,6 +141,11 @@ typedef struct {
     // Print text to error output
     void (*error)(const char* text, void* user_data);
 
+    // Read a file by path. Returns malloc'd buffer (caller frees) or NULL.
+    // If NULL, the default fopen/fread implementation is used.
+    // out_size receives the file size (may be NULL if caller doesn't need it).
+    char* (*read_file)(const char* path, size_t* out_size, void* user_data);
+
     // User data passed to all I/O functions
     void* user_data;
 } BtlIOHandles;

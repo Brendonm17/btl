@@ -12,6 +12,7 @@
 
 #include "compiled.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 // ----------------------------------------------------------------------------
 // String helpers (extracted from vm.c)
@@ -29,7 +30,7 @@ static ObjString* valueToStringCompiled(VM* vm, BtlValue value) {
         return btl_string_copy(vm, buf, len);
     }
     if (IS_BOOL(value)) return btl_string_copy(vm, AS_BOOL(value) ? "true" : "false", AS_BOOL(value) ? 4 : 5);
-    if (IS_NULL(value)) return btl_string_copy(vm, "null", 3);
+    if (IS_NULL(value)) return btl_string_copy(vm, "null", 4);
     return btl_string_copy(vm, "<object>", 8);
 }
 
@@ -160,6 +161,7 @@ static ObjNativeClass* getNativeClassCompiled(VM* vm, BtlValue value) {
     if (IS_NUMBER(value)) return vm->numberClass;
     if (IS_LIST(value)) return vm->listClass;
     if (IS_TABLE(value)) return vm->tableClass;
+    if (IS_ENTITY(value)) return vm->entityClass;
     return NULL;
 }
 
@@ -181,7 +183,12 @@ bool btl_compiled_get_property(VM* vm, BtlCallFrame* frame, int nameIdx, int icS
 
         // IC fast path
         if (__builtin_expect(ic->cachedClass == instance->klass && ic->fieldIndex >= 0, 1)) {
-            vm->stackTop[-1] = instance->fields[ic->fieldIndex];
+            int fi = ic->fieldIndex;
+            if (instance->klass->nativeGetters && instance->klass->nativeGetters[fi]) {
+                vm->stackTop[-1] = instance->klass->nativeGetters[fi](vm, instance->nativeData, fi);
+            } else {
+                vm->stackTop[-1] = instance->fields[fi];
+            }
             return true;
         }
 
@@ -191,7 +198,11 @@ bool btl_compiled_get_property(VM* vm, BtlCallFrame* frame, int nameIdx, int icS
             int idx = (int) AS_NUMBER(indexVal);
             ic->cachedClass = instance->klass;
             ic->fieldIndex = idx;
-            vm->stackTop[-1] = instance->fields[idx];
+            if (instance->klass->nativeGetters && instance->klass->nativeGetters[idx]) {
+                vm->stackTop[-1] = instance->klass->nativeGetters[idx](vm, instance->nativeData, idx);
+            } else {
+                vm->stackTop[-1] = instance->fields[idx];
+            }
             return true;
         }
         if (bindMethodCompiled(vm, instance->klass, name)) return true;
@@ -206,6 +217,18 @@ bool btl_compiled_get_property(VM* vm, BtlCallFrame* frame, int nameIdx, int icS
             btl_pop(vm);
             btl_push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]);
             return true;
+        }
+        // rawName fallback: strip arity suffix
+        if (name->length > 0) {
+            ObjString* rawName = btl_string_copy(vm, name->chars, name->length - 1);
+            btl_push(vm, OBJ_VAL(rawName));
+            if (btl_table_get(&m->globalNames, OBJ_VAL(rawName), &idx)) {
+                btl_pop(vm);
+                btl_pop(vm);
+                btl_push(vm, m->globalValues.values[(int) AS_NUMBER(idx)]);
+                return true;
+            }
+            btl_pop(vm);
         }
         btl_runtime_error(vm, "Undefined property '%s' in module.", name->chars);
         return false;
@@ -251,8 +274,13 @@ bool btl_compiled_set_property(VM* vm, BtlCallFrame* frame, int nameIdx, int icS
 
         // IC fast path
         if (__builtin_expect(ic->cachedClass == instance->klass && ic->fieldIndex >= 0, 1)) {
+            int fi = ic->fieldIndex;
             BtlValue val = vm->stackTop[-1];
-            instance->fields[ic->fieldIndex] = val;
+            if (instance->klass->nativeSetters && instance->klass->nativeSetters[fi]) {
+                instance->klass->nativeSetters[fi](vm, instance->nativeData, fi, val);
+            } else {
+                instance->fields[fi] = val;
+            }
             vm->stackTop -= 2;
             btl_push(vm, val);
             return true;
@@ -265,13 +293,31 @@ bool btl_compiled_set_property(VM* vm, BtlCallFrame* frame, int nameIdx, int icS
             ic->cachedClass = instance->klass;
             ic->fieldIndex = idx;
             BtlValue val = vm->stackTop[-1];
-            instance->fields[idx] = val;
+            if (instance->klass->nativeSetters && instance->klass->nativeSetters[idx]) {
+                instance->klass->nativeSetters[idx](vm, instance->nativeData, idx, val);
+            } else {
+                instance->fields[idx] = val;
+            }
             vm->stackTop -= 2;
             btl_push(vm, val);
             return true;
         }
 
         btl_runtime_error(vm, "Cannot add new property '%s' to fixed class layout.", name->chars);
+        return false;
+
+    } else if (IS_MODULE(receiver)) {
+        ObjModule* m = AS_MODULE(receiver);
+        ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
+        BtlValue idx;
+        if (btl_table_get(&m->globalNames, OBJ_VAL(name), &idx)) {
+            BtlValue val = vm->stackTop[-1];
+            m->globalValues.values[(int) AS_NUMBER(idx)] = val;
+            vm->stackTop -= 2;
+            btl_push(vm, val);
+            return true;
+        }
+        btl_runtime_error(vm, "Cannot set undefined property in module.");
         return false;
     }
 
@@ -395,6 +441,14 @@ static ObjString* getInitSignature(VM* vm, int argCount) {
 }
 
 bool btl_compiled_call_class(VM* vm, ObjClass* klass, int argCount) {
+    // Native constructor: bypass normal instantiation
+    if (klass->nativeConstructor) {
+        BtlValue result = klass->nativeConstructor(vm, argCount, vm->stackTop - argCount);
+        vm->stackTop -= argCount + 1;
+        btl_push(vm, result);
+        return true;
+    }
+
     // Create instance and replace class on stack
     vm->stackTop[-argCount - 1] = OBJ_VAL(btl_instance_new(vm, klass));
 
@@ -554,6 +608,18 @@ bool btl_compiled_invoke_ic(VM* vm, BtlCallFrame* frame, int nameIdx, int argCou
             vm->stackTop[-argCount - 1] = func;
             return callAndRun(vm, func, argCount);
         }
+        // rawName fallback: strip arity suffix
+        if (name->length > 0) {
+            ObjString* rawName = btl_string_copy(vm, name->chars, name->length - 1);
+            btl_push(vm, OBJ_VAL(rawName));
+            if (btl_table_get(&m->globalNames, OBJ_VAL(rawName), &idx)) {
+                btl_pop(vm);
+                BtlValue func = m->globalValues.values[(int) AS_NUMBER(idx)];
+                vm->stackTop[-argCount - 1] = func;
+                return callAndRun(vm, func, argCount);
+            }
+            btl_pop(vm);
+        }
         btl_runtime_error(vm, "Undefined function '%s' in module.", name->chars);
         return false;
 
@@ -574,8 +640,12 @@ bool btl_compiled_invoke_ic(VM* vm, BtlCallFrame* frame, int nameIdx, int argCou
             ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
             ObjNativeMethod* method = findNativeMethodCompiled(nativeClass, name);
             // Int fallback: if method not found on intClass, try numberClass
+            // Promote receiver to double so Number methods work correctly
             if (method == NULL && IS_INT(receiver)) {
                 method = findNativeMethodCompiled(vm->numberClass, name);
+                if (method != NULL) {
+                    receiver = NUMBER_VAL((double)AS_INT(receiver));
+                }
             }
             if (method != NULL) {
                 if (method->arity >= 0 && argCount != method->arity) {
@@ -584,6 +654,12 @@ bool btl_compiled_invoke_ic(VM* vm, BtlCallFrame* frame, int nameIdx, int argCou
                 }
                 BtlValue* args = vm->stackTop - argCount;
                 BtlValue result = method->function(vm, receiver, argCount, args);
+                // If the native method caused a runtime error (e.g.
+                // entity.add's init() failed), resetStack() was called.
+                // Detect and propagate cleanly.
+                if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
+                    return false;
+                }
                 vm->stackTop -= argCount + 1;
                 btl_push(vm, result);
                 return true;
@@ -783,6 +859,24 @@ bool btl_compiled_index_set(VM* vm) {
 // ----------------------------------------------------------------------------
 
 static char* btl_compiled_readFile(VM* vm, const char* path) {
+    // Use custom file reader if provided (e.g. PAK archive support)
+    if (vm->runtime && vm->runtime->config.platform.io.read_file) {
+        size_t size = 0;
+        char* data = vm->runtime->config.platform.io.read_file(
+            path, &size, vm->runtime->config.platform.io.user_data);
+        if (data) {
+            // Copy into btl_realloc'd buffer so callers can free with
+            // btl_realloc(vm, src, len, 0) consistently.
+            char* copy = (char*) btl_realloc(vm, NULL, 0, size + 1);
+            if (!copy) { free(data); return NULL; }
+            memcpy(copy, data, size);
+            copy[size] = '\0';
+            free(data);
+            return copy;
+        }
+        // Fall through to default fopen if custom reader returns NULL
+    }
+
     FILE* file = fopen(path, "rb");
     if (!file) return NULL;
     fseek(file, 0L, SEEK_END);
@@ -881,6 +975,16 @@ static void compiledAsyncCallRun(void* arg) {
         btl_push(vm, task->args[i]);
     }
 
+    if (!btl_ensure_frame_capacity(vm)) {
+        ObjString* errMsg = btl_string_copy(vm, "Out of memory: cannot grow call stack", 37);
+        btl_future_reject(task->future, OBJ_VAL(errMsg));
+        if (task->args != NULL) btl_realloc(vm, task->args, sizeof(BtlValue) * savedArgCount, 0);
+        btl_vm_free(vm, false);
+        btl_runtime_alloc(runtime, vm, sizeof(VM), 0);
+        btl_runtime_alloc(runtime, task, sizeof(CompiledAsyncCallTask), 0);
+        return;
+    }
+
     BtlCallFrame* frame = &vm->frames[vm->frameCount++];
     frame->closure = task->closure;
     frame->ip = task->closure->function->chunk.code;
@@ -933,13 +1037,16 @@ bool btl_compiled_do_new(VM* vm, int argCount) {
         ObjFuture* future = btl_future_new(vm);
 
         VM* asyncVM = btl_realloc(vm, NULL, 0, sizeof(VM));
+        memset(asyncVM, 0, sizeof(VM));
         asyncVM->runtime = vm->runtime;
         btl_vm_init(asyncVM);
 
         asyncVM->stringClass = vm->stringClass;
         asyncVM->numberClass = vm->numberClass;
+        asyncVM->intClass = vm->intClass;
         asyncVM->listClass = vm->listClass;
         asyncVM->tableClass = vm->tableClass;
+        asyncVM->entityClass = vm->entityClass;
         asyncVM->rootModule = closure->function->module;
 
         CompiledAsyncCallTask* task = btl_realloc(vm, NULL, 0, sizeof(CompiledAsyncCallTask));

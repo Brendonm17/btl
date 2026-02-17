@@ -3,6 +3,9 @@
 //
 // Scans constant pools for ObjFunction values. Each OP_CLOSURE references
 // a function in the constant pool; we walk those recursively.
+//
+// Uses ObjFunction->transpilerId for O(1) duplicate detection and ID lookup
+// instead of linear scans.
 // ============================================================================
 
 #include "collect.h"
@@ -23,6 +26,10 @@ void btl_function_list_init(BtlFunctionList* list) {
 }
 
 void btl_function_list_free(BtlFunctionList* list) {
+    // Clear transpilerId on all collected functions so the tag doesn't leak
+    for (int i = 0; i < list->count; i++) {
+        list->functions[i]->transpilerId = -1;
+    }
     free(list->functions);
     list->functions = NULL;
     list->count = 0;
@@ -36,22 +43,18 @@ static void ensure_capacity(BtlFunctionList* list) {
     list->capacity = new_cap;
 }
 
-static bool already_collected(BtlFunctionList* list, ObjFunction* fn) {
-    for (int i = 0; i < list->count; i++) {
-        if (list->functions[i] == fn) return true;
-    }
-    return false;
-}
-
 // ----------------------------------------------------------------------------
 // Recursive Collection
+//
+// Uses transpilerId >= 0 as the "already collected" marker (O(1) check).
 // ----------------------------------------------------------------------------
 
 static void collect_recursive(ObjFunction* fn, BtlFunctionList* out) {
-    if (fn == NULL || already_collected(out, fn)) return;
+    if (fn == NULL || fn->transpilerId >= 0) return;
 
-    // Add this function
+    // Assign ID and add to list
     ensure_capacity(out);
+    fn->transpilerId = out->count;
     out->functions[out->count++] = fn;
 
     // Scan its constant pool for nested functions
@@ -68,9 +71,9 @@ void btl_collect_functions(ObjFunction* main_fn, BtlFunctionList* out) {
     collect_recursive(main_fn, out);
 }
 
+// O(1) function ID lookup via the pre-assigned transpilerId field.
 int btl_function_id(BtlFunctionList* list, ObjFunction* fn) {
-    for (int i = 0; i < list->count; i++) {
-        if (list->functions[i] == fn) return i;
-    }
-    return -1;
+    (void)list;  // no longer needed for lookup
+    if (fn == NULL) return -1;
+    return fn->transpilerId;
 }

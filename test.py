@@ -77,13 +77,22 @@ def main():
         print(f"Error: {test_dir} directory not found.")
         sys.exit(1)
 
+    # Skip tests with known platform-specific issues
+    skip = set()
+
     files = sorted([f for f in os.listdir(test_dir) if f.endswith(".btl") and not f.startswith("benchmark_") and not f.startswith("perf_")])
     passed = 0
+    skipped = 0
+    failed = []
 
     print(f"Using executable: {executable}")
     print(f"--- Running {len(files)} BTL Tests ---\n")
 
     for file in files:
+        if file in skip:
+            print(f"  ⏭️  {file} (skipped)")
+            skipped += 1
+            continue
         path = os.path.join(test_dir, file)
         success, message = run_test(path, executable)
         if success:
@@ -93,10 +102,13 @@ def main():
             print(f"  ❌ {file}")
             print(f"\n{message}\n")
             print("-" * 40)
-            print(f"TEST FAILED: {file}")
-            sys.exit(1) # Stop immediately on failure
+            failed.append(file)
 
-    print(f"\nSummary: {passed}/{len(files)} passed.")
+    total = len(files) - skipped
+    print(f"\nSummary: {passed}/{total} passed ({skipped} skipped).")
+    if failed:
+        print(f"Failed: {', '.join(failed)}")
+        sys.exit(1)
     sys.exit(0)
 
 if __name__ == "__main__":

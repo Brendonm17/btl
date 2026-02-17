@@ -85,6 +85,12 @@ struct BTLRuntime {
     bool pool_initialized;          // True if pool was successfully created
     VM* vm;                         // Virtual machine instance
     bool initialized;               // True if VM was successfully created
+
+    // Actor registry — tracks live actors for clean shutdown
+    struct ObjActor** actors;       // Dynamic array of live actors
+    int actor_count;                // Number of live actors
+    int actor_capacity;             // Allocated capacity
+    BtlMutexHandle actor_mutex;     // Protects the registry
 };
 
 // ----------------------------------------------------------------------------
@@ -114,6 +120,25 @@ BTLRuntime* btl_runtime_new(const BTLConfig* config);
 
 // Free all runtime resources
 void btl_runtime_free(BTLRuntime* runtime);
+
+// ----------------------------------------------------------------------------
+// Actor Registry
+//
+// Tracks live actors for clean shutdown. Actors register themselves when
+// created and unregister when stopped. btl_runtime_stop_all_actors() must
+// be called before btl_runtime_free() to join all actor threads.
+// ----------------------------------------------------------------------------
+
+struct ObjActor;
+
+// Register a live actor (called by btl_actor_new)
+void btl_runtime_register_actor(BTLRuntime* rt, struct ObjActor* actor);
+
+// Unregister an actor (called by btl_actor_stop)
+void btl_runtime_unregister_actor(BTLRuntime* rt, struct ObjActor* actor);
+
+// Stop all live actors and join their threads
+void btl_runtime_stop_all_actors(BTLRuntime* rt);
 
 // ----------------------------------------------------------------------------
 // Execution

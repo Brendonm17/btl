@@ -252,9 +252,30 @@ BtlThreadHandles btl_thread_handles_default(void) {
 
 // Windows threading implementation using Win32 API
 
+// Wrapper to bridge BtlThreadFunc (cdecl, returns void*) to LPTHREAD_START_ROUTINE (stdcall, returns DWORD)
+typedef struct {
+    BtlThreadFunc func;
+    void* arg;
+} WinThreadTrampoline;
+
+static DWORD WINAPI win_thread_trampoline(LPVOID param) {
+    WinThreadTrampoline ctx = *(WinThreadTrampoline*)param;
+    free(param);
+    ctx.func(ctx.arg);
+    return 0;
+}
+
 static BtlThreadHandle default_thread_create(BtlThreadFunc func, void* arg, void* user_data) {
     (void)user_data;
-    HANDLE thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)func, arg, 0, NULL);
+    WinThreadTrampoline* ctx = malloc(sizeof(WinThreadTrampoline));
+    if (ctx == NULL) return NULL;
+    ctx->func = func;
+    ctx->arg = arg;
+    HANDLE thread = CreateThread(NULL, 0, win_thread_trampoline, ctx, 0, NULL);
+    if (thread == NULL) {
+        free(ctx);
+        return NULL;
+    }
     return (BtlThreadHandle)thread;
 }
 

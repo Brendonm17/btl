@@ -1,0 +1,45 @@
+# Build output directories
+obj/
+obj-mingw/
+build/
+
+# Compiled binaries
+btl
+btl.exe
+btl_debug
+btl_debug.exe
+*.lib
+
+# Static libraries
+libbtl.a
+libbtl-mingw.a
+
+# Object files
+*.o
+*.obj
+
+# Precompiled headers
+*.gch
+*.pch
+
+# Debug symbols
+*.pdb
+*.ilk
+*.dSYM/
+
+# Generated source
+generated.c
+
+# Windows artifacts
+nul
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -69,6 +69,82 @@ BTLConfig btl_config_default(void) {
 }
 
 // ============================================================================
+// Actor Registry
+//
+// Tracks live actors so they can all be stopped before runtime destruction.
+// ============================================================================
+
+#include "object.h"  // For ObjActor
+
+void btl_runtime_register_actor(BTLRuntime* rt, ObjActor* actor) {
+    if (!rt || !actor) return;
+    BtlThreadHandles* th = &rt->config.platform.thread;
+    th->mutex_lock(rt->actor_mutex, th->user_data);
+
+    // Grow if needed
+    if (rt->actor_count >= rt->actor_capacity) {
+        int new_cap = rt->actor_capacity < 8 ? 8 : rt->actor_capacity * 2;
+        ObjActor** new_arr = realloc(rt->actors, sizeof(ObjActor*) * new_cap);
+        if (new_arr) {
+            rt->actors = new_arr;
+            rt->actor_capacity = new_cap;
+        }
+    }
+
+    if (rt->actor_count < rt->actor_capacity) {
+        rt->actors[rt->actor_count++] = actor;
+    }
+
+    th->mutex_unlock(rt->actor_mutex, th->user_data);
+}
+
+void btl_runtime_unregister_actor(BTLRuntime* rt, ObjActor* actor) {
+    if (!rt || !actor) return;
+    BtlThreadHandles* th = &rt->config.platform.thread;
+    th->mutex_lock(rt->actor_mutex, th->user_data);
+
+    for (int i = 0; i < rt->actor_count; i++) {
+        if (rt->actors[i] == actor) {
+            // Swap with last element for O(1) removal
+            rt->actors[i] = rt->actors[rt->actor_count - 1];
+            rt->actor_count--;
+            break;
+        }
+    }
+
+    th->mutex_unlock(rt->actor_mutex, th->user_data);
+}
+
+void btl_runtime_stop_all_actors(BTLRuntime* rt) {
+    if (!rt) return;
+    BtlThreadHandles* th = &rt->config.platform.thread;
+
+    // Snapshot the actor list under lock, then stop outside lock
+    // (btl_actor_stop may call unregister, which also takes the lock)
+    th->mutex_lock(rt->actor_mutex, th->user_data);
+    int count = rt->actor_count;
+    ObjActor** snapshot = NULL;
+    if (count > 0) {
+        snapshot = malloc(sizeof(ObjActor*) * count);
+        if (snapshot) {
+            memcpy(snapshot, rt->actors, sizeof(ObjActor*) * count);
+        }
+    }
+    // Clear the registry so unregister calls during stop are no-ops
+    rt->actor_count = 0;
+    th->mutex_unlock(rt->actor_mutex, th->user_data);
+
+    if (snapshot) {
+        for (int i = 0; i < count; i++) {
+            if (snapshot[i]->alive) {
+                btl_actor_stop(snapshot[i]);
+            }
+        }
+        free(snapshot);
+    }
+}
+
+// ============================================================================
 // Runtime Creation / Destruction
 // ============================================================================
 
@@ -132,12 +208,32 @@ BTLRuntime* btl_runtime_new(const BTLConfig* config) {
     btl_vm_init(runtime->vm);
     runtime->initialized = true;
 
+    // Initialize actor registry
+    runtime->actors = NULL;
+    runtime->actor_count = 0;
+    runtime->actor_capacity = 0;
+    runtime->actor_mutex = cfg.platform.thread.mutex_create(cfg.platform.thread.user_data);
+
     return runtime;
 }
 
 // Frees the BTL runtime and all associated resources
 void btl_runtime_free(BTLRuntime* runtime) {
     if (runtime == NULL) return;
+
+    // Stop all live actors before freeing anything
+    btl_runtime_stop_all_actors(runtime);
+
+    // Free actor registry
+    if (runtime->actor_mutex) {
+        BtlThreadHandles* th = &runtime->config.platform.thread;
+        th->mutex_destroy(runtime->actor_mutex, th->user_data);
+        runtime->actor_mutex = NULL;
+    }
+    free(runtime->actors);
+    runtime->actors = NULL;
+    runtime->actor_count = 0;
+    runtime->actor_capacity = 0;
 
     // Free VM using btl_vm_free
     if (runtime->vm != NULL) {

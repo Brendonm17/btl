@@ -4,7 +4,9 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#ifndef _WIN32
 #include <pthread.h>
+#endif
 
 #include "common.h"
 #include "compiler.h"
@@ -369,6 +371,11 @@ bool btl_call_value(VM* vm, BtlValue callee, int argCount) {
         case BTL_OBJ_NATIVE: {
             BtlNativeFn native = AS_NATIVE(callee);
             BtlValue result = native(vm, argCount, vm->stackTop - argCount);
+            // If the native function caused a runtime error (nested btl_run
+            // failed), resetStack() nuked the value stack. Propagate error.
+            if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
+                return false;
+            }
             vm->stackTop -= argCount + 1;
             btl_push(vm, result);
             return true;
@@ -383,6 +390,11 @@ bool btl_call_value(VM* vm, BtlValue callee, int argCount) {
             // For native module methods, receiver is the module on stack
             BtlValue receiver = vm->stackTop[-argCount - 1];
             BtlValue result = method->function(vm, receiver, argCount, args);
+            // If the native method caused a runtime error (nested btl_run
+            // failed), resetStack() nuked the value stack. Propagate error.
+            if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
+                return false;
+            }
             vm->stackTop -= argCount + 1;
             btl_push(vm, result);
             return true;
@@ -545,6 +557,23 @@ static void traceExecution(VM* vm) {
 
 // --- IO & Natives ---
 static char* readFile(VM* vm, const char* path) {
+    // Use custom file reader if provided (e.g. PAK archive support)
+    if (vm->runtime && vm->runtime->config.platform.io.read_file) {
+        size_t size = 0;
+        char* data = vm->runtime->config.platform.io.read_file(
+            path, &size, vm->runtime->config.platform.io.user_data);
+        if (data) {
+            // Copy into btl_realloc'd buffer so callers can free with
+            // btl_realloc(vm, src, len, 0) consistently.
+            char* copy = (char*) btl_realloc(vm, NULL, 0, size + 1);
+            if (!copy) { free(data); return NULL; }
+            memcpy(copy, data, size);
+            copy[size] = '\0';
+            free(data);
+            return copy;
+        }
+    }
+
     FILE* file = fopen(path, "rb");
     if (!file) return NULL;
     fseek(file, 0L, SEEK_END);
@@ -1976,12 +2005,27 @@ BtlInterpretResult btl_run(VM* vm) {
                     }
 
                     // Call native method
+                    // STORE_FRAME: native methods (e.g. entity.add) may
+                    // re-enter the VM via btl_call_value + btl_run, so ip
+                    // must be saved so that nested btl_run sees the correct
+                    // instruction pointer for this frame.
+                    STORE_FRAME();
                     BtlValue* args = vm->stackTop - argCount;
                     BtlValue result = method->function(vm, receiver, argCount, args);
+
+                    // If the native method caused a runtime error (e.g.
+                    // entity.add's init() failed), resetStack() was called
+                    // which nuked the value stack and frameCount. Detect
+                    // this and propagate the error cleanly instead of
+                    // crashing on invalid stack pointer arithmetic.
+                    if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
+                        return BTL_INTERPRET_RUNTIME_ERROR;
+                    }
 
                     // Pop receiver and args, push result
                     vm->stackTop -= argCount + 1;
                     btl_push(vm, result);
+                    REFRESH_FRAME();
                     DISPATCH();
                 }
             }
@@ -2816,19 +2860,18 @@ OPCODE(BTL_OP_ITER_NEXT) : {
     } else {
         // Table iteration: find next non-empty entry
         ObjTable* table = AS_TABLE(collection);
-        while (index < table->table.capacity) {
-            BtlEntry* entry = &table->table.entries[index];
-            if (!IS_EMPTY(entry->key)) {
-                // Found a valid entry - set loop variable to the key
-                frame->slots[slot] = entry->key;
-                // Increment index past this entry
-                vm->stackTop[-1] = INT_VAL(index + 1);
-                DISPATCH();
-            }
+        while (index < table->table.capacity && IS_EMPTY(table->table.entries[index].key)) {
             index++;
         }
-        // No more entries - jump to exit
-        ip += offset;
+        if (index < table->table.capacity) {
+            // Found a valid entry - set loop variable to the key
+            frame->slots[slot] = table->table.entries[index].key;
+            // Increment index past this entry
+            vm->stackTop[-1] = INT_VAL(index + 1);
+        } else {
+            // No more entries - jump to exit
+            ip += offset;
+        }
     }
     DISPATCH();
 }

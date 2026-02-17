@@ -154,9 +154,6 @@ typedef BtlValue (*BtlNativeFn)(VM* vm, int argCount, BtlValue* args);
 // Native method (has receiver)
 typedef BtlValue (*BtlNativeMethodFn)(VM* vm, BtlValue receiver, int argCount, BtlValue* args);
 
-// Native data destructor — called when an instance is GC'd to free nativeData
-typedef void (*BtlNativeDataFreeFn)(void* data);
-
 // ============================================================================
 // Native Method Object
 // ============================================================================
@@ -333,6 +330,7 @@ typedef struct ObjFunction {
     int fieldICCount;        // Number of field inline cache slots
     int methodICCount;       // Number of method inline cache slots
     void* compiledHandler;   // Transpiler: direct C function pointer
+    int transpilerId;        // Transpiler: function ID assigned during collection (-1 = unassigned)
 } ObjFunction;
 
 // ============================================================================
@@ -367,6 +365,9 @@ typedef void     (*BtlFieldSetterFn)(VM* vm, void* backingData, int fieldIndex, 
 
 // Native constructor callback — replaces default btl_instance_new() + init() flow
 typedef BtlValue (*BtlNativeConstructorFn)(VM* vm, int argCount, BtlValue* args);
+
+// Native data destructor — called when instance is GC'd to free nativeData
+typedef void (*BtlNativeDataFreeFn)(void* data);
 
 // ============================================================================
 // Class Object

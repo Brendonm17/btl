@@ -968,7 +968,29 @@ static void number(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* c
 
 static void string(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
-    emitConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, p->previous.start + 1, p->previous.length - 2)));
+    const char* src = p->previous.start + 1;
+    int srcLen = p->previous.length - 2;
+
+    // Strip \r from \r\n sequences (cross-platform CRLF handling)
+    // Check if any \r exists first to avoid allocation in the common case
+    bool hasCR = false;
+    for (int i = 0; i < srcLen; i++) {
+        if (src[i] == '\r') { hasCR = true; break; }
+    }
+    if (!hasCR) {
+        emitConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, src, srcLen)));
+        return;
+    }
+
+    // Build a cleaned copy with \r removed before \n
+    char* buf = BTL_ALLOCATE(c->vm, char, srcLen);
+    int dst = 0;
+    for (int i = 0; i < srcLen; i++) {
+        if (src[i] == '\r' && i + 1 < srcLen && src[i + 1] == '\n') continue;
+        buf[dst++] = src[i];
+    }
+    emitConstant(p, c, OBJ_VAL(btl_string_copy(c->vm, buf, dst)));
+    BTL_FREE_ARRAY(c->vm, char, buf, srcLen);
 }
 
 static void variable(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {

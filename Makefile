@@ -167,10 +167,21 @@ test_compiled: compiled
 	@BTL_BINARY=$(BUILD_DIR)/btl_compiled python3 test.py
 
 # ============================================================================
+# Static library (for embedding in other projects like Instar Engine)
+# ============================================================================
+
+LIB_TARGET = libbtl.a
+
+lib: CFLAGS += -O3
+lib: $(VM_OBJS)
+	ar rcs $(LIB_TARGET) $(VM_OBJS)
+	@echo "  Built: $(LIB_TARGET)"
+
+# ============================================================================
 # Clean
 # ============================================================================
 
 clean:
-	rm -rf $(OBJ_DIR) $(BUILD_DIR) $(TARGET) $(DEBUG_TARGET)
+	rm -rf $(OBJ_DIR) $(BUILD_DIR) $(TARGET) $(DEBUG_TARGET) $(LIB_TARGET)
 
-.PHONY: all clean debug test test_compiled transpiler transpile compiled bench perf
+.PHONY: all clean debug test test_compiled transpiler transpile compiled bench perf lib

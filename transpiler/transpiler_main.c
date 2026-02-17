@@ -90,7 +90,9 @@ int main(int argc, char* argv []) {
     if (source == NULL) return 1;
 
     // Initialize VM and compile to bytecode
+    // Zero-initialize before btl_vm_init (required on MSVC where stack memory is uninitialized)
     VM vm;
+    memset(&vm, 0, sizeof(VM));
     btl_vm_init(&vm);
 
     ObjModule* module = btl_module_new(&vm, btl_string_copy(&vm, "<main>", 6));

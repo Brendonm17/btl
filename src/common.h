@@ -21,9 +21,9 @@
 // Computed gotos (GCC extension) provide faster bytecode dispatch by using
 // direct jumps instead of a switch statement. This is enabled on GCC/Clang.
 // ----------------------------------------------------------------------------
-// #if defined(__GNUC__) || defined(__clang__)
+#if defined(__GNUC__) || defined(__clang__)
 #define BTL_HAS_COMPUTED_GOTOS
-// #endif
+#endif
 
 // ----------------------------------------------------------------------------
 // NaN boxing configuration

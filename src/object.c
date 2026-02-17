@@ -421,6 +421,11 @@ ObjActor* btl_actor_new(VM* parentVM, ObjClass* klass, BtlValue* args, int argCo
     // Start thread using platform handles
     actor->thread = th->thread_create(actorThreadMain, actor, th->user_data);
 
+    // Register actor in runtime's actor registry for clean shutdown
+    if (parentVM->runtime) {
+        btl_runtime_register_actor(parentVM->runtime, actor);
+    }
+
     return actor;
 }
 
@@ -450,12 +455,22 @@ void btl_actor_send(ObjActor* actor, ObjString* method, BtlValue* args, int argC
 }
 
 void btl_actor_stop(ObjActor* actor) {
+    // Guard against double-stop (called from both runtime shutdown and GC freeObject)
+    if (actor->vm == NULL) return;
+
+    // Unregister from runtime's actor registry
+    if (actor->vm->runtime) {
+        btl_runtime_unregister_actor(actor->vm->runtime, actor);
+    }
+
     BtlThreadHandles* th = actor->threadHandles;
     actor->shouldStop = true;
     th->thread_join(actor->thread, th->user_data);
     btl_message_queue_free(&actor->inbox);
     btl_vm_free(actor->vm, false);
     free(actor->vm);
+    actor->vm = NULL;
+    actor->thread = NULL;
 }
 
 // ============================================================================
@@ -609,6 +624,7 @@ ObjFunction* btl_function_new(struct VM* vm, ObjModule* module) {
     function->fieldICCount = 0;
     function->methodICCount = 0;
     function->compiledHandler = NULL;
+    function->transpilerId = -1;
     btl_chunk_init(&function->chunk);
     return function;
 }

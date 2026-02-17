@@ -38,6 +38,9 @@ typedef struct {
 // Transpiler State
 // ----------------------------------------------------------------------------
 
+// Maximum number of global variable slots for reverse name lookup
+#define BTL_MAX_GLOBAL_SLOTS 512
+
 typedef struct {
     FILE* out;
     BtlTranspilerConfig config;
@@ -49,6 +52,10 @@ typedef struct {
     int current_fn_id;
     ObjModule* module;
     VM* vm;  // VM pointer for transpile-time operations (string constant folding)
+
+    // Reverse lookup: global slot index -> name string (built once per module)
+    const char* globalNameBySlot[BTL_MAX_GLOBAL_SLOTS];
+    int globalNameCount;  // number of valid entries
 } BtlTranspiler;
 
 // ----------------------------------------------------------------------------

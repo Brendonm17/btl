@@ -1420,7 +1420,7 @@ static void markRoots(VM* vm) {
     btl_gc_mark_object(vm, (BtlObj*) vm->initString);
     btl_gc_mark_value(vm, vm->lastReturnValue);
 
-    // Mark native GC roots (engine-registered values)
+    // Mark native GC roots (registered by engine via btl_gc_add_root)
     for (int i = 0; i < vm->nativeRootCount; i++) {
         btl_gc_mark_value(vm, vm->nativeRoots[i]);
     }

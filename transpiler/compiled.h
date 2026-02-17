@@ -30,6 +30,14 @@
 #include <string.h>
 #include <inttypes.h>
 
+// MSVC compatibility
+#ifdef _MSC_VER
+#define __builtin_expect(expr, val) (expr)
+#define BTL_COLD_NOINLINE __declspec(noinline)
+#else
+#define BTL_COLD_NOINLINE __attribute__((cold, noinline))
+#endif
+
 // ----------------------------------------------------------------------------
 // External VM functions used by generated code
 //
@@ -70,25 +78,49 @@ static inline bool btl_compiled_is_falsey(BtlValue value) {
 // executed, improving I-cache efficiency on the hot paths.
 // ----------------------------------------------------------------------------
 
-__attribute__((cold, noinline))
+BTL_COLD_NOINLINE
 static BtlInterpretResult btl_error_undefined(VM* vm, BtlValue* sp, const char* name) {
     vm->stackTop = sp;
     btl_runtime_error(vm, "Undefined variable '%s'.", name);
     return BTL_INTERPRET_RUNTIME_ERROR;
 }
 
-__attribute__((cold, noinline))
+BTL_COLD_NOINLINE
 static BtlInterpretResult btl_error_not_numbers(VM* vm, BtlValue* sp) {
     vm->stackTop = sp;
     btl_runtime_error(vm, "Operands must be numbers.");
     return BTL_INTERPRET_RUNTIME_ERROR;
 }
 
-__attribute__((cold, noinline))
+BTL_COLD_NOINLINE
 static BtlInterpretResult btl_error_not_number(VM* vm, BtlValue* sp) {
     vm->stackTop = sp;
     btl_runtime_error(vm, "Operand must be a number.");
     return BTL_INTERPRET_RUNTIME_ERROR;
+}
+
+BTL_COLD_NOINLINE
+static BtlInterpretResult btl_error_div_zero(VM* vm, BtlValue* sp) {
+    vm->stackTop = sp;
+    btl_runtime_error(vm, "Division by zero.");
+    return BTL_INTERPRET_RUNTIME_ERROR;
+}
+
+// Extended equality: handles future == null (pending check) and actor == null (dead check)
+static inline bool btl_compiled_equal(BtlValue a, BtlValue b) {
+    if (IS_FUTURE(a) && IS_NULL(b)) return btl_future_get_state(AS_FUTURE(a)) == BTL_FUTURE_PENDING;
+    if (IS_NULL(a) && IS_FUTURE(b)) return btl_future_get_state(AS_FUTURE(b)) == BTL_FUTURE_PENDING;
+    if (IS_ACTOR(a) && IS_NULL(b)) return !AS_ACTOR(a)->alive;
+    if (IS_NULL(a) && IS_ACTOR(b)) return !AS_ACTOR(b)->alive;
+    return btl_values_equal(a, b);
+}
+
+// Null-check with future/actor semantics: null matches pending futures and dead actors
+static inline bool btl_compiled_is_null_like(BtlValue v) {
+    if (IS_NULL(v)) return true;
+    if (IS_FUTURE(v)) return btl_future_get_state(AS_FUTURE(v)) == BTL_FUTURE_PENDING;
+    if (IS_ACTOR(v)) return !AS_ACTOR(v)->alive;
+    return false;
 }
 
 // ----------------------------------------------------------------------------

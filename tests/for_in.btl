@@ -51,7 +51,8 @@ var matrix = [[1, 2], [3, 4], [5, 6]];
 for (var row in matrix) {
     var line = "";
     for (var val in row) {
-        line = line + val.toString() + " ";
+        if (line != "") line = line + " ";
+        line = line + val.toString();
     }
     system.println(line);
 }
