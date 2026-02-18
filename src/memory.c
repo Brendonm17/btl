@@ -1210,6 +1210,27 @@ void btl_gc_minor(VM* vm) {
         }
     }
 
+    // Promote nativeClassInfo string keys (field names stored inside are
+    // NUMBER_VAL pointers to malloc'd structs, so only keys need promotion)
+    if (vm->nativeClassInfo.entries != NULL) {
+        for (int i = 0; i < vm->nativeClassInfo.capacity; i++) {
+            BtlEntry* entry = &vm->nativeClassInfo.entries[i];
+            if (!IS_EMPTY(entry->key)) {
+                entry->key = promoteValue(vm, entry->key);
+                // Also promote strings inside the fieldIndices/methodIndices tables
+                BtlSavedClassInfo* info = (BtlSavedClassInfo*)(uintptr_t)AS_NUMBER(entry->value);
+                for (int j = 0; j < info->fieldIndices.capacity; j++) {
+                    BtlEntry* fe = &info->fieldIndices.entries[j];
+                    if (!IS_EMPTY(fe->key)) fe->key = promoteValue(vm, fe->key);
+                }
+                for (int j = 0; j < info->methodIndices.capacity; j++) {
+                    BtlEntry* me = &info->methodIndices.entries[j];
+                    if (!IS_EMPTY(me->key)) me->key = promoteValue(vm, me->key);
+                }
+            }
+        }
+    }
+
     if (vm->initString) {
         vm->initString = (ObjString*) promoteObject(vm, (BtlObj*) vm->initString);
     }
@@ -1415,6 +1436,18 @@ static void markRoots(VM* vm) {
     if (vm->tableClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->tableClass);
     if (vm->entityClass != NULL) btl_gc_mark_object(vm, (BtlObj*) vm->entityClass);
     btl_table_mark(vm, &vm->nativeModules);
+
+    // Mark native class info keys and field name strings (not GC-managed structs,
+    // but the ObjString keys could be collected if not marked)
+    for (int i = 0; i < vm->nativeClassInfo.capacity; i++) {
+        BtlEntry* entry = &vm->nativeClassInfo.entries[i];
+        if (!IS_EMPTY(entry->key)) {
+            btl_gc_mark_value(vm, entry->key);
+            BtlSavedClassInfo* info = (BtlSavedClassInfo*)(uintptr_t)AS_NUMBER(entry->value);
+            btl_table_mark(vm, &info->fieldIndices);
+            btl_table_mark(vm, &info->methodIndices);
+        }
+    }
 
     btl_compiler_mark_roots(vm);
     btl_gc_mark_object(vm, (BtlObj*) vm->initString);

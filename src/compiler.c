@@ -1772,7 +1772,12 @@ static void classDeclaration(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassC
         btl_push(c->vm, OBJ_VAL(parentName));
 
         BtlValue savedInfoValue;
-        if (btl_table_get(&c->module->classInfo, OBJ_VAL(parentName), &savedInfoValue)) {
+        bool foundInModule = btl_table_get(&c->module->classInfo, OBJ_VAL(parentName), &savedInfoValue);
+        bool foundInNative = false;
+        if (!foundInModule) {
+            foundInNative = btl_table_get(&c->vm->nativeClassInfo, OBJ_VAL(parentName), &savedInfoValue);
+        }
+        if (foundInModule || foundInNative) {
             BtlSavedClassInfo* parentInfo = (BtlSavedClassInfo*) (uintptr_t) AS_NUMBER(savedInfoValue);
             btl_table_add_all(c->vm, &parentInfo->methodIndices, &classC.methodIndices);
 

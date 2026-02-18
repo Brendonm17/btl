@@ -624,6 +624,7 @@ void btl_vm_init(VM* vm) {
     vm->gcInhibit = 0;
     btl_table_init(&vm->strings); btl_table_init(&vm->modules);
     btl_table_init(&vm->nativeModules);
+    btl_table_init(&vm->nativeClassInfo);
     vm->stringClass = NULL;
     vm->numberClass = NULL;
     vm->intClass = NULL;
@@ -653,6 +654,17 @@ void btl_vm_init(VM* vm) {
 
 void btl_vm_free(VM* vm, bool mainVM) {
     (void) mainVM;
+    // Free native class info entries (not GC-managed)
+    for (int i = 0; i < vm->nativeClassInfo.capacity; i++) {
+        BtlEntry* entry = &vm->nativeClassInfo.entries[i];
+        if (!IS_EMPTY(entry->key)) {
+            BtlSavedClassInfo* info = (BtlSavedClassInfo*)(uintptr_t)AS_NUMBER(entry->value);
+            btl_table_free(vm, &info->methodIndices);
+            btl_table_free(vm, &info->fieldIndices);
+            free(info);
+        }
+    }
+    btl_table_free(vm, &vm->nativeClassInfo);
     btl_table_free(vm, &vm->strings);
     btl_table_free(vm, &vm->modules);
     btl_table_free(vm, &vm->nativeModules);
@@ -993,7 +1005,8 @@ BtlInterpretResult btl_run(VM* vm) {
     };
 
 #define DISPATCH() do { \
-    TRACE_IF_ENABLED(); goto *dispatchTable[*ip++]; } while (0)
+    TRACE_IF_ENABLED(); \
+    goto *dispatchTable[*ip++]; } while (0)
 #define OPCODE(name) L_##name
     DISPATCH();
 #else
@@ -1001,7 +1014,8 @@ BtlInterpretResult btl_run(VM* vm) {
 #define OPCODE(name) case name
     while (true) {
         TRACE_IF_ENABLED();
-        switch (READ_BYTE()) {
+        uint8_t _instruction = READ_BYTE();
+        switch (_instruction) {
 #endif
 
             OPCODE(BTL_OP_CONSTANT) : btl_push(vm, READ_CONSTANT()); DISPATCH();
@@ -1301,7 +1315,19 @@ BtlInterpretResult btl_run(VM* vm) {
             OPCODE(BTL_OP_GET_FIELD_THIS) : {
                 uint8_t index = READ_BYTE();
                 BtlValue receiver = frame->slots[0];
+                if (!IS_OBJ(receiver) || AS_OBJ(receiver)->type != BTL_OBJ_INSTANCE) {
+                    STORE_FRAME();
+                    btl_runtime_error(vm, "GET_FIELD_THIS: receiver is not an instance (index %d)", index);
+                    return BTL_INTERPRET_RUNTIME_ERROR;
+                }
                 ObjInstance* instance = AS_INSTANCE(receiver);
+                if (index >= instance->klass->fieldCount) {
+                    STORE_FRAME();
+                    btl_runtime_error(vm, "Field index %d out of bounds (class %s has %d fields)",
+                        index, instance->klass->name ? instance->klass->name->chars : "?",
+                        instance->klass->fieldCount);
+                    return BTL_INTERPRET_RUNTIME_ERROR;
+                }
                 if (instance->klass->nativeGetters && instance->klass->nativeGetters[index]) {
                     btl_push(vm, instance->klass->nativeGetters[index](vm, instance->nativeData, index));
                 } else {
@@ -1312,7 +1338,19 @@ BtlInterpretResult btl_run(VM* vm) {
             OPCODE(BTL_OP_SET_FIELD_THIS) : {
                 uint8_t index = READ_BYTE();
                 BtlValue receiver = frame->slots[0];
+                if (!IS_OBJ(receiver) || AS_OBJ(receiver)->type != BTL_OBJ_INSTANCE) {
+                    STORE_FRAME();
+                    btl_runtime_error(vm, "SET_FIELD_THIS: receiver is not an instance (index %d)", index);
+                    return BTL_INTERPRET_RUNTIME_ERROR;
+                }
                 ObjInstance* instance = AS_INSTANCE(receiver);
+                if (index >= instance->klass->fieldCount) {
+                    STORE_FRAME();
+                    btl_runtime_error(vm, "Field index %d out of bounds (class %s has %d fields)",
+                        index, instance->klass->name ? instance->klass->name->chars : "?",
+                        instance->klass->fieldCount);
+                    return BTL_INTERPRET_RUNTIME_ERROR;
+                }
                 BtlValue value = peek(vm, 0);
                 if (instance->klass->nativeSetters && instance->klass->nativeSetters[index]) {
                     instance->klass->nativeSetters[index](vm, instance->nativeData, index, value);
@@ -2876,6 +2914,11 @@ OPCODE(BTL_OP_ITER_NEXT) : {
     DISPATCH();
 }
 #ifndef BTL_HAS_COMPUTED_GOTOS
+            default: {
+                STORE_FRAME();
+                btl_runtime_error(vm, "Unknown opcode %d", _instruction);
+                return BTL_INTERPRET_RUNTIME_ERROR;
+            }
         }
     }
 #endif
@@ -2912,4 +2955,27 @@ void btl_gc_clear_roots(VM* vm) {
         vm->nativeRoots[i] = BTL_NULL_VAL;
     }
     vm->nativeRootCount = 0;
+}
+
+// ============================================================================
+// Native Class Info Registration
+// ============================================================================
+
+void btl_register_native_class_info(VM* vm, const char* class_name,
+                                    const char** field_names, int field_count) {
+    BtlSavedClassInfo* info = (BtlSavedClassInfo*)malloc(sizeof(BtlSavedClassInfo));
+    btl_table_init(&info->methodIndices);
+    btl_table_init(&info->fieldIndices);
+    for (int i = 0; i < field_count; i++) {
+        ObjString* fname = btl_string_copy(vm, field_names[i], (int)strlen(field_names[i]));
+        btl_push(vm, OBJ_VAL(fname));
+        btl_table_set(vm, &info->fieldIndices, OBJ_VAL(fname), NUMBER_VAL((double)i));
+        btl_pop(vm);
+    }
+    info->fieldCount = field_count;
+    ObjString* cname = btl_string_copy(vm, class_name, (int)strlen(class_name));
+    btl_push(vm, OBJ_VAL(cname));
+    btl_table_set(vm, &vm->nativeClassInfo, OBJ_VAL(cname),
+                  NUMBER_VAL((double)(uintptr_t)info));
+    btl_pop(vm);
 }

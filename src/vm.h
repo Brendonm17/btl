@@ -80,6 +80,7 @@ struct VM {
 
     // Native modules and classes
     BtlTable nativeModules;     // Built-in module table
+    BtlTable nativeClassInfo;   // Engine-registered class field info for compiler inheritance
     ObjNativeClass* stringClass; // Native string methods
     ObjNativeClass* numberClass; // Native number methods
     ObjNativeClass* intClass;    // Native int methods
@@ -189,5 +190,15 @@ void btl_gc_remove_root(VM* vm, int index);
 
 // Clear all native GC roots
 void btl_gc_clear_roots(VM* vm);
+
+// ----------------------------------------------------------------------------
+// Native Class Info (for compiler field inheritance)
+// ----------------------------------------------------------------------------
+
+// Register field layout for a native class so the compiler can inherit
+// field indices when user scripts subclass it (e.g. class Foo < Component).
+// field_names: array of field name strings, field_count: number of fields.
+void btl_register_native_class_info(VM* vm, const char* class_name,
+                                    const char** field_names, int field_count);
 
 #endif // btl_vm_h

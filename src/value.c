@@ -143,6 +143,11 @@ bool btl_values_equal(BtlValue a, BtlValue b) {
     if (IS_NUMBER(a) && IS_NUMBER(b)) {
         return AS_NUMBER(a) == AS_NUMBER(b);
     }
+    // Entity comparison: compare by entity ID, not pointer identity
+    if (IS_OBJ(a) && IS_OBJ(b) &&
+        AS_OBJ(a)->type == BTL_OBJ_ENTITY && AS_OBJ(b)->type == BTL_OBJ_ENTITY) {
+        return ((ObjEntity*)AS_OBJ(a))->id == ((ObjEntity*)AS_OBJ(b))->id;
+    }
     // All other types: direct bit comparison works
     return a == b;
 #else
@@ -167,6 +172,10 @@ bool btl_values_equal(BtlValue a, BtlValue b) {
         case BTL_VAL_INT:
             return AS_INT(a) == AS_INT(b);
         case BTL_VAL_OBJ:
+            // Entity comparison: compare by entity ID, not pointer identity
+            if (AS_OBJ(a)->type == BTL_OBJ_ENTITY && AS_OBJ(b)->type == BTL_OBJ_ENTITY) {
+                return ((ObjEntity*)AS_OBJ(a))->id == ((ObjEntity*)AS_OBJ(b))->id;
+            }
             return AS_OBJ(a) == AS_OBJ(b);  // Identity comparison
         case BTL_VAL_EMPTY:
             return true;  // All emptys are equal
