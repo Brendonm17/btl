@@ -1,22 +1,12 @@
-// ============================================================================
-// compiled.c - BTL Compiled Support Library Implementation
+// Out-of-line helpers for opcodes that are too big to inline in generated
+// code. The logic mirrors vm.c's dispatch cases.
 //
-// Each function here corresponds to a complex opcode that's too big
-// to inline in the generated code. The logic is extracted directly
-// from vm.c's dispatch cases.
-//
-// IMPORTANT: All functions here operate on vm->stackTop. The
-// generated code must sync its local 'sp' -> vm->stackTop before
-// calling any of these, and reload sp afterward.
-// ============================================================================
+// IMPORTANT: every function here operates on vm->stackTop. Callers must sync
+// their local 'sp' to vm->stackTop before calling, and reload sp afterward.
 
 #include "compiled.h"
 #include <stdio.h>
 #include <stdlib.h>
-
-// ----------------------------------------------------------------------------
-// String helpers (extracted from vm.c)
-// ----------------------------------------------------------------------------
 
 static ObjString* valueToStringCompiled(VM* vm, BtlValue value) {
     if (IS_STRING(value)) return AS_STRING(value);
@@ -206,6 +196,16 @@ bool btl_compiled_get_property(VM* vm, BtlCallFrame* frame, int nameIdx, int icS
             return true;
         }
         if (bindMethodCompiled(vm, instance->klass, name)) return true;
+
+        // Check nativeMethods (component classes like Tilemap)
+        if (instance->klass->nativeMethods.count > 0) {
+            BtlValue nativeMethodVal;
+            if (btl_table_get(&instance->klass->nativeMethods, OBJ_VAL(name), &nativeMethodVal)) {
+                vm->stackTop[-1] = nativeMethodVal;
+                return true;
+            }
+        }
+
         btl_runtime_error(vm, "Undefined property '%s'.", name->chars);
         return false;
 
@@ -358,8 +358,14 @@ static bool callAndRun(VM* vm, BtlValue callee, int argCount) {
         vm->runFloor = frameBefore;
         BtlInterpretResult r = btl_run(vm);
         vm->runFloor = savedFloor;
+        if (r == BTL_INTERPRET_YIELD) {
+            // Re-set flag so caller can detect yield (btl_run cleared it)
+            vm->coroutineYield = true;
+            return true;
+        }
         return r == BTL_INTERPRET_OK;
     }
+    // Coroutine yield from native: return true, caller checks vm->coroutineYield
     return true;
 }
 
@@ -397,6 +403,11 @@ bool btl_compiled_call_closure_and_run(VM* vm, ObjClosure* closure, int argCount
         typedef BtlInterpretResult (*BtlFnPtr)(VM*);
         BtlFnPtr handler = (BtlFnPtr)fn->compiledHandler;
         BtlInterpretResult r = handler(vm);
+        if (r == BTL_INTERPRET_YIELD) {
+            // Re-set flag so caller can detect yield (handler cleared it)
+            vm->coroutineYield = true;
+            return true;
+        }
         return r == BTL_INTERPRET_OK;
     }
 
@@ -405,6 +416,11 @@ bool btl_compiled_call_closure_and_run(VM* vm, ObjClosure* closure, int argCount
     vm->runFloor = vm->frameCount - 1;
     BtlInterpretResult r = btl_run(vm);
     vm->runFloor = savedFloor;
+    if (r == BTL_INTERPRET_YIELD) {
+        // Re-set flag so caller can detect yield (btl_run cleared it)
+        vm->coroutineYield = true;
+        return true;
+    }
     return r == BTL_INTERPRET_OK;
 }
 
@@ -444,6 +460,8 @@ bool btl_compiled_call_class(VM* vm, ObjClass* klass, int argCount) {
     // Native constructor: bypass normal instantiation
     if (klass->nativeConstructor) {
         BtlValue result = klass->nativeConstructor(vm, argCount, vm->stackTop - argCount);
+        // Coroutine yield: return true, caller checks vm->coroutineYield
+        if (vm->coroutineYield) return true;
         vm->stackTop -= argCount + 1;
         btl_push(vm, result);
         return true;
@@ -596,6 +614,27 @@ bool btl_compiled_invoke_ic(VM* vm, BtlCallFrame* frame, int nameIdx, int argCou
             }
         }
 
+        // Check nativeMethods table (for component classes like Tilemap)
+        if (instance->klass->nativeMethods.count > 0) {
+            BtlValue nativeMethodVal;
+            if (btl_table_get(&instance->klass->nativeMethods, OBJ_VAL(name), &nativeMethodVal)) {
+                ObjNativeMethod* method = AS_NATIVE_METHOD(nativeMethodVal);
+                if (method->arity >= 0 && argCount != method->arity) {
+                    btl_runtime_error(vm, "Expected %d arguments but got %d.", method->arity, argCount);
+                    return false;
+                }
+                BtlValue* args = vm->stackTop - argCount;
+                BtlValue result = method->function(vm, receiver, argCount, args);
+                if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
+                    return false;
+                }
+                if (vm->coroutineYield) return true;
+                vm->stackTop -= argCount + 1;
+                btl_push(vm, result);
+                return true;
+            }
+        }
+
         btl_runtime_error(vm, "Undefined property '%s'.", name->chars);
         return false;
 
@@ -660,6 +699,8 @@ bool btl_compiled_invoke_ic(VM* vm, BtlCallFrame* frame, int nameIdx, int argCou
                 if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
                     return false;
                 }
+                // Coroutine yield: return true, caller checks vm->coroutineYield
+                if (vm->coroutineYield) return true;
                 vm->stackTop -= argCount + 1;
                 btl_push(vm, result);
                 return true;
@@ -937,6 +978,11 @@ bool btl_compiled_import(VM* vm, BtlCallFrame* frame, int nameIdx) {
     vm->runFloor = vm->frameCount - 1;
     BtlInterpretResult result = btl_run(vm);
     vm->runFloor = savedFloor;
+    if (result == BTL_INTERPRET_YIELD) {
+        // Re-set flag so caller can detect yield (btl_run cleared it)
+        vm->coroutineYield = true;
+        return true;
+    }
     if (result != BTL_INTERPRET_OK) return false;
 
     btl_push(vm, OBJ_VAL(m));

@@ -1,20 +1,9 @@
-// ============================================================================
-// native_int.c - BTL Integer Native Methods
-//
-// Implements built-in methods for integer values including math operations,
-// bitwise operations, type conversions, and predicates.
-// ============================================================================
-
 #include <stdio.h>
 #include <math.h>
 #include <inttypes.h>
 #include "native_int.h"
 #include "object.h"
 #include "memory.h"
-
-// ----------------------------------------------------------------------------
-// Math Methods
-// ----------------------------------------------------------------------------
 
 static BtlValue intAbs(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;

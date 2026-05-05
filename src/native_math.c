@@ -1,17 +1,6 @@
-// ============================================================================
-// native_math.c - BTL Math Module
-//
-// Provides mathematical functions and constants as a native module.
-// Includes trigonometry, logarithms, rounding, and utility functions.
-// ============================================================================
-
 #include <math.h>
 #include "native_math.h"
 #include "object.h"
-
-// ----------------------------------------------------------------------------
-// Basic Math Functions
-// ----------------------------------------------------------------------------
 
 // abs(x) - returns absolute value
 static BtlValue mathAbs(VM* vm, int argCount, BtlValue* args) {

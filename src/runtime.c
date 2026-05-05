@@ -1,6 +1,3 @@
-// runtime.c - BTL Runtime Implementation
-// Provides the high-level runtime API for the BTL interpreter
-
 #include "runtime.h"
 #include "threadpool.h"
 #include "vm.h"

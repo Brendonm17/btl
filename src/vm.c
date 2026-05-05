@@ -635,8 +635,11 @@ void btl_vm_init(VM* vm) {
     vm->initString = btl_string_copy(vm, "init", 4);
     vm->lastReturnValue = BTL_NULL_VAL;
     vm->runFloor = 0;
+    vm->coroutineYield = false;
     vm->nativeRootCount = 0;
     memset(vm->nativeRoots, 0, sizeof(vm->nativeRoots));
+    vm->nativeMarkFn = NULL;
+    vm->nativeMarkUserData = NULL;
     //defineNative(vm, "clock", clockNative);
 
     // Initialize native classes
@@ -1400,6 +1403,16 @@ BtlInterpretResult btl_run(VM* vm) {
 
                     if (bindMethod(vm, instance->klass, name)) DISPATCH();
 
+                    // Check nativeMethods (component classes like Tilemap)
+                    if (instance->klass->nativeMethods.count > 0) {
+                        BtlValue nativeMethodVal;
+                        if (btl_table_get(&instance->klass->nativeMethods, OBJ_VAL(name), &nativeMethodVal)) {
+                            // Push native method so INVOKE can call it
+                            vm->stackTop[-1] = nativeMethodVal;
+                            DISPATCH();
+                        }
+                    }
+
                     STORE_FRAME();
                     btl_runtime_error(vm, "Undefined property '%s'.", name->chars);
                     return BTL_INTERPRET_RUNTIME_ERROR;
@@ -1731,6 +1744,7 @@ BtlInterpretResult btl_run(VM* vm) {
         do_call:
             STORE_FRAME();
             if (!btl_call_value(vm, peek(vm, argCount), argCount)) return BTL_INTERPRET_RUNTIME_ERROR;
+            if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
             REFRESH_FRAME();
             DISPATCH();
 
@@ -1747,7 +1761,7 @@ BtlInterpretResult btl_run(VM* vm) {
         do_tail_call: {
             BtlValue callee = peek(vm, argCount);
             if (!IS_CLOSURE(callee)) {
-                STORE_FRAME(); if (!btl_call_value(vm, callee, argCount)) return BTL_INTERPRET_RUNTIME_ERROR; REFRESH_FRAME(); DISPATCH();
+                STORE_FRAME(); if (!btl_call_value(vm, callee, argCount)) return BTL_INTERPRET_RUNTIME_ERROR; if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; } REFRESH_FRAME(); DISPATCH();
             }
             ObjClosure* c = AS_CLOSURE(callee);
             if (argCount != c->function->arity) {
@@ -1933,6 +1947,7 @@ BtlInterpretResult btl_run(VM* vm) {
                 if (!btl_call_value(vm, field, argCount)) {
                     return BTL_INTERPRET_RUNTIME_ERROR;
                 }
+                if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
                 REFRESH_FRAME();
                 DISPATCH();
             }
@@ -1964,6 +1979,30 @@ BtlInterpretResult btl_run(VM* vm) {
                 }
             }
 
+            // Check nativeMethods table (for component classes like Tilemap)
+            if (instance->klass->nativeMethods.count > 0) {
+                BtlValue nativeMethodVal;
+                if (btl_table_get(&instance->klass->nativeMethods, OBJ_VAL(name), &nativeMethodVal)) {
+                    ObjNativeMethod* method = AS_NATIVE_METHOD(nativeMethodVal);
+                    if (method->arity >= 0 && argCount != method->arity) {
+                        STORE_FRAME();
+                        btl_runtime_error(vm, "Expected %d arguments but got %d.", method->arity, argCount);
+                        return BTL_INTERPRET_RUNTIME_ERROR;
+                    }
+                    STORE_FRAME();
+                    BtlValue* args = vm->stackTop - argCount;
+                    BtlValue result = method->function(vm, receiver, argCount, args);
+                    if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
+                        return BTL_INTERPRET_RUNTIME_ERROR;
+                    }
+                    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
+                    vm->stackTop -= argCount + 1;
+                    btl_push(vm, result);
+                    REFRESH_FRAME();
+                    DISPATCH();
+                }
+            }
+
             STORE_FRAME();
             btl_runtime_error(vm, "Undefined property '%s'.", name->chars);
             return BTL_INTERPRET_RUNTIME_ERROR;
@@ -1980,6 +2019,7 @@ BtlInterpretResult btl_run(VM* vm) {
                 if (!btl_call_value(vm, func, argCount)) {
                     return BTL_INTERPRET_RUNTIME_ERROR;
                 }
+                if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
                 REFRESH_FRAME();
                 DISPATCH();
             }
@@ -1995,6 +2035,7 @@ BtlInterpretResult btl_run(VM* vm) {
                     if (!btl_call_value(vm, func, argCount)) {
                         return BTL_INTERPRET_RUNTIME_ERROR;
                     }
+                    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
                     REFRESH_FRAME();
                     DISPATCH();
                 }
@@ -2014,6 +2055,7 @@ BtlInterpretResult btl_run(VM* vm) {
                 if (!btl_call_value(vm, func, argCount)) {
                     return BTL_INTERPRET_RUNTIME_ERROR;
                 }
+                if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
                 REFRESH_FRAME();
                 DISPATCH();
             }
@@ -2059,6 +2101,8 @@ BtlInterpretResult btl_run(VM* vm) {
                     if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
                         return BTL_INTERPRET_RUNTIME_ERROR;
                     }
+
+                    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
 
                     // Pop receiver and args, push result
                     vm->stackTop -= argCount + 1;
@@ -2248,8 +2292,31 @@ OPCODE(BTL_OP_TAIL_INVOKE_IC) : {
             }
 
             if (method == NULL) {
+                // Check nativeMethods table (component classes like Tilemap)
+                if (instance->klass->nativeMethods.count > 0) {
+                    BtlValue nativeMethodVal;
+                    if (btl_table_get(&instance->klass->nativeMethods, OBJ_VAL(name), &nativeMethodVal)) {
+                        ObjNativeMethod* nmethod = AS_NATIVE_METHOD(nativeMethodVal);
+                        if (nmethod->arity >= 0 && argCount != nmethod->arity) {
+                            STORE_FRAME();
+                            btl_runtime_error(vm, "Expected %d arguments but got %d.", nmethod->arity, argCount);
+                            return BTL_INTERPRET_RUNTIME_ERROR;
+                        }
+                        STORE_FRAME();
+                        BtlValue* args = vm->stackTop - argCount;
+                        BtlValue result = nmethod->function(vm, receiver, argCount, args);
+                        if (vm->frameCount == 0 && vm->stackTop == vm->stack) {
+                            return BTL_INTERPRET_RUNTIME_ERROR;
+                        }
+                        if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
+                        vm->stackTop -= argCount + 1;
+                        btl_push(vm, result);
+                        REFRESH_FRAME();
+                        DISPATCH();
+                    }
+                }
+
                 STORE_FRAME();
-                ObjString* name = AS_STRING(frame->closure->function->chunk.constants.values[nameIdx]);
                 btl_runtime_error(vm, "Undefined property '%s'.", name->chars);
                 return BTL_INTERPRET_RUNTIME_ERROR;
             }
@@ -2277,6 +2344,7 @@ OPCODE(BTL_OP_TAIL_INVOKE_IC) : {
             if (!btl_call_value(vm, func, argCount)) {
                 return BTL_INTERPRET_RUNTIME_ERROR;
             }
+            if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }
             REFRESH_FRAME();
             DISPATCH();
         }

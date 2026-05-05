@@ -1,12 +1,5 @@
-// ============================================================================
-// transpiler_main.c - BTL Transpiler Command-line Driver
-//
-// Usage:  ./transpiler <input.btl> <output.c>
-//
-// 1. Initializes a BTL VM
-// 2. Compiles the source to bytecode (using the existing compiler)
-// 3. Walks all functions and emits optimized C
-// ============================================================================
+// Command-line driver: ./transpiler <input.btl> <output.c>
+// Spins up a VM, compiles to bytecode, walks all functions, emits C.
 
 #include "transpiler.h"
 #include "../src/vm.h"

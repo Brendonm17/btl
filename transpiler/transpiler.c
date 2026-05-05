@@ -1,11 +1,11 @@
 // ============================================================================
-// transpiler.c - BTL to C Transpiler v2 Ã¢â‚¬â€ Performance Edition
+// transpiler.c BTL to C Transpiler v2
 //
 // KEY PERFORMANCE TECHNIQUES:
 //
 // 1) INLINE STACK OPS
 //    Old: push(vm, x);  // function call, vm->stackTop dereference
-//    New: *sp++ = x;    // sp is a C local Ã¢â€ â€™ register
+//    New: *sp++ = x;    // sp is a C local, lives in a register
 //
 // 2) CACHED VM STATE
 //    We keep frame, slots, sp as C locals. The C compiler can put
@@ -21,9 +21,9 @@
 // 4) FUSED OPCODE PATTERNS
 //    Common patterns get single C statements:
 //      GET_LOCAL + GET_LOCAL + LESS + POP_JUMP_IF_FALSE
-//        Ã¢â€ â€™ if (AS_NUMBER(slots[a]) >= AS_NUMBER(slots[b])) goto L;
+//        becomes if (AS_NUMBER(slots[a]) >= AS_NUMBER(slots[b])) goto L;
 //      GET_LOCAL + GET_LOCAL + ADD + SET_LOCAL_POP
-//        Ã¢â€ â€™ slots[c] = NUMBER_VAL(AS_NUMBER(slots[a]) + AS_NUMBER(slots[b]));
+//        becomes slots[c] = NUMBER_VAL(AS_NUMBER(slots[a]) + AS_NUMBER(slots[b]));
 //
 // 5) TAIL CALL OPTIMIZATION
 //    Tail calls to known transpiled functions become a parameter-shuffle
@@ -259,7 +259,7 @@ void btl_collect_functions(ObjFunction* main_fn, BtlFunctionList* out);
 int btl_function_id(BtlFunctionList* list, ObjFunction* fn);
 
 // ================================================================
-// Jump target collection Ã¢â‚¬â€ first pass over bytecode
+// Jump target collection . first pass over bytecode
 // ================================================================
 
 static void collect_jump_targets(ObjFunction* fn, bool* targets, int code_len, LoopTable* loops) {
@@ -314,7 +314,7 @@ static void collect_jump_targets(ObjFunction* fn, bool* targets, int code_len, L
             break;
         }
 
-                    /* Opcodes with operands Ã¢â‚¬â€ skip their bytes*/
+                    /* Opcodes with operands . skip their bytes*/
         case BTL_OP_CONSTANT: case BTL_OP_GET_LOCAL: case BTL_OP_SET_LOCAL:
         case BTL_OP_GET_GLOBAL: case BTL_OP_DEFINE_GLOBAL: case BTL_OP_SET_GLOBAL:
         case BTL_OP_GET_UPVALUE: case BTL_OP_GET_UPVALUE_OPEN:
@@ -680,8 +680,8 @@ static void analyze_loop_types(ObjFunction* fn, int start_ip, int end_ip,
        OP_GET_LOCAL for a loop variable, we push TYPE_UNKNOWN.
        Then OP_INCREMENT on TYPE_UNKNOWN stays TYPE_UNKNOWN,
        and we record TYPE_UNKNOWN for the SET_LOCAL -- losing all type info.
-       By seeding from pre-loop init (e.g. "var i = 0" → TYPE_INT),
-       the flow becomes: get_local→TYPE_INT → increment→TYPE_INT → set_local→TYPE_INT. */
+       By seeding from pre-loop init (e.g. "var i = 0" becomes TYPE_INT),
+       the flow becomes: get_localbecomesTYPE_INT becomes incrementbecomesTYPE_INT becomes set_localbecomesTYPE_INT. */
     analyze_pre_loop_types(fn, start_ip, slot_types);
 
     /* Simple abstract stack for type tracking (up to 16 deep) */
@@ -812,7 +812,7 @@ static void analyze_loop_types(ObjFunction* fn, int start_ip, int end_ip,
             break;
         }
 
-        /* ---- Arithmetic ops: int+int→int, number+number→number, else unknown ---- */
+        /* ---- Arithmetic ops: int+intbecomesint, number+numberbecomesnumber, else unknown ---- */
         case BTL_OP_ADD: {
             AbstractType b = APOP(), a = APOP();
             if (a == TYPE_INT && b == TYPE_INT) APUSH(TYPE_INT);
@@ -1249,7 +1249,7 @@ static void analyze_pre_loop_types(ObjFunction* fn, int loop_header,
        In BTL, slot 0 = closure (implicit, not pushed by bytecode),
        slot 1..arity = parameters (implicit, not pushed by bytecode).
        So astack[0] corresponds to slot (arity + 1), astack[1] to slot (arity + 2), etc.
-       For the <script> function with arity=0, astack[0] → slot 1. */
+       For the <script> function with arity=0, astack[0] becomes slot 1. */
     int slot_offset = fn->arity + 1;
     for (int i = 0; i < MAX_TRACKED_LOCALS; i++) {
         if (local_set[i]) {
@@ -1411,7 +1411,7 @@ static void emit_tail_call(BtlTranspiler* t, int argc) {
 */
 static void emit_optimized_call(BtlTranspiler* t, int argc) {
     OUT(t, "    { BtlValue _callee = vm->stackTop[-%d];\n", argc + 1);
-    /* Single IS_OBJ check, then branch on type — avoids redundant IS_OBJ for both paths */
+    /* Single IS_OBJ check, then branch on type. Avoids redundant IS_OBJ for both paths */
     OUT(t, "      if (__builtin_expect(IS_OBJ(_callee), 1)) {\n");
     OUT(t, "      BtlObjType _ot = OBJ_TYPE(_callee);\n");
     /* Closure first (more common overall), class second */
@@ -1447,6 +1447,7 @@ static void emit_optimized_call(BtlTranspiler* t, int argc) {
     OUT(t, "        ObjClass* _klass = AS_CLASS(_callee);\n");
     OUT(t, "        if (__builtin_expect(_klass->nativeConstructor != NULL, 0)) {\n");
     OUT(t, "          BtlValue _r = _klass->nativeConstructor(vm, %d, vm->stackTop - %d);\n", argc, argc);
+    OUT(t, "          if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
     OUT(t, "          vm->stackTop -= %d; vm->stackTop[-1] = _r;\n", argc);
     OUT(t, "        } else {\n");
     OUT(t, "        vm->stackTop[-%d] = OBJ_VAL(btl_instance_new(vm, _klass));\n", argc + 1);
@@ -1469,7 +1470,7 @@ static void emit_optimized_call(BtlTranspiler* t, int argc) {
                skip the function call and write fields directly */
             OUT(t, "          if (__builtin_expect(_init && _init->function->fieldICCount == %d\n", argc);
             OUT(t, "              && _init->fieldICs[0].fieldIndex >= 0, 1)) {\n");
-            OUT(t, "            /* Inlined simple init — direct field writes via warm ICs */\n");
+            OUT(t, "            /* Inlined simple init. Direct field writes via warm ICs */\n");
             OUT(t, "            ObjInstance* _inst = AS_INSTANCE(vm->stackTop[-%d]);\n", argc + 1);
             for (int i = 0; i < argc; i++) {
                 OUT(t, "            _inst->fields[_init->fieldICs[%d].fieldIndex] = vm->stackTop[-%d];\n", i, argc - i);
@@ -1506,6 +1507,7 @@ static void emit_optimized_call(BtlTranspiler* t, int argc) {
         OUT(t, "        }\n");
     } else {
         OUT(t, "        if (!btl_compiled_call_class(vm, _klass, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", argc);
+        OUT(t, "        if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
     }
     OUT(t, "        } /* end else (non-native constructor) */\n");
     OUT(t, "      } else if (_ot == BTL_OBJ_BOUND_METHOD) {\n");
@@ -1786,6 +1788,7 @@ static void emit_header(BtlTranspiler* t) {
     OUT(t, "        vm->runFloor = savedFloor;\n");
     OUT(t, "        if (r != BTL_INTERPRET_OK) return r;\n");
     OUT(t, "    }\n");
+    OUT(t, "    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
     OUT(t, "    return BTL_INTERPRET_OK;\n");
     OUT(t, "}\n\n");
 
@@ -1831,21 +1834,21 @@ static void emit_header(BtlTranspiler* t) {
 // single-opcode emit).
 //
 // PATTERN 1: GET_LOCAL(a) GET_LOCAL(b) <arith> SET_LOCAL_N_POP(c)
-//   Ã¢â€ â€™ slots[c] = NUMBER_VAL(AS_NUMBER(slots[a]) OP AS_NUMBER(slots[b]))
+//   becomes slots[c] = NUMBER_VAL(AS_NUMBER(slots[a]) OP AS_NUMBER(slots[b]))
 //   Eliminates 4 push/pop operations.
 //
 // PATTERN 2: GET_LOCAL(a) GET_LOCAL(b) LESS/GREATER POP_JUMP_IF_FALSE
-//   Ã¢â€ â€™ if (!(AS_NUMBER(slots[a]) < AS_NUMBER(slots[b]))) goto L;
+//   becomes if (!(AS_NUMBER(slots[a]) < AS_NUMBER(slots[b]))) goto L;
 //   Eliminates 3 push/pop + a falsey check.
 //
 // PATTERN 3: GET_LOCAL(a) <const> <arith> SET_LOCAL_N_POP(a)
-//   Ã¢â€ â€™ slots[a] = NUMBER_VAL(AS_NUMBER(slots[a]) OP const)
+//   becomes slots[a] = NUMBER_VAL(AS_NUMBER(slots[a]) OP const)
 //   Common in loops like `i = i + 1`.
 // ================================================================
 
 static int try_fuse(BtlTranspiler* t, uint8_t* code, int ip, int code_len,
     bool* targets, TypeState* ts) {
-    /* Don't fuse across jump targets Ã¢â‚¬â€ any instruction that's a jump
+    /* Don't fuse across jump targets . any instruction that's a jump
        target must be emittable standalone*/
 
        /* Need at least 4 opcodes to fuse*/
@@ -1975,7 +1978,7 @@ static int try_fuse(BtlTranspiler* t, uint8_t* code, int ip, int code_len,
             else if (ta == TYPE_NUMBER && tb == TYPE_NUMBER)
                 OUT(t, "    if (!(AS_NUMBER(slots[%d]) %s AS_NUMBER(slots[%d]))) goto L_%04d;\n", slot_a, c_op, slot_b, target_ip);
             else if (ta == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided check */
+                /* Left known INT, right unknown. One-sided check */
                 OUT(t, "    { int64_t _a = AS_INT(slots[%d]);\n", slot_a);
                 OUT(t, "      if (__builtin_expect(IS_INT(slots[%d]), 1)) {\n", slot_b);
                 OUT(t, "        if (!(_a %s AS_INT(slots[%d]))) goto L_%04d;\n", c_op, slot_b, target_ip);
@@ -1983,7 +1986,7 @@ static int try_fuse(BtlTranspiler* t, uint8_t* code, int ip, int code_len,
                 OUT(t, "        if (!((double)_a %s AS_NUMBER(slots[%d]))) goto L_%04d;\n", c_op, slot_b, target_ip);
                 OUT(t, "      } else return btl_error_not_numbers(vm, sp); }\n");
             } else if (tb == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided check */
+                /* Right known INT, left unknown. One-sided check */
                 OUT(t, "    { int64_t _b = AS_INT(slots[%d]);\n", slot_b);
                 OUT(t, "      if (__builtin_expect(IS_INT(slots[%d]), 1)) {\n", slot_a);
                 OUT(t, "        if (!(AS_INT(slots[%d]) %s _b)) goto L_%04d;\n", slot_a, c_op, target_ip);
@@ -2024,7 +2027,7 @@ static int try_fuse(BtlTranspiler* t, uint8_t* code, int ip, int code_len,
             else if (ta == TYPE_NUMBER && tb == TYPE_NUMBER)
                 OUT(t, "    if (AS_NUMBER(slots[%d]) %s AS_NUMBER(slots[%d])) goto L_%04d;\n", slot_a, c_op, slot_b, target_ip);
             else if (ta == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided check */
+                /* Left known INT, right unknown. One-sided check */
                 OUT(t, "    { int64_t _a = AS_INT(slots[%d]);\n", slot_a);
                 OUT(t, "      if (__builtin_expect(IS_INT(slots[%d]), 1)) {\n", slot_b);
                 OUT(t, "        if (_a %s AS_INT(slots[%d])) goto L_%04d;\n", c_op, slot_b, target_ip);
@@ -2032,7 +2035,7 @@ static int try_fuse(BtlTranspiler* t, uint8_t* code, int ip, int code_len,
                 OUT(t, "        if ((double)_a %s AS_NUMBER(slots[%d])) goto L_%04d;\n", c_op, slot_b, target_ip);
                 OUT(t, "      } else return btl_error_not_numbers(vm, sp); }\n");
             } else if (tb == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided check */
+                /* Right known INT, left unknown. One-sided check */
                 OUT(t, "    { int64_t _b = AS_INT(slots[%d]);\n", slot_b);
                 OUT(t, "      if (__builtin_expect(IS_INT(slots[%d]), 1)) {\n", slot_a);
                 OUT(t, "        if (AS_INT(slots[%d]) %s _b) goto L_%04d;\n", slot_a, c_op, target_ip);
@@ -2054,11 +2057,11 @@ static int try_fuse(BtlTranspiler* t, uint8_t* code, int ip, int code_len,
 
 // ================================================================
 // PATTERN 3: GET_LOCAL(a) <const_push> <arith> SET_LOCAL_N_POP(c)
-//   → slots[c] = NUMBER_VAL(AS_NUMBER(slots[a]) OP <const>)
+//   becomes slots[c] = NUMBER_VAL(AS_NUMBER(slots[a]) OP <const>)
 //   Common in loops like `i = i + 1`, `x = x// 2`.
 //
 // PATTERN 4: GET_LOCAL(a) <const_push> <compare> POP_JUMP_IF_FALSE
-//   → if (!(AS_NUMBER(slots[a]) < <const>)) goto L;
+//   becomes if (!(AS_NUMBER(slots[a]) < <const>)) goto L;
 //   Common in `while (i < 10)` style loops.
 // ================================================================
 
@@ -2160,15 +2163,15 @@ static int try_fuse_local_const(BtlTranspiler* t, ObjFunction* fn, uint8_t* code
     if (!is_comparison) {
         int slot_c = is_set_local_pop_at(code, ip3, code_len);
         if (slot_c >= 0) {
-            /* Division/modulo by known zero constant — emit error at transpile time */
+            /* Division/modulo by known zero constant. Emit error at transpile time */
             if (is_div_or_mod_lc && const_is_zero) return 0; /* Fall through to non-fused path which has zero checks */
             AbstractType ta = (slot_a < MAX_TRACKED_LOCALS) ? ts->locals[slot_a].type : TYPE_UNKNOWN;
             emit_comment(t, ip, "FUSED: local op= const");
             if (const_is_int && ta == TYPE_INT) {
-                /* Both operands known int — direct int arithmetic (divisor known non-zero) */
+                /* Both operands known int. Direct int arithmetic (divisor known non-zero) */
                 OUT(t, "    slots[%d] = INT_VAL(AS_INT(slots[%d]) %s (int64_t)%s);\n", slot_c, slot_a, c_op, const_expr);
             } else if (ta == TYPE_NUMBER && !is_modulo) {
-                /* Local known number — direct double arithmetic (not modulo) */
+                /* Local known number. Direct double arithmetic (not modulo) */
                 OUT(t, "    slots[%d] = NUMBER_VAL(AS_NUMBER(slots[%d]) %s %s%s);\n",
                     slot_c, slot_a, c_op, const_expr, const_is_int ? ".0" : "");
             } else if (ta == TYPE_NUMBER && is_modulo) {
@@ -2223,7 +2226,7 @@ static int try_fuse_local_const(BtlTranspiler* t, ObjFunction* fn, uint8_t* code
             OUT(t, "    if (!(AS_NUMBER(slots[%d]) %s %s%s)) goto L_%04d;\n",
                 slot_a, c_op, const_expr, const_is_int ? ".0" : "", target_ip);
         else if (const_is_int) {
-            /* Const is INT, local unknown — IS_INT fast check */
+            /* Const is INT, local unknown. IS_INT fast check */
             OUT(t, "    { if (__builtin_expect(IS_INT(slots[%d]), 1)) {\n", slot_a);
             OUT(t, "        if (!(AS_INT(slots[%d]) %s (int64_t)%s)) goto L_%04d;\n", slot_a, c_op, const_expr, target_ip);
             OUT(t, "      } else if (__builtin_expect(IS_NUMBER(slots[%d]), 1)) {\n", slot_a);
@@ -2251,7 +2254,7 @@ static int try_fuse_local_const(BtlTranspiler* t, ObjFunction* fn, uint8_t* code
             OUT(t, "    if (AS_NUMBER(slots[%d]) %s %s%s) goto L_%04d;\n",
                 slot_a, c_op, const_expr, const_is_int ? ".0" : "", target_ip);
         else if (const_is_int) {
-            /* Const is INT, local unknown — IS_INT fast check */
+            /* Const is INT, local unknown. IS_INT fast check */
             OUT(t, "    { if (__builtin_expect(IS_INT(slots[%d]), 1)) {\n", slot_a);
             OUT(t, "        if (AS_INT(slots[%d]) %s (int64_t)%s) goto L_%04d;\n", slot_a, c_op, const_expr, target_ip);
             OUT(t, "      } else if (__builtin_expect(IS_NUMBER(slots[%d]), 1)) {\n", slot_a);
@@ -3276,7 +3279,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
         }
 
                               // ================================================================
-                              // ARITHMETIC Ã¢â‚¬â€ in-place on sp, no function calls
+                              // ARITHMETIC . in-place on sp, no function calls
                               // ================================================================
         case BTL_OP_ADD: {
             emit_comment(t, start_ip, "OP_ADD");
@@ -3302,7 +3305,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) + _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
             } else if (tva.type == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided fast path */
+                /* Left known INT, right unknown. One-sided fast path */
                 OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_b), 1))\n");
                 OUT(t, "        { sp[-2] = INT_VAL(_a + AS_INT(_b)); sp--; }\n");
@@ -3311,7 +3314,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
                 type_push(&ts, TYPE_UNKNOWN);
             } else if (tvb.type == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided fast path */
+                /* Right known INT, left unknown. One-sided fast path */
                 OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
                 OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) + _b); sp--; }\n");
@@ -3321,11 +3324,11 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 type_push(&ts, TYPE_UNKNOWN);
             } else if (tva.stringConstIdx >= 0 && tvb.stringConstIdx >= 0
                        && tva.type == TYPE_STRING && tvb.type == TYPE_STRING) {
-                /* Both known string constants — fold at transpile time! */
+                /* Both known string constants. Fold at transpile time! */
                 ObjString* sa = AS_STRING(fn->chunk.constants.values[tva.stringConstIdx]);
                 ObjString* sb = AS_STRING(fn->chunk.constants.values[tvb.stringConstIdx]);
                 int newLen = sa->length + sb->length;
-                /* Emit a single interned string from literal — one alloc instead of alloc+2 memcpy+concat */
+                /* Emit a single interned string from literal. One alloc instead of alloc+2 memcpy+concat */
                 OUT(t, "    { sp -= 2; vm->stackTop = sp;\n");
                 OUT(t, "      ObjString* _fs = btl_string_copy(vm, \"");
                 /* Write string contents, escaping special chars */
@@ -3434,7 +3437,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 }
                 type_push(&ts, TYPE_STRING);
             } else if (tva.type == TYPE_STRING || tvb.type == TYPE_STRING) {
-                /* One side known STRING — skip numeric checks, go straight to string concat */
+                /* One side known STRING. Skip numeric checks, go straight to string concat */
                 OUT(t, "    { BtlValue _b = sp[-1], _a = sp[-2];\n");
                 OUT(t, "      if (__builtin_expect(IS_STRING(_a) & IS_STRING(_b), 1)) {\n");
                 OUT(t, "        ObjString* _sa = AS_STRING(_a), *_sb = AS_STRING(_b);\n");
@@ -3511,7 +3514,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) - _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
             } else if (tva.type == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided fast path */
+                /* Left known INT, right unknown. One-sided fast path */
                 OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_b), 1))\n");
                 OUT(t, "        { sp[-2] = INT_VAL(_a - AS_INT(_b)); sp--; }\n");
@@ -3520,7 +3523,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
                 type_push(&ts, TYPE_UNKNOWN);
             } else if (tvb.type == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided fast path */
+                /* Right known INT, left unknown. One-sided fast path */
                 OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
                 OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) - _b); sp--; }\n");
@@ -3563,7 +3566,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) * _b); sp--; } /* type-specialized */\n");
                 type_push(&ts, TYPE_NUMBER);
             } else if (tva.type == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided fast path */
+                /* Left known INT, right unknown. One-sided fast path */
                 OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_b), 1))\n");
                 OUT(t, "        { sp[-2] = INT_VAL(_a * AS_INT(_b)); sp--; }\n");
@@ -3572,7 +3575,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "      else return btl_error_not_numbers(vm, sp); }\n");
                 type_push(&ts, TYPE_UNKNOWN);
             } else if (tvb.type == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided fast path */
+                /* Right known INT, left unknown. One-sided fast path */
                 OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
                 OUT(t, "        { sp[-2] = INT_VAL(AS_INT(_a) * _b); sp--; }\n");
@@ -3616,7 +3619,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(AS_NUMBER(sp[-2]) / _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
             } else if (tva.type == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided fast path */
+                /* Left known INT, right unknown. One-sided fast path */
                 OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_b), 1)) {\n");
                 OUT(t, "        int64_t _bi = AS_INT(_b); if (__builtin_expect(_bi == 0, 0)) return btl_error_div_zero(vm, sp);\n");
@@ -3625,7 +3628,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "        { sp[-2] = NUMBER_VAL((double)_a / btl_numeric_to_double(_b)); sp--; } }\n");
                 type_push(&ts, TYPE_UNKNOWN);
             } else if (tvb.type == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided fast path */
+                /* Right known INT, left unknown. One-sided fast path */
                 OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
                 OUT(t, "      if (__builtin_expect(_b == 0, 0)) return btl_error_div_zero(vm, sp);\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
@@ -3670,7 +3673,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = NUMBER_VAL(fmod(AS_NUMBER(sp[-2]), _b)); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_NUMBER);
             } else if (tva.type == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided fast path */
+                /* Left known INT, right unknown. One-sided fast path */
                 OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_b), 1)) {\n");
                 OUT(t, "        int64_t _bi = AS_INT(_b); if (__builtin_expect(_bi == 0, 0)) return btl_error_div_zero(vm, sp);\n");
@@ -3679,7 +3682,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "        { sp[-2] = NUMBER_VAL(fmod((double)_a, btl_numeric_to_double(_b))); sp--; } }\n");
                 type_push(&ts, TYPE_UNKNOWN);
             } else if (tvb.type == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided fast path */
+                /* Right known INT, left unknown. One-sided fast path */
                 OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
                 OUT(t, "      if (__builtin_expect(_b == 0, 0)) return btl_error_div_zero(vm, sp);\n");
                 OUT(t, "      if (__builtin_expect(IS_INT(_a), 1))\n");
@@ -3842,13 +3845,13 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = BOOL_VAL(AS_NUMBER(sp[-2]) > _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_BOOL);
             } else if (tva.type == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided type check*/
+                /* Left known INT, right unknown. One-sided type check*/
                 OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
                 OUT(t, "      sp[-2] = BOOL_VAL(__builtin_expect(IS_INT(_b), 1) ?\n");
                 OUT(t, "        (_a > AS_INT(_b)) : ((double)_a > btl_numeric_to_double(_b))); sp--; }\n");
                 type_push(&ts, TYPE_BOOL);
             } else if (tvb.type == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided type check*/
+                /* Right known INT, left unknown. One-sided type check*/
                 OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
                 OUT(t, "      sp[-2] = BOOL_VAL(__builtin_expect(IS_INT(_a), 1) ?\n");
                 OUT(t, "        (AS_INT(_a) > _b) : (btl_numeric_to_double(_a) > (double)_b)); sp--; }\n");
@@ -3888,13 +3891,13 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
                 OUT(t, "    { double _b = AS_NUMBER(sp[-1]); sp[-2] = BOOL_VAL(AS_NUMBER(sp[-2]) < _b); sp--; } /* type-specialized*/\n");
                 type_push(&ts, TYPE_BOOL);
             } else if (tva.type == TYPE_INT) {
-                /* Left known INT, right unknown — one-sided type check*/
+                /* Left known INT, right unknown. One-sided type check*/
                 OUT(t, "    { int64_t _a = AS_INT(sp[-2]); BtlValue _b = sp[-1];\n");
                 OUT(t, "      sp[-2] = BOOL_VAL(__builtin_expect(IS_INT(_b), 1) ?\n");
                 OUT(t, "        (_a < AS_INT(_b)) : ((double)_a < btl_numeric_to_double(_b))); sp--; }\n");
                 type_push(&ts, TYPE_BOOL);
             } else if (tvb.type == TYPE_INT) {
-                /* Right known INT, left unknown — one-sided type check*/
+                /* Right known INT, left unknown. One-sided type check*/
                 OUT(t, "    { BtlValue _a = sp[-2]; int64_t _b = AS_INT(sp[-1]);\n");
                 OUT(t, "      sp[-2] = BOOL_VAL(__builtin_expect(IS_INT(_a), 1) ?\n");
                 OUT(t, "        (AS_INT(_a) < _b) : (btl_numeric_to_double(_a) < (double)_b)); sp--; }\n");
@@ -4170,7 +4173,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
         }
 
                     // ================================================================
-                    // CALLS Ã¢â‚¬â€ the big performance win
+                    // CALLS . the big performance win
                     //
                     // Instead of btl_call_value() + run() (which re-enters the interpreter),
                     // we:
@@ -4273,6 +4276,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "      /* Slow path: non-instance or method mismatch */\n");
             OUT(t, "      vm->stackTop = sp;\n");
             OUT(t, "      if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
+            OUT(t, "      if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_reload(t);
             OUT(t, "    L_invoke_%d_done:; }\n", start_ip);
             /* Type tracking: pop receiver + args, push unknown result */
@@ -4318,6 +4322,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "      /* Slow path: non-instance or method mismatch */\n");
             OUT(t, "      vm->stackTop = sp;\n");
             OUT(t, "      if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
+            OUT(t, "      if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_reload(t);
             OUT(t, "    L_invoke_%d_done:; }\n", start_ip);
             /* Type tracking: pop receiver + args, push unknown result */
@@ -4363,6 +4368,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "      /* Slow path: non-instance or method mismatch */\n");
             OUT(t, "      vm->stackTop = sp;\n");
             OUT(t, "      if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
+            OUT(t, "      if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_reload(t);
             OUT(t, "    L_invoke_%d_done:; }\n", start_ip);
             /* Type tracking: pop receiver + args, push unknown result */
@@ -4749,6 +4755,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "      /* IC miss or non-instance: slow path*/\n");
             OUT(t, "      vm->stackTop = sp;\n");
             OUT(t, "      if (!btl_compiled_invoke_ic(vm, frame, %d, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameIdx, argc, icSlot);
+            OUT(t, "      if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_reload(t);
             OUT(t, "    L_invoke_ic_%d_done:;\n", start_ip);
             OUT(t, "    }\n");
@@ -4803,6 +4810,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_TAIL_INVOKE_N");
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
+            OUT(t, "    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_call_bracket_close(t);
             break;
         }
@@ -4812,6 +4820,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_TAIL_INVOKE");
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
+            OUT(t, "    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_call_bracket_close(t);
             break;
         }
@@ -4821,6 +4830,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_TAIL_INVOKE_LONG");
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_invoke_indexed(vm, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", methodIdx, argc);
+            OUT(t, "    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_call_bracket_close(t);
             break;
         }
@@ -4831,6 +4841,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_TAIL_INVOKE_IC");
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_invoke_ic(vm, frame, %d, %d, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameIdx, argc, icSlot);
+            OUT(t, "    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_call_bracket_close(t);
             break;
         }
@@ -4940,7 +4951,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             if (fused_define) break;
 
             emit_comment(t, start_ip, "OP_CLOSURE");
-            /* Sync sp Ã¢â‚¬â€ newClosure can trigger GC*/
+            /* Sync sp . newClosure can trigger GC*/
             emit_sync(t);
             OUT(t, "    {\n");
             OUT(t, "        ObjFunction* _f = AS_FUNCTION(fn->chunk.constants.values[%d]);\n", fn_idx);
@@ -5089,7 +5100,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_INDEX_GET");
             /* Inline fast paths for list[index] and table[key] access */
             OUT(t, "    { BtlValue _key = sp[-1], _obj = sp[-2];\n");
-            /* INT key fast path (most common — loop variables are INT) */
+            /* INT key fast path (most common, loop variables are INT) */
             OUT(t, "      if (__builtin_expect(IS_LIST(_obj) && IS_INT(_key), 1)) {\n");
             OUT(t, "        ObjList* _l = AS_LIST(_obj);\n");
             OUT(t, "        int _idx = (int)AS_INT(_key);\n");
@@ -5098,7 +5109,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "          goto L_idx_get_%d_done;\n", start_ip);
             OUT(t, "        }\n");
             OUT(t, "      }\n");
-            /* Table fast path — before NUMBER list path (tables more common) */
+            /* Table fast path. Before NUMBER list path (tables more common) */
             OUT(t, "      if (IS_TABLE(_obj)) {\n");
             OUT(t, "        ObjTable* _t = AS_TABLE(_obj);\n");
             /* Inline string-key lookup: uses pre-computed hash + pointer equality */
@@ -5122,7 +5133,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "        }\n");
             OUT(t, "        goto L_idx_get_%d_done;\n", start_ip);
             OUT(t, "      }\n");
-            /* NUMBER key path (rare — float indices into lists) */
+            /* NUMBER key path (rare, float indices into lists) */
             OUT(t, "      if (__builtin_expect(IS_LIST(_obj) && IS_NUMBER(_key), 1)) {\n");
             OUT(t, "        ObjList* _l = AS_LIST(_obj);\n");
             OUT(t, "        int _idx = (int)AS_NUMBER(_key);\n");
@@ -5143,7 +5154,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_INDEX_SET");
             /* Inline fast paths for list[index] = value and table[key] = value */
             OUT(t, "    { BtlValue _val = sp[-1], _key = sp[-2], _obj = sp[-3];\n");
-            /* INT key fast path (most common — loop variables are INT) */
+            /* INT key fast path (most common, loop variables are INT) */
             OUT(t, "      if (__builtin_expect(IS_LIST(_obj) && IS_INT(_key), 1)) {\n");
             OUT(t, "        ObjList* _l = AS_LIST(_obj);\n");
             OUT(t, "        int _idx = (int)AS_INT(_key);\n");
@@ -5154,7 +5165,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "          goto L_idx_set_%d_done;\n", start_ip);
             OUT(t, "        }\n");
             OUT(t, "      }\n");
-            /* Table fast path — before NUMBER list path (tables more common) */
+            /* Table fast path. Before NUMBER list path (tables more common) */
             OUT(t, "      if (IS_TABLE(_obj)) {\n");
             OUT(t, "        ObjTable* _t = AS_TABLE(_obj);\n");
             OUT(t, "        vm->stackTop = sp;\n");
@@ -5165,7 +5176,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             OUT(t, "        sp[-3] = _val; sp -= 2;\n");
             OUT(t, "        goto L_idx_set_%d_done;\n", start_ip);
             OUT(t, "      }\n");
-            /* NUMBER key path (rare — float indices into lists) */
+            /* NUMBER key path (rare, float indices into lists) */
             OUT(t, "      if (__builtin_expect(IS_LIST(_obj) && IS_NUMBER(_key), 1)) {\n");
             OUT(t, "        ObjList* _l = AS_LIST(_obj);\n");
             OUT(t, "        int _idx = (int)AS_NUMBER(_key);\n");
@@ -5193,6 +5204,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_IMPORT");
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_import(vm, frame, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameIdx);
+            OUT(t, "    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_light_call_bracket_close(t);  /* Import never pushes frames */
             type_push(&ts, TYPE_UNKNOWN);
             break;
@@ -5202,6 +5214,7 @@ static void emit_function(BtlTranspiler* t, ObjFunction* fn, int fn_id) {
             emit_comment(t, start_ip, "OP_IMPORT_LONG");
             emit_call_bracket_open(t);
             OUT(t, "    if (!btl_compiled_import_long(vm, frame, %d)) return BTL_INTERPRET_RUNTIME_ERROR;\n", nameIdx);
+            OUT(t, "    if (vm->coroutineYield) { vm->coroutineYield = false; return BTL_INTERPRET_YIELD; }\n");
             emit_light_call_bracket_close(t);  /* Import never pushes frames */
             type_push(&ts, TYPE_UNKNOWN);
             break;

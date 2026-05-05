@@ -1,27 +1,14 @@
-// ============================================================================
-// native_list.c - BTL List Native Methods
-//
-// Implements built-in methods for list (array) objects including push, pop,
-// shift, unshift, insert, remove, slice, join, reverse, and clone operations.
-// ============================================================================
-
 #include <string.h>
 #include "native_list.h"
 #include "object.h"
 #include "memory.h"
 
-// ----------------------------------------------------------------------------
-// List Methods
-// ----------------------------------------------------------------------------
-
-// length() - returns the number of elements in the list
 static BtlValue listLength(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
     return NUMBER_VAL(list->items.count);
 }
 
-// push(value) - adds value to end of list, returns list
 static BtlValue listPush(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
@@ -30,7 +17,6 @@ static BtlValue listPush(VM* vm, BtlValue receiver, int argCount, BtlValue* args
     return receiver;
 }
 
-// pop() - removes and returns last element
 static BtlValue listPop(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
@@ -42,7 +28,6 @@ static BtlValue listPop(VM* vm, BtlValue receiver, int argCount, BtlValue* args)
     return val;
 }
 
-// shift() - removes and returns first element
 static BtlValue listShift(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
@@ -58,7 +43,6 @@ static BtlValue listShift(VM* vm, BtlValue receiver, int argCount, BtlValue* arg
     return val;
 }
 
-// unshift(value) - adds value to beginning of list, returns list
 static BtlValue listUnshift(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
@@ -71,7 +55,6 @@ static BtlValue listUnshift(VM* vm, BtlValue receiver, int argCount, BtlValue* a
     return receiver;
 }
 
-// insert(index, value) - inserts value at index, returns list
 static BtlValue listInsert(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
@@ -93,7 +76,6 @@ static BtlValue listInsert(VM* vm, BtlValue receiver, int argCount, BtlValue* ar
     return receiver;
 }
 
-// remove(index) - removes and returns element at index
 static BtlValue listRemove(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
@@ -114,7 +96,6 @@ static BtlValue listRemove(VM* vm, BtlValue receiver, int argCount, BtlValue* ar
     return val;
 }
 
-// clear() - removes all elements, returns list
 static BtlValue listClear(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
@@ -122,7 +103,7 @@ static BtlValue listClear(VM* vm, BtlValue receiver, int argCount, BtlValue* arg
     return receiver;
 }
 
-// indexOf(value) - returns index of first occurrence, or -1 if not found
+// Returns -1 if not found.
 static BtlValue listIndexOf(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount;
     ObjList* list = AS_LIST(receiver);
@@ -134,7 +115,6 @@ static BtlValue listIndexOf(VM* vm, BtlValue receiver, int argCount, BtlValue* a
     return NUMBER_VAL(-1);
 }
 
-// contains(value) - returns true if list contains value
 static BtlValue listContains(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount;
     ObjList* list = AS_LIST(receiver);
@@ -146,7 +126,6 @@ static BtlValue listContains(VM* vm, BtlValue receiver, int argCount, BtlValue* 
     return BTL_FALSE_VAL;
 }
 
-// reverse() - reverses list in place, returns list
 static BtlValue listReverse(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) vm; (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
@@ -162,7 +141,7 @@ static BtlValue listReverse(VM* vm, BtlValue receiver, int argCount, BtlValue* a
     return receiver;
 }
 
-// slice(start, end?) - returns new list with elements from start to end
+// slice(start, end?). Negative indices count from the end.
 static BtlValue listSlice(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     ObjList* list = AS_LIST(receiver);
     if (!IS_NUMERIC(args[0])) {
@@ -174,7 +153,6 @@ static BtlValue listSlice(VM* vm, BtlValue receiver, int argCount, BtlValue* arg
     if (argCount >= 2 && IS_NUMERIC(args[1])) {
         end = (int) btl_numeric_to_double(args[1]);
     }
-    // Handle negative indices
     if (start < 0) start = list->items.count + start;
     if (end < 0) end = list->items.count + end;
     if (start < 0) start = 0;
@@ -192,7 +170,6 @@ static BtlValue listSlice(VM* vm, BtlValue receiver, int argCount, BtlValue* arg
     return OBJ_VAL(result);
 }
 
-// join(separator) - joins list elements with separator, returns string
 static BtlValue listJoin(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount;
     ObjList* list = AS_LIST(receiver);
@@ -206,7 +183,6 @@ static BtlValue listJoin(VM* vm, BtlValue receiver, int argCount, BtlValue* args
         return OBJ_VAL(btl_string_copy(vm, "", 0));
     }
 
-    // Calculate total length
     int totalLen = 0;
     for (int i = 0; i < list->items.count; i++) {
         if (!IS_STRING(list->items.values[i])) {
@@ -217,7 +193,6 @@ static BtlValue listJoin(VM* vm, BtlValue receiver, int argCount, BtlValue* args
     }
     totalLen += sep->length * (list->items.count - 1);
 
-    // Build result string
     char* result = BTL_ALLOCATE(vm, char, totalLen + 1);
     char* dst = result;
     for (int i = 0; i < list->items.count; i++) {
@@ -234,7 +209,7 @@ static BtlValue listJoin(VM* vm, BtlValue receiver, int argCount, BtlValue* args
     return OBJ_VAL(btl_string_take(vm, result, totalLen));
 }
 
-// clone() - returns shallow copy of list
+// Shallow copy.
 static BtlValue listClone(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {
     (void) argCount; (void) args;
     ObjList* list = AS_LIST(receiver);
@@ -247,10 +222,6 @@ static BtlValue listClone(VM* vm, BtlValue receiver, int argCount, BtlValue* arg
     btl_pop(vm);
     return OBJ_VAL(result);
 }
-
-// ----------------------------------------------------------------------------
-// List Class Initialization
-// ----------------------------------------------------------------------------
 
 void btl_list_class_init(VM* vm) {
     vm->listClass = btl_native_class_new(vm, "List");

@@ -1,17 +1,6 @@
-// ============================================================================
-// native_table.c - BTL Table Native Methods
-//
-// Implements built-in methods for table (dictionary/hashmap) objects including
-// length, keys, values, has, remove, clear, and clone operations.
-// ============================================================================
-
 #include "native_table.h"
 #include "object.h"
 #include "memory.h"
-
-// ----------------------------------------------------------------------------
-// Table Methods
-// ----------------------------------------------------------------------------
 
 // length() - returns the number of entries in the table
 static BtlValue tableLength(VM* vm, BtlValue receiver, int argCount, BtlValue* args) {

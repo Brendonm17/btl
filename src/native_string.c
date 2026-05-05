@@ -1,18 +1,10 @@
-// ============================================================================
-// native_string.c - BTL String Native Methods
-//
-// Implements built-in methods for string objects including case conversion,
-// trimming, searching, substring extraction, splitting, and replacement.
-// ============================================================================
-
 #include <string.h>
 #include <ctype.h>
 #include "native_string.h"
 #include "object.h"
 #include "memory.h"
 
-// ----------------------------------------------------------------------------
-// String Methods
+// String methods
 // ----------------------------------------------------------------------------
 
 // length() - returns the number of characters in the string

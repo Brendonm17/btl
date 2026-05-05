@@ -1,25 +1,9 @@
-// ============================================================================
-// scanner.h - BTL Lexical Scanner
-//
-// The scanner (lexer) converts BTL source code into a stream of tokens.
-// It handles identifiers, keywords, literals, operators, and punctuation.
-// The scanner is designed for single-pass compilation - it produces tokens
-// on demand without building a complete token list upfront.
-// ============================================================================
+// On-demand lexer. Produces tokens lazily for single-pass compilation;
+// no full token list is ever built.
 
 #ifndef btl_scanner_h
 #define btl_scanner_h
 
-// ----------------------------------------------------------------------------
-// BtlTokenType Enumeration
-//
-// All token types recognized by the BTL scanner. Grouped by category:
-// - Single-character punctuation
-// - One or two character operators
-// - Literals (identifiers, strings, numbers)
-// - Keywords
-// - Special tokens (error, EOF)
-// ----------------------------------------------------------------------------
 typedef enum {
     // Single-character tokens
     BTL_TOKEN_LEFT_PAREN,      // (
@@ -86,47 +70,25 @@ typedef enum {
     BTL_TOKEN_VAR,             // var
     BTL_TOKEN_WHILE,           // while
 
-    // Special tokens
-    BTL_TOKEN_ERROR,           // Lexical error
-    BTL_TOKEN_EOF,             // End of file
-
+    BTL_TOKEN_ERROR,
+    BTL_TOKEN_EOF,
 } BtlTokenType;
 
-// ----------------------------------------------------------------------------
-// BtlToken Structure
-//
-// Represents a single token from the source code. Tokens reference the
-// original source string rather than copying it (zero-allocation scanning).
-// ----------------------------------------------------------------------------
+// Tokens reference the source string directly; no copying.
 typedef struct {
-    BtlTokenType type;     // The type of token
-    const char* start;     // Pointer to first character in source
-    int length;            // Length of the token in characters
-    int line;              // Source line number (1-based)
+    BtlTokenType type;
+    const char* start;
+    int length;
+    int line;
 } BtlToken;
 
-// ----------------------------------------------------------------------------
-// BtlScanner Structure
-//
-// Holds the scanner state during lexical analysis.
-// - start: Beginning of current token being scanned
-// - current: Current position in source
-// - line: Current line number for error reporting
-// ----------------------------------------------------------------------------
 typedef struct {
-    const char* start;     // Start of current token
-    const char* current;   // Current position in source
-    int line;              // Current line number (1-based)
+    const char* start;
+    const char* current;
+    int line;
 } BtlScanner;
 
-// ----------------------------------------------------------------------------
-// Scanner Operations
-// ----------------------------------------------------------------------------
-
-// Initialize scanner with source code string
 void btl_scanner_init(BtlScanner* scanner, const char* source);
-
-// Scan and return the next token
 BtlToken btl_scanner_scan_token(BtlScanner* scanner);
 
-#endif // btl_scanner_h
+#endif

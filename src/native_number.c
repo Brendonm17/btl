@@ -1,18 +1,10 @@
-// ============================================================================
-// native_number.c - BTL Number Native Methods
-//
-// Implements built-in methods for number values including math operations,
-// type checking, conversions, and formatting.
-// ============================================================================
-
 #include <stdio.h>
 #include <math.h>
 #include "native_number.h"
 #include "object.h"
 #include "memory.h"
 
-// ----------------------------------------------------------------------------
-// Math Methods
+// Math methods
 // ----------------------------------------------------------------------------
 
 // abs() - returns absolute value

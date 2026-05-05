@@ -1,12 +1,4 @@
-// ============================================================================
-// scanner.c - BTL Lexical Scanner Implementation
-//
-// This file implements the lexical scanner (lexer) for BTL. It converts
-// source code into a stream of tokens for the parser/compiler to consume.
-//
-// The scanner uses a trie-based approach for keyword recognition, which is
-// more efficient than hash table lookups for the small keyword set.
-// ============================================================================
+// Trie-style keyword recognition: dispatch on first char, then memcmp the rest.
 
 #include <stdio.h>
 #include <string.h>
@@ -14,76 +6,50 @@
 #include "common.h"
 #include "scanner.h"
 
-// ----------------------------------------------------------------------------
-// btl_scanner_init
-//
-// Initialize a scanner with the source code to scan.
-//
-// Parameters:
-//   scanner - The scanner to initialize
-//   source  - Null-terminated source code string
-// ----------------------------------------------------------------------------
 void btl_scanner_init(BtlScanner* scanner, const char* source) {
     scanner->start = source;
     scanner->current = source;
     scanner->line = 1;
 }
 
-// ----------------------------------------------------------------------------
-// Character Classification Helpers
-// ----------------------------------------------------------------------------
-
-// Check if character is alphabetic or underscore (valid identifier start)
 static bool isAlpha(char c) {
     return (c >= 'a' && c <= 'z') ||
            (c >= 'A' && c <= 'Z') ||
            c == '_';
 }
 
-// Check if character is a digit
 static bool isDigit(char c) {
     return c >= '0' && c <= '9';
 }
 
-// Check if character is a hex digit
 static bool isHexDigit(char c) {
     return (c >= '0' && c <= '9') ||
            (c >= 'a' && c <= 'f') ||
            (c >= 'A' && c <= 'F');
 }
 
-// Check if character is a binary digit
 static bool isBinDigit(char c) {
     return c == '0' || c == '1';
 }
 
-// ----------------------------------------------------------------------------
-// Scanner Position Helpers
-// ----------------------------------------------------------------------------
-
-// Check if we've reached end of source
 static bool isAtEnd(BtlScanner* scanner) {
     return *scanner->current == '\0';
 }
 
-// Consume and return current character, advance position
 static char advance(BtlScanner* scanner) {
     scanner->current++;
     return scanner->current[-1];
 }
 
-// Return current character without consuming
 static char peek(BtlScanner* scanner) {
     return *scanner->current;
 }
 
-// Return next character without consuming (lookahead)
 static char peekNext(BtlScanner* scanner) {
     if (isAtEnd(scanner)) return '\0';
     return scanner->current[1];
 }
 
-// Consume current character if it matches expected, return success
 static bool match(BtlScanner* scanner, char expected) {
     if (isAtEnd(scanner)) return false;
     if (*scanner->current != expected) return false;
@@ -91,11 +57,6 @@ static bool match(BtlScanner* scanner, char expected) {
     return true;
 }
 
-// ----------------------------------------------------------------------------
-// Token Creation
-// ----------------------------------------------------------------------------
-
-// Create a token of the given type from current scan state
 static BtlToken makeToken(BtlScanner* scanner, BtlTokenType type) {
     BtlToken token;
     token.type = type;
@@ -105,7 +66,6 @@ static BtlToken makeToken(BtlScanner* scanner, BtlTokenType type) {
     return token;
 }
 
-// Create an error token with the given message
 static BtlToken errorToken(BtlScanner* scanner, const char* message) {
     BtlToken token;
     token.type = BTL_TOKEN_ERROR;
@@ -115,11 +75,6 @@ static BtlToken errorToken(BtlScanner* scanner, const char* message) {
     return token;
 }
 
-// ----------------------------------------------------------------------------
-// Whitespace and Comment Handling
-// ----------------------------------------------------------------------------
-
-// Skip whitespace and comments, updating line count
 static void skipWhitespace(BtlScanner* scanner) {
     for (;;) {
         char c = peek(scanner);
@@ -127,20 +82,16 @@ static void skipWhitespace(BtlScanner* scanner) {
             case ' ':
             case '\r':
             case '\t':
-                // Skip horizontal whitespace
                 advance(scanner);
                 break;
 
             case '\n':
-                // Newline - increment line counter
                 scanner->line++;
                 advance(scanner);
                 break;
 
             case '/':
-                // Check for // comment
                 if (peekNext(scanner) == '/') {
-                    // Skip to end of line
                     while (peek(scanner) != '\n' && !isAtEnd(scanner)) {
                         advance(scanner);
                     }
@@ -155,14 +106,6 @@ static void skipWhitespace(BtlScanner* scanner) {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Keyword Recognition
-//
-// Uses a trie-like approach: check first character, then compare rest.
-// This is efficient for the small set of BTL keywords.
-// ----------------------------------------------------------------------------
-
-// Check if current token matches a keyword
 static BtlTokenType checkKeyword(BtlScanner* scanner, int start, int length,
                                   const char* rest, BtlTokenType type) {
     if (scanner->current - scanner->start == start + length &&
@@ -172,9 +115,7 @@ static BtlTokenType checkKeyword(BtlScanner* scanner, int start, int length,
     return BTL_TOKEN_IDENTIFIER;
 }
 
-// Determine if current identifier is a keyword
 static BtlTokenType identifierType(BtlScanner* scanner) {
-    // Trie dispatch on first character
     switch (scanner->start[0]) {
         case 'a':
             // "and", "as"
@@ -287,34 +228,16 @@ static BtlTokenType identifierType(BtlScanner* scanner) {
     return BTL_TOKEN_IDENTIFIER;
 }
 
-// ----------------------------------------------------------------------------
-// btl_scanner_scan_token
-//
-// Scan and return the next token from the source. This is the main entry
-// point called by the compiler.
-//
-// Parameters:
-//   scanner - The scanner state
-//
-// Returns:
-//   The next token
-// ----------------------------------------------------------------------------
 BtlToken btl_scanner_scan_token(BtlScanner* scanner) {
-    // Skip any leading whitespace/comments
     skipWhitespace(scanner);
-
-    // Mark start of new token
     scanner->start = scanner->current;
 
-    // Check for end of file
     if (isAtEnd(scanner)) {
         return makeToken(scanner, BTL_TOKEN_EOF);
     }
 
-    // Get next character
     char c = advance(scanner);
 
-    // Identifiers and keywords
     if (isAlpha(c)) {
         while (isAlpha(peek(scanner)) || isDigit(peek(scanner))) {
             advance(scanner);
@@ -322,30 +245,25 @@ BtlToken btl_scanner_scan_token(BtlScanner* scanner) {
         return makeToken(scanner, identifierType(scanner));
     }
 
-    // Number literals
     if (isDigit(c)) {
         if (c == '0' && (peek(scanner) == 'x' || peek(scanner) == 'X')) {
             // Hex literal: 0xFF
-            advance(scanner); // consume 'x'
+            advance(scanner);
             while (isHexDigit(peek(scanner))) {
                 advance(scanner);
             }
         } else if (c == '0' && (peek(scanner) == 'b' || peek(scanner) == 'B')) {
             // Binary literal: 0b1010
-            advance(scanner); // consume 'b'
+            advance(scanner);
             while (isBinDigit(peek(scanner))) {
                 advance(scanner);
             }
         } else {
-            // Decimal integer or float
             while (isDigit(peek(scanner))) {
                 advance(scanner);
             }
-            // Check for decimal part
             if (peek(scanner) == '.' && isDigit(peekNext(scanner))) {
-                // Consume the dot
                 advance(scanner);
-                // Consume fractional part
                 while (isDigit(peek(scanner))) {
                     advance(scanner);
                 }
@@ -354,9 +272,7 @@ BtlToken btl_scanner_scan_token(BtlScanner* scanner) {
         return makeToken(scanner, BTL_TOKEN_NUMBER);
     }
 
-    // Single-character and multi-character tokens
     switch (c) {
-        // Single-character tokens
         case '(': return makeToken(scanner, BTL_TOKEN_LEFT_PAREN);
         case ')': return makeToken(scanner, BTL_TOKEN_RIGHT_PAREN);
         case '{': return makeToken(scanner, BTL_TOKEN_LEFT_BRACE);
@@ -368,7 +284,6 @@ BtlToken btl_scanner_scan_token(BtlScanner* scanner) {
         case '.': return makeToken(scanner, BTL_TOKEN_DOT);
         case ':': return makeToken(scanner, BTL_TOKEN_COLON);
 
-        // Operators with potential second character
         case '+':
             if (match(scanner, '+')) return makeToken(scanner, BTL_TOKEN_PLUS_PLUS);
             if (match(scanner, '=')) return makeToken(scanner, BTL_TOKEN_PLUS_EQUAL);
@@ -400,9 +315,7 @@ BtlToken btl_scanner_scan_token(BtlScanner* scanner) {
         case '>':
             return makeToken(scanner, match(scanner, '=') ? BTL_TOKEN_GREATER_EQUAL : BTL_TOKEN_GREATER);
 
-        // String literals
         case '"': {
-            // Consume string content until closing quote
             while (peek(scanner) != '"' && !isAtEnd(scanner)) {
                 if (peek(scanner) == '\n') {
                     scanner->line++;
@@ -414,7 +327,6 @@ BtlToken btl_scanner_scan_token(BtlScanner* scanner) {
                 return errorToken(scanner, "Unterminated string.");
             }
 
-            // Consume closing quote
             advance(scanner);
             return makeToken(scanner, BTL_TOKEN_STRING);
         }

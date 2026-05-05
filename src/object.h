@@ -1,17 +1,7 @@
-// ============================================================================
-// object.h - BTL Object System
-//
-// This header defines all heap-allocated object types in BTL. Objects are
-// the building blocks of the runtime: strings, functions, classes, instances,
-// lists, tables, modules, and more.
-//
-// All objects share a common header (Obj) which contains:
-// - type: The object's type tag
-// - isMarked: GC marking flag
-// - generation: Nursery or old generation
-// - next: Linked list pointer for old gen objects
-// - forwarding: Used during minor GC promotion
-// ============================================================================
+// Heap-allocated object types: strings, functions, classes, instances, lists,
+// tables, modules, etc. All objects begin with a BtlObj header (type tag,
+// GC marking flag, generation, intrusive list pointer, forwarding pointer
+// during minor GC promotion).
 
 #ifndef btl_object_h
 #define btl_object_h
@@ -35,6 +25,7 @@ typedef struct ObjModule ObjModule;
 typedef struct ObjString ObjString;
 typedef struct ObjFuture ObjFuture;
 typedef struct ObjActor ObjActor;
+typedef struct BtlCallFrame BtlCallFrame;
 
 // ============================================================================
 // Object Type Enumeration
@@ -58,7 +49,8 @@ typedef enum BtlObjType {
     BTL_OBJ_NATIVE_MODULE,  // Native module wrapper
     BTL_OBJ_FUTURE,         // Async result placeholder
     BTL_OBJ_ACTOR,          // Actor for concurrency
-    BTL_OBJ_ENTITY          // Entity wrapper for game engine integration
+    BTL_OBJ_ENTITY,         // Entity wrapper for game engine integration
+    BTL_OBJ_COROUTINE       // Stackful coroutine (own stack + frames)
 } BtlObjType;
 
 // ============================================================================
@@ -209,6 +201,7 @@ typedef struct {
 #define IS_FUTURE(value)       btl_is_obj_type(value, BTL_OBJ_FUTURE)
 #define IS_ACTOR(value)        btl_is_obj_type(value, BTL_OBJ_ACTOR)
 #define IS_ENTITY(value)       btl_is_obj_type(value, BTL_OBJ_ENTITY)
+#define IS_COROUTINE(value)    btl_is_obj_type(value, BTL_OBJ_COROUTINE)
 
 // ============================================================================
 // Type Cast Macros
@@ -232,6 +225,7 @@ typedef struct {
 #define AS_FUTURE(value)       ((ObjFuture*)AS_OBJ(value))
 #define AS_ACTOR(value)        ((ObjActor*)AS_OBJ(value))
 #define AS_ENTITY(value)       ((ObjEntity*)AS_OBJ(value))
+#define AS_COROUTINE(value)    ((ObjCoroutine*)AS_OBJ(value))
 
 // ============================================================================
 // Upvalue Box
@@ -363,10 +357,10 @@ typedef struct {
 typedef BtlValue (*BtlFieldGetterFn)(VM* vm, void* backingData, int fieldIndex);
 typedef void     (*BtlFieldSetterFn)(VM* vm, void* backingData, int fieldIndex, BtlValue value);
 
-// Native constructor callback — replaces default btl_instance_new() + init() flow
+// Native constructor callback. Replaces default btl_instance_new() + init() flow
 typedef BtlValue (*BtlNativeConstructorFn)(VM* vm, int argCount, BtlValue* args);
 
-// Native data destructor — called when instance is GC'd to free nativeData
+// Native data destructor. Called when instance is GC'd to free nativeData
 typedef void (*BtlNativeDataFreeFn)(void* data);
 
 // ============================================================================
@@ -394,6 +388,11 @@ typedef struct ObjClass {
 
     // Native data destructor (NULL = no-op). Called when instance is GC'd to free nativeData.
     BtlNativeDataFreeFn nativeDataFree;
+
+    // Native C methods on ObjClass instances (name -> ObjNativeMethod*)
+    // Used for component classes (e.g. Tilemap) that need methods without
+    // converting to ObjNativeClass (which lacks nativeGetters/nativeSetters).
+    BtlTable nativeMethods;
 } ObjClass;
 
 // ============================================================================
@@ -454,6 +453,34 @@ typedef struct ObjEntity {
 } ObjEntity;
 
 // ============================================================================
+// Coroutine Object
+//
+// Stackful coroutine with its own value stack and call frame stack.
+// Suspended state is preserved across yields; the scheduler swaps the VM's
+// stack pointers to the coroutine's storage during execution.
+// ============================================================================
+
+typedef enum {
+    COROUTINE_SUSPENDED,
+    COROUTINE_RUNNING,
+    COROUTINE_DEAD
+} CoroutineState;
+
+typedef struct ObjCoroutine {
+    BtlObj obj;
+    BtlValue* stack;            // Own value stack
+    int stackCapacity;          // Allocated capacity
+    BtlValue* stackTop;         // Saved stack top (when suspended)
+    BtlCallFrame* frames;      // Own call frame stack
+    int frameCapacity;          // Allocated frame capacity
+    int frameCount;             // Saved frame count (when suspended)
+    CoroutineState state;       // Current state
+    float waitTimer;            // Seconds remaining before resume (0 = next frame)
+    int waitFrames;             // Frames remaining before resume (0 = ready)
+    ObjClosure* body;           // The closure to execute
+} ObjCoroutine;
+
+// ============================================================================
 // Object Creation Functions
 // ============================================================================
 
@@ -496,6 +523,9 @@ ObjTable* btl_table_obj_new(VM* vm);
 // Create an entity object (for game engine integration)
 ObjEntity* btl_entity_new(VM* vm, uint64_t id, void* world, void* engine);
 
+// Create a coroutine wrapping a closure (allocates own stack + frames)
+ObjCoroutine* btl_coroutine_new(VM* vm, ObjClosure* body);
+
 // ============================================================================
 // Native Field Accessor API (for engine-backed component classes)
 // ============================================================================
@@ -506,6 +536,12 @@ void btl_class_init_native_fields(VM* vm, ObjClass* klass);
 // Add a native-backed field with getter/setter. Returns the field index.
 int btl_class_add_native_field(VM* vm, ObjClass* klass, const char* name,
                                 BtlFieldGetterFn getter, BtlFieldSetterFn setter);
+
+// Add a native C method to an ObjClass (for component classes like Tilemap).
+// Unlike btl_native_class_add_method (which works on ObjNativeClass*), this
+// stores methods in ObjClass.nativeMethods and is safe for classes with native fields.
+void btl_class_add_native_method(VM* vm, ObjClass* klass, const char* name,
+                                  BtlNativeMethodFn fn, int arity);
 
 // ============================================================================
 // Native Class/Method/Module Functions

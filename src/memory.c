@@ -1,17 +1,3 @@
-// ============================================================================
-// memory.c - BTL Memory Management Implementation
-//
-// This file implements:
-// - Core allocation functions (btl_realloc, btl_runtime_alloc)
-// - I/O functions (btl_print, btl_error, etc.)
-// - Generational garbage collector (nursery + old gen)
-// - Object allocation with GC integration
-//
-// The GC is generational:
-// - Nursery: Bump-pointer allocation, promotes survivors on minor GC
-// - Old gen: Mark-sweep collection on major GC
-// ============================================================================
-
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -22,15 +8,9 @@
 #include "vm.h"
 #include "runtime.h"
 
-// ============================================================================
-// Core Allocation - Runtime Level
-//
-// Used before VM exists or by the runtime itself. Routes through custom
-// allocators if configured.
-// ============================================================================
-
+// Runtime-level allocation. Used before the VM exists, or by the runtime
+// itself. Routes through BTLConfig.platform.mem if available.
 void* btl_runtime_alloc(BTLRuntime* runtime, void* pointer, size_t oldSize, size_t newSize) {
-    // Use platform memory handles if runtime exists
     if (runtime != NULL) {
         BtlMemoryHandles* mem = &runtime->config.platform.mem;
 
@@ -290,6 +270,9 @@ void btl_print_value(VM* vm, BtlValue value) {
         case BTL_OBJ_UPVALUE:
             btl_print(vm, "<upvalue>");
             break;
+        case BTL_OBJ_COROUTINE:
+            btl_print(vm, "<coroutine>");
+            break;
         default:
             btl_print(vm, "<object>");
             break;
@@ -539,6 +522,7 @@ static void markClass(VM* vm, ObjClass* klass) {
     btl_gc_mark_object(vm, (BtlObj*) klass->name);
     btl_table_mark(vm, &klass->methodIndices);
     btl_table_mark(vm, &klass->fieldIndices);
+    btl_table_mark(vm, &klass->nativeMethods);
 
     for (int i = 0; i < klass->methodCount; i++) {
         if (klass->methods[i].closure != NULL) {
@@ -652,6 +636,34 @@ static void blackenObject(VM* vm, BtlObj* object) {
         btl_table_mark(vm, &entity->scriptComponents);
         break;
     }
+    case BTL_OBJ_COROUTINE: {
+        ObjCoroutine* co = (ObjCoroutine*) object;
+        btl_gc_mark_object(vm, (BtlObj*) co->body);
+        // Skip stack/frame marking for RUNNING coroutines: their stack is
+        // swapped into the VM during execution, so the VM's own root marking
+        // covers it. co->stack/stackTop may be stale if the stack was
+        // reallocated during execution (dangling pointer).
+        if (co->state == COROUTINE_RUNNING) break;
+        // Mark everything on the coroutine's own stack
+        for (BtlValue* slot = co->stack; slot < co->stackTop; slot++) {
+            btl_gc_mark_value(vm, *slot);
+        }
+        // Mark closures in the coroutine's own frames
+        for (int i = 0; i < co->frameCount; i++) {
+            btl_gc_mark_object(vm, (BtlObj*) co->frames[i].closure);
+            // Walk open upvalues linked list
+            BtlRuntimeUpvalue* uv = co->frames[i].openUpvalues;
+            while (uv) {
+                if (!uv->isOpen && uv->isMutable && uv->loc.box) {
+                    btl_gc_mark_object(vm, (BtlObj*) uv->loc.box);
+                } else if (!uv->isOpen && !uv->isMutable) {
+                    btl_gc_mark_value(vm, uv->loc.immValue);
+                }
+                uv = uv->next;
+            }
+        }
+        break;
+    }
     case BTL_OBJ_NATIVE:
     case BTL_OBJ_STRING:
         break;
@@ -693,6 +705,7 @@ static BtlObj* promoteObject(VM* vm, BtlObj* object) {
     case BTL_OBJ_FUTURE: size = sizeof(ObjFuture); break;
     case BTL_OBJ_ACTOR: size = sizeof(ObjActor); break;
     case BTL_OBJ_ENTITY: size = sizeof(ObjEntity); break;
+    case BTL_OBJ_COROUTINE: size = sizeof(ObjCoroutine); break;
     default: size = sizeof(BtlObj); break;
     }
 
@@ -806,6 +819,12 @@ static BtlObj* promoteObject(VM* vm, BtlObj* object) {
             size_t setterSize = sizeof(BtlFieldSetterFn) * oldClass->fieldCount;
             newClass->nativeSetters = btl_realloc(vm, NULL, 0, setterSize);
             memcpy(newClass->nativeSetters, oldClass->nativeSetters, setterSize);
+        }
+
+        if (oldClass->nativeMethods.entries != NULL && oldClass->nativeMethods.capacity > 0) {
+            size_t entrySize = sizeof(BtlEntry) * oldClass->nativeMethods.capacity;
+            newClass->nativeMethods.entries = btl_realloc(vm, NULL, 0, entrySize);
+            memcpy(newClass->nativeMethods.entries, oldClass->nativeMethods.entries, entrySize);
         }
         break;
     }
@@ -922,6 +941,15 @@ static void scanObject(VM* vm, BtlObj* object) {
                 BtlEntry* entry = &klass->fieldIndices.entries[i];
                 if (!IS_EMPTY(entry->key)) {
                     entry->key = promoteValue(vm, entry->key);
+                }
+            }
+        }
+        if (klass->nativeMethods.entries != NULL) {
+            for (int i = 0; i < klass->nativeMethods.capacity; i++) {
+                BtlEntry* entry = &klass->nativeMethods.entries[i];
+                if (!IS_EMPTY(entry->key)) {
+                    entry->key = promoteValue(vm, entry->key);
+                    entry->value = promoteValue(vm, entry->value);
                 }
             }
         }
@@ -1065,6 +1093,22 @@ static void scanObject(VM* vm, BtlObj* object) {
         }
         break;
     }
+    case BTL_OBJ_COROUTINE: {
+        ObjCoroutine* co = (ObjCoroutine*) object;
+        co->body = (ObjClosure*) promoteObject(vm, (BtlObj*) co->body);
+        // Skip stack/frame promotion for RUNNING coroutines: their stack is
+        // swapped into the VM during execution, so vm->stack has the live data.
+        // co->stack/stackTop may be stale if reallocated during execution.
+        // The scheduler saves vm->stack back into co->stack after execution.
+        if (co->state == COROUTINE_RUNNING) break;
+        for (BtlValue* slot = co->stack; slot < co->stackTop; slot++) {
+            *slot = promoteValue(vm, *slot);
+        }
+        for (int i = 0; i < co->frameCount; i++) {
+            co->frames[i].closure = (ObjClosure*) promoteObject(vm, (BtlObj*) co->frames[i].closure);
+        }
+        break;
+    }
     case BTL_OBJ_NATIVE:
     case BTL_OBJ_STRING:
         break;
@@ -1075,7 +1119,7 @@ static void scanObject(VM* vm, BtlObj* object) {
 // Called before resetting the nursery bump pointer so that external arrays
 // (list items, table entries, instance fields) are not leaked.
 // The object structs themselves live inside the nursery slab and are
-// reclaimed when the bump pointer resets — only their external data needs
+// reclaimed when the bump pointer resets, so only their external data needs
 // explicit freeing.
 static void freeNurseryExternals(VM* vm) {
     uint8_t* ptr = vm->nursery.fromSpace;
@@ -1113,13 +1157,13 @@ static void freeNurseryExternals(VM* vm) {
                 if (promoted) {
                     // promoteObject only duplicates fields when fieldCount > 0.
                     // When fieldCount == 0, the promoted copy shares this pointer
-                    // and will free it during freeObject — don't double-free.
+                    // and will free it during freeObject. Don't double-free.
                     if (inst->klass != NULL && inst->klass->fieldCount > 0) {
                         btl_realloc(vm, inst->fields,
                                     sizeof(BtlValue) * inst->klass->fieldCount, 0);
                     }
                 } else {
-                    // Dead object — we own the only reference. Use the actual
+                    // Dead object. We own the only reference. Use the actual
                     // allocated size: max(fieldCount, 1) per btl_instance_new.
                     int count = (inst->klass != NULL && inst->klass->fieldCount > 0)
                                 ? inst->klass->fieldCount : 1;
@@ -1139,6 +1183,17 @@ static void freeNurseryExternals(VM* vm) {
             size = sizeof(ObjEntity);
             break;
         }
+        case BTL_OBJ_COROUTINE: {
+            ObjCoroutine* co = (ObjCoroutine*) obj;
+            if (co->stack != NULL) {
+                free(co->stack);
+            }
+            if (co->frames != NULL) {
+                free(co->frames);
+            }
+            size = sizeof(ObjCoroutine);
+            break;
+        }
         case BTL_OBJ_BOUND_METHOD:
             size = sizeof(ObjBoundMethod);
             break;
@@ -1146,7 +1201,7 @@ static void freeNurseryExternals(VM* vm) {
             size = sizeof(ObjUpvalue);
             break;
         default:
-            // Should not happen — only the above types go into the nursery.
+            // Should not happen. Only the above types go into the nursery.
             // But if it does, we can't determine the size, so bail out.
             return;
         }
@@ -1301,6 +1356,7 @@ static void freeObject(VM* vm, BtlObj* object) {
         }
         btl_table_free(vm, &klass->methodIndices);
         btl_table_free(vm, &klass->fieldIndices);
+        btl_table_free(vm, &klass->nativeMethods);
         if (klass->nativeGetters != NULL) {
             BTL_FREE_ARRAY(vm, BtlFieldGetterFn, klass->nativeGetters, klass->fieldCount);
         }
@@ -1413,6 +1469,13 @@ static void freeObject(VM* vm, BtlObj* object) {
         BTL_FREE(vm, ObjEntity, object);
         break;
     }
+    case BTL_OBJ_COROUTINE: {
+        ObjCoroutine* co = (ObjCoroutine*) object;
+        if (co->stack != NULL) free(co->stack);
+        if (co->frames != NULL) free(co->frames);
+        BTL_FREE(vm, ObjCoroutine, object);
+        break;
+    }
     }
 }
 
@@ -1456,6 +1519,11 @@ static void markRoots(VM* vm) {
     // Mark native GC roots (registered by engine via btl_gc_add_root)
     for (int i = 0; i < vm->nativeRootCount; i++) {
         btl_gc_mark_value(vm, vm->nativeRoots[i]);
+    }
+
+    // Custom engine mark callback (e.g., UI element callbacks stored in C structs)
+    if (vm->nativeMarkFn) {
+        vm->nativeMarkFn(vm, vm->nativeMarkUserData);
     }
 }
 

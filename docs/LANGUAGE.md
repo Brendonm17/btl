@@ -225,8 +225,8 @@ for (var word in ["hello", "world"]) {
 ```
 
 Works with:
-- **Lists** — iterates over values in order
-- **Tables** — iterates over keys (order is not guaranteed)
+- **Lists**: iterates over values in order
+- **Tables**: iterates over keys (order is not guaranteed)
 
 ### Break and Continue
 

@@ -1,5 +1,5 @@
 # ============================================================================
-# BTL — Unified Makefile
+# BTL Makefile
 #
 # Builds:
 #   make              → btl (the normal VM interpreter)
@@ -56,7 +56,7 @@ VM_SRCS = $(wildcard $(SRC_DIR)/*.c)
 VM_OBJS = $(VM_SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
 # Note: main.c is in the project root, not src/, so VM_SRCS never includes it.
-# Transpiler and compiled binary provide their own main — they just use VM_SRCS directly.
+# Transpiler and compiled binary provide their own main; they just use VM_SRCS directly.
 
 # Transpiler source files
 TRANS_SRCS = $(TRANS_DIR)/transpiler.c \

@@ -1,14 +1,3 @@
-// ============================================================================
-// object.c - BTL Object System Implementation
-//
-// This file implements all heap-allocated object types and their operations.
-// Includes:
-// - Object creation (strings, functions, closures, classes, instances, etc.)
-// - String interning
-// - Futures and actors for concurrency
-// - Native method/class/module registration
-// ============================================================================
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,19 +9,12 @@
 #include "value.h"
 #include "vm.h"
 
-// Object allocation macro - uses btl_object_allocate from memory.c
 #define BTL_ALLOCATE_OBJ(vm, type, objectType) \
     (type*)btl_object_allocate(vm, sizeof(type), objectType)
 
-// Compatibility alias
 #define ALLOCATE_OBJ BTL_ALLOCATE_OBJ
 
-// ============================================================================
-// Future Operations
-//
-// Futures represent the result of asynchronous operations. They can be
-// in pending, ready (resolved), or error (rejected) state.
-// ============================================================================
+// Futures: pending until resolved (ready) or rejected (error).
 
 ObjFuture* btl_future_new(VM* vm) {
     ObjFuture* future = ALLOCATE_OBJ(vm, ObjFuture, BTL_OBJ_FUTURE);
@@ -580,6 +562,9 @@ ObjClass* btl_class_new(struct VM* vm, struct ObjString* name) {
     klass->nativeConstructor = NULL;
     klass->nativeDataFree = NULL;
 
+    // Native C methods (empty table = no native methods)
+    btl_table_init(&klass->nativeMethods);
+
     return klass;
 }
 
@@ -664,6 +649,29 @@ ObjEntity* btl_entity_new(VM* vm, uint64_t id, void* world, void* engine) {
     return entity;
 }
 
+ObjCoroutine* btl_coroutine_new(VM* vm, ObjClosure* body) {
+    ObjCoroutine* co = BTL_ALLOCATE_OBJ(vm, ObjCoroutine, BTL_OBJ_COROUTINE);
+    co->body = body;
+    co->state = COROUTINE_SUSPENDED;
+    co->waitTimer = 0.0f;
+    co->waitFrames = 0;
+
+    // Allocate own value stack
+    co->stackCapacity = 256;
+    co->stack = (BtlValue*)malloc(sizeof(BtlValue) * co->stackCapacity);
+    co->stackTop = co->stack;
+    for (int i = 0; i < co->stackCapacity; i++) {
+        co->stack[i] = BTL_NULL_VAL;
+    }
+
+    // Allocate own frame stack
+    co->frameCapacity = 16;
+    co->frames = (BtlCallFrame*)malloc(sizeof(BtlCallFrame) * co->frameCapacity);
+    co->frameCount = 0;
+
+    return co;
+}
+
 void btl_class_init_native_fields(VM* vm, ObjClass* klass) {
     (void)vm;
     klass->nativeGetters = NULL;
@@ -690,6 +698,17 @@ int btl_class_add_native_field(VM* vm, ObjClass* klass, const char* name,
 
     btl_pop(vm);
     return index;
+}
+
+void btl_class_add_native_method(VM* vm, ObjClass* klass, const char* name,
+                                  BtlNativeMethodFn fn, int arity) {
+    ObjNativeMethod* method = btl_native_method_new(vm, fn, name, arity);
+    btl_push(vm, OBJ_VAL(method));
+    ObjString* nameStr = btl_string_copy(vm, name, (int)strlen(name));
+    btl_push(vm, OBJ_VAL(nameStr));
+    btl_table_set(vm, &klass->nativeMethods, OBJ_VAL(nameStr), OBJ_VAL(method));
+    btl_pop(vm);
+    btl_pop(vm);
 }
 
 ObjModule* btl_module_new(struct VM* vm, struct ObjString* name) {

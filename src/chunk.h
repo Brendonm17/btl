@@ -1,13 +1,6 @@
-// ============================================================================
-// chunk.h - BTL Bytecode Chunks
-//
-// A chunk is a sequence of bytecode instructions along with associated
-// metadata like constants and line number information. Each function
-// compiles to exactly one chunk.
-//
-// The bytecode format uses a variable-length encoding where each opcode
-// is followed by zero or more operand bytes. Most opcodes are 1-3 bytes.
-// ============================================================================
+// A chunk is a sequence of bytecode instructions plus a constant pool and
+// line number metadata. One chunk per function. Variable-length encoding:
+// each opcode is followed by zero or more operand bytes (most are 1-3 bytes).
 
 #ifndef btl_chunk_h
 #define btl_chunk_h

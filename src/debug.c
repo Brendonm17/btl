@@ -1,6 +1,3 @@
-// BTL Debug Module Implementation
-// Provides bytecode disassembly and debugging utilities.
-
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -8,10 +5,6 @@
 #include "debug.h"
 #include "object.h"
 #include "value.h"
-
-// ============================================================================
-// Debug Output Helpers
-// ============================================================================
 
 // Buffer size for formatting debug output strings
 #define DEBUG_BUFFER_SIZE 1024

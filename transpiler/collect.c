@@ -1,12 +1,6 @@
-// ============================================================================
-// collect.c - BTL Function Collector Implementation
-//
-// Scans constant pools for ObjFunction values. Each OP_CLOSURE references
-// a function in the constant pool; we walk those recursively.
-//
-// Uses ObjFunction->transpilerId for O(1) duplicate detection and ID lookup
-// instead of linear scans.
-// ============================================================================
+// Walks constant pools for ObjFunction values reachable from a top-level
+// function. OP_CLOSURE references a function in the pool; we recurse from
+// there. ObjFunction->transpilerId gives O(1) dedupe and ID lookup.
 
 #include "collect.h"
 #include "../src/object.h"

@@ -920,7 +920,7 @@ static void grouping(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler*
 static void number(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCompiler* cc, bool canAssign) {
     (void) s; (void) cc; (void) canAssign;
 
-    // Detect hex (0x...) or binary (0b...) prefix — always int
+    // Hex (0x...) or binary (0b...) prefix is always int
     if (p->previous.length > 2 && p->previous.start[0] == '0') {
         char prefix = p->previous.start[1];
         if (prefix == 'x' || prefix == 'X') {
@@ -2296,7 +2296,7 @@ static void forInStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCom
     // At this point we've already parsed: for ( var <name> in
     // varSlot is the local slot for the loop variable
 
-    // Compile the collection expression — pushes collection onto stack
+    // Compile the collection expression. Pushes collection onto stack
     expression(p, s, c, cc);
     consume(p, s, BTL_TOKEN_RIGHT_PAREN, "Expect ')' after for-in.");
 
@@ -2318,7 +2318,7 @@ static void forInStatement(Parser* p, BtlScanner* s, BtlCompiler* c, BtlClassCom
     int loopStart = currentChunk(c)->count;
 
     // Emit OP_ITER_NEXT: checks if more elements; if not, jumps to exit
-    // Operands: [slot:8][offset:16] — slot is the loop variable to set
+    // Operands: [slot:8][offset:16]. slot is the loop variable to set
     emitByte(p, c, BTL_OP_ITER_NEXT);
     emitByte(p, c, (uint8_t) varSlot);
     int exitJumpOffset = currentChunk(c)->count;

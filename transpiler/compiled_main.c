@@ -1,10 +1,6 @@
-// ============================================================================
-// compiled_main.c - Entry Point for Transpiled BTL Binary
-//
-// This replaces main.c for the compiled output. It reads the original
-// source file (needed for compile()), initializes the VM, and calls
-// the transpiled entry point btl_compiled_run().
-// ============================================================================
+// Entry point for transpiled binaries. Replaces main.c. Reads the original
+// source (compile() still needs it), initializes the VM, calls
+// btl_compiled_run().
 
 #include "compiled.h"
 #include "../src/runtime.h"

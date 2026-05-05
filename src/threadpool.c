@@ -1,8 +1,4 @@
-// ============================================================================
-// threadpool.c - BTL Thread Pool Implementation
-//
 // Uses platform-abstracted threading primitives for portability.
-// ============================================================================
 
 #include "threadpool.h"
 #include "runtime.h"

@@ -1,9 +1,4 @@
-// ============================================================================
-// native_random.c - BTL Random Module
-//
-// Provides random number generation functions using xorshift64 PRNG.
-// Includes basic random, integers, floats, list operations, and distributions.
-// ============================================================================
+// xorshift64 PRNG.
 
 #include <time.h>
 #include <stdint.h>

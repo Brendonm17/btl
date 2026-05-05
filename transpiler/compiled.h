@@ -1,16 +1,8 @@
-// ============================================================================
-// compiled.h - BTL Compiled Support Library
-//
-// Helper functions called by transpiler-generated C code. These implement
-// complex opcodes (invoke, property access, etc.) that are too large to
-// inline into the generated code.
-//
-// Generated code also directly uses VM functions like btl_push, btl_pop,
-// btl_call_value, btl_values_equal, btl_runtime_error, btl_closure_new,
-// btl_instance_new, btl_list_new, etc.
-//
-// This header is #included by the generated .c file.
-// ============================================================================
+// Helpers called by transpiler-generated C. Out-of-line implementations of
+// complex opcodes (invoke, property access, ...) that are too big to inline.
+// Generated code also uses VM functions directly: btl_push, btl_pop,
+// btl_call_value, btl_values_equal, btl_runtime_error, btl_closure_new, etc.
+// Included by the generated .c file.
 
 #ifndef btl_compiled_h
 #define btl_compiled_h

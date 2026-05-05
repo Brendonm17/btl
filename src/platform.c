@@ -1,10 +1,6 @@
-// ============================================================================
-// platform.c - BTL Platform Abstraction Layer Implementation
-//
-// Provides default implementations using standard system libraries.
-// ============================================================================
+// Default platform handles using standard system libraries.
 
-// Enable POSIX features (must be before any includes)
+// Must come before any includes.
 #if !defined(_WIN32) && !defined(_WIN64)
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -13,10 +9,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
-// ============================================================================
-// Platform Detection
-// ============================================================================
 
 #if defined(_WIN32) || defined(_WIN64)
     #define BTL_PLATFORM_WINDOWS 1
